@@ -1,6 +1,6 @@
 # MeshCore GUI
 
-A graphical user interface for MeshCore mesh network devices via Bluetooth Low Energy (BLE).
+A graphical user interface for MeshCore mesh network devices via Bluetooth Low Energy (BLE) for on your desktop.
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
@@ -20,9 +20,10 @@ Under the hood it uses `bleak` for Bluetooth Low Energy (which talks to BlueZ on
 
 ## TODO
 
-- **Message route visualization** — Display message paths on the map showing the route (hops) each message has taken through the mesh network
-- **Message persistence** — Store sent and received messages to disk so chat history is preserved across sessions
-
+* **Message route visualization** — Display message paths on the map showing the route (hops) each message has taken through the mesh network
+* **Message persistence** — Store sent and received messages to disk so chat history is preserved across sessions
+* **Automatic channel discovery** — Robustly detect and subscribe to available channels without manual configuration
+* **Auto-detect BLE address** — Automatically discover and store the BLE device address in config, eliminating manual entry
 ## Features
 
 - **Real-time Dashboard** - Device info, contacts, messages and RX log

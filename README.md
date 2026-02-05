@@ -35,8 +35,9 @@ Under the hood it uses `bleak` for Bluetooth Low Energy (which talks to BlueZ on
 - **Message Filtering** - Filter messages per channel via checkboxes
 - **Threaded Architecture** - BLE communication in separate thread for stable UI
 
-## Screenshot
+## Screenshots
 <img width="1002" height="532" alt="Screenshot from 2026-02-03 10-23-25" src="https://github.com/user-attachments/assets/d064e25e-a3c9-495b-a7f9-c09b636d28cb" />
+<img width="681" height="820" alt="Screenshot from 2026-02-05 12-23-24" src="https://github.com/user-attachments/assets/f516d4e7-0754-4703-9d5c-416c50ea468a" />
 
 ## Requirements
 

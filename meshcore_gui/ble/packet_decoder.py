@@ -90,12 +90,18 @@ class PacketDecoder:
     # Key management
     # ------------------------------------------------------------------
 
-    def add_channel_key(self, channel_idx: int, secret_bytes: bytes) -> None:
+    def add_channel_key(
+        self,
+        channel_idx: int,
+        secret_bytes: bytes,
+        source: str = "device",
+    ) -> None:
         """Register a channel decryption key (16 raw bytes from device).
 
         Args:
             channel_idx:  Channel index (0-based).
             secret_bytes: 16-byte channel secret from ``get_channel()``.
+            source:       Label for debug output (e.g. "device", "cache").
         """
         secret_hex = secret_bytes.hex()
         self._key_store.add_channel_secrets([secret_hex])
@@ -105,7 +111,7 @@ class PacketDecoder:
         self._hash_to_idx[ch_hash] = channel_idx
         debug_print(
             f"PacketDecoder: key for ch{channel_idx} "
-            f"(hash={ch_hash}, from device)"
+            f"(hash={ch_hash}, from {source})"
         )
 
     def add_channel_key_from_name(
@@ -121,11 +127,7 @@ class PacketDecoder:
             channel_name: Channel name string (e.g. ``"#test"``).
         """
         secret_bytes = sha256(channel_name.encode("utf-8")).digest()[:16]
-        self.add_channel_key(channel_idx, secret_bytes)
-        debug_print(
-            f"PacketDecoder: key for ch{channel_idx} "
-            f"(derived from '{channel_name}')"
-        )
+        self.add_channel_key(channel_idx, secret_bytes, source=f"name '{channel_name}'")
 
     @property
     def has_keys(self) -> bool:

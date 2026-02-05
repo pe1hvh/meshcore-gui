@@ -19,11 +19,6 @@ Under the hood it uses `bleak` for Bluetooth Low Energy (which talks to BlueZ on
 
 > **Linux users:** BLE on Linux can be temperamental. BlueZ occasionally gets into a bad state, especially after repeated connect/disconnect cycles. If you run into connection issues, see the [Troubleshooting Guide](docs/TROUBLESHOOTING.md). On macOS and Windows, BLE is generally more stable out of the box.
 
-## TODO
-
-* **Message persistence** — Store sent and received messages to disk so chat history is preserved across sessions
-* **Automatic channel discovery** — Robustly detect and subscribe to available channels without manual configuration
-* **Auto-detect BLE address** — Automatically discover and store the BLE device address in config, eliminating manual entry
 
 ## Features
 
@@ -36,6 +31,8 @@ Under the hood it uses `bleak` for Bluetooth Low Energy (which talks to BlueZ on
 - **Keyword Bot** — Built-in auto-reply bot that responds to configurable keywords on selected channels, with cooldown and loop prevention
 - **Packet Decoding** — Raw LoRa packets from RX log are decoded and decrypted using channel keys, providing message hashes, path hashes and hop data
 - **Message Deduplication** — Dual-strategy dedup (hash-based and content-based) prevents duplicate messages from appearing
+- **Local Cache** — Device info, contacts and channel keys are cached to disk (`~/.meshcore-gui/cache/`) so the GUI is instantly populated on startup from the last known state, even before BLE connects. Contacts from the device are merged with cached contacts so offline nodes are preserved. Channel keys that fail to load at startup are retried in the background every 30 seconds
+- **Periodic Contact Refresh** — Contacts are automatically refreshed from the device at a configurable interval (default: 5 minutes) and merged with the cache
 - **Threaded Architecture** — BLE communication in separate thread for stable UI
 
 ## Screenshots
@@ -189,6 +186,8 @@ The GUI opens automatically in your browser at `http://localhost:8080`
 |---------|----------|-------------|
 | `DEBUG` | `meshcore_gui/config.py` | Set to `True` for verbose logging (or use `--debug-on`) |
 | `CHANNELS_CONFIG` | `meshcore_gui/config.py` | List of channels (hardcoded due to BLE timing issues) |
+| `CONTACT_REFRESH_SECONDS` | `meshcore_gui/config.py` | Interval between periodic contact refreshes (default: 300s / 5 minutes) |
+| `KEY_RETRY_INTERVAL` | `meshcore_gui/ble/worker.py` | Interval between background retry attempts for missing channel keys (default: 30s) |
 | `BOT_CHANNELS` | `meshcore_gui/services/bot.py` | Channel indices the bot listens on |
 | `BOT_NAME` | `meshcore_gui/services/bot.py` | Display name prepended to bot replies |
 | `BOT_COOLDOWN_SECONDS` | `meshcore_gui/services/bot.py` | Minimum seconds between bot replies |
@@ -232,6 +231,31 @@ Click on any message in the messages list to open a route page in a new tab. The
 Route data is resolved from two sources (in priority order):
 1. **RX log packet decode** — Path hashes extracted from the raw LoRa packet via `meshcoredecoder`
 2. **Contact out_path** — Stored route from the sender's contact record (fallback)
+
+### Local Cache
+
+Device info, contacts and channel keys are automatically cached to disk in `~/.meshcore-gui/cache/`. One JSON file is created per BLE device address.
+
+**Startup behaviour:**
+1. Cache is loaded first — GUI is immediately populated with the last known state
+2. BLE connection is established in the background
+3. Fresh data from the device updates both the GUI and the cache
+
+**Channel key loading:**
+
+BLE commands to the MeshCore device are fundamentally unreliable — `get_channel()`, `send_appstart()` and `send_device_query()` can all fail even after multiple retries. The channel key loading strategy handles this gracefully:
+
+1. Cached keys are loaded first and never overwritten by name-derived fallbacks
+2. Each channel gets 2 quick attempts at startup (non-blocking)
+3. Channels that fail are retried in the background every 30 seconds
+4. Successfully loaded keys are immediately written to the cache for next startup
+
+**Contact merge strategy:**
+- New contacts from the device are added to the cache with a `last_seen` timestamp
+- Existing contacts are updated (fresh data wins)
+- Contacts only in cache (node offline) are preserved
+
+If BLE connection fails, the GUI remains usable with cached data and shows an offline status.
 
 ### Keyword Bot
 
@@ -279,22 +303,24 @@ The built-in bot automatically replies to messages containing recognised keyword
 │  ┌─────┴─────┐  │  │  │   ┌────┴────┐   │
 │  │  Panels   │  │  │  │   │   Bot   │   │
 │  │  RoutePage│  │  │  │   │  Dedup  │   │
-│  └───────────┘  │  │  │   └─────────┘   │
-└─────────────────┘  │  └─────────────────┘
-                     │
+│  └───────────┘  │  │  │   │  Cache  │   │
+└─────────────────┘  │  │   └─────────┘   │
+                     │  └─────────────────┘
               ┌──────┴──────┐
-              │ SharedData  │
-              │ (thread-    │
-              │  safe)      │
-              └─────────────┘
+              │ SharedData  │     ┌───────────────┐
+              │ (thread-    │     │ DeviceCache   │
+              │  safe)      │     │ (~/.meshcore- │
+              └─────────────┘     │  gui/cache/)  │
+                                  └───────────────┘
 ```
 
-- **BLEWorker**: Runs in separate thread with its own asyncio loop
+- **BLEWorker**: Runs in separate thread with its own asyncio loop, with background retry for missing channel keys
 - **CommandHandler**: Executes commands (send message, advert, refresh)
 - **EventHandler**: Processes incoming BLE events (messages, RX log)
 - **PacketDecoder**: Decodes raw LoRa packets and extracts route data
 - **MeshBot**: Keyword-triggered auto-reply on configured channels
 - **DualDeduplicator**: Prevents duplicate messages (hash-based + content-based)
+- **DeviceCache**: Local JSON cache per device for instant startup and offline resilience
 - **SharedData**: Thread-safe data sharing between BLE and GUI via Protocol interfaces
 - **DashboardPage**: Main GUI with modular panels (device, contacts, map, messages, etc.)
 - **RoutePage**: Standalone route visualization page opened per message
@@ -302,9 +328,9 @@ The built-in bot automatically replies to messages containing recognised keyword
 
 ## Known Limitations
 
-1. **Channels hardcoded** — The `get_channel()` function in meshcore-py is unreliable via BLE
-2. **send_appstart() sometimes fails** — Device info may remain empty with connection problems
-3. **Initial load time** — GUI waits for BLE data before the first render is complete
+1. **Channels hardcoded** — The `get_channel()` function in meshcore-py is unreliable via BLE (mitigated by background retry and disk caching of channel keys)
+2. **BLE command unreliability** — `send_appstart()`, `send_device_query()` and `get_channel()` can all fail intermittently. The application uses aggressive retries (10 attempts for device info, background retry every 30s for channel keys) and disk caching to compensate
+3. **Initial load time** — GUI waits for BLE data before the first render is complete (mitigated by cache: if cached data exists, the GUI populates instantly)
 
 ## Troubleshooting
 
@@ -358,6 +384,16 @@ Make sure the MeshCore device is powered on and in BLE Companion mode. Run the B
 - Check if your channels are correctly configured
 - Use `meshcli` to verify that messages are arriving
 
+#### Clearing the cache
+
+If cached data causes issues (e.g. stale contacts), delete the cache file:
+
+```bash
+rm ~/.meshcore-gui/cache/*.json
+```
+
+The cache will be recreated on the next successful BLE connection.
+
 ## Development
 
 ### Debug mode
@@ -378,10 +414,10 @@ meshcore-gui/
 ├── meshcore_gui/                    # Application package
 │   ├── __init__.py
 │   ├── __main__.py                  # Alternative entry: python -m meshcore_gui
-│   ├── config.py                    # DEBUG flag, channel configuration
+│   ├── config.py                    # DEBUG flag, channel configuration, refresh interval
 │   ├── ble/                         # BLE communication layer
 │   │   ├── __init__.py
-│   │   ├── worker.py                # BLE thread, connection lifecycle
+│   │   ├── worker.py                # BLE thread, connection lifecycle, cache-first startup, background key retry
 │   │   ├── commands.py              # Command execution (send, refresh, advert)
 │   │   ├── events.py                # Event callbacks (messages, RX log)
 │   │   └── packet_decoder.py        # Raw LoRa packet decoding via meshcoredecoder
@@ -408,6 +444,7 @@ meshcore-gui/
 │   └── services/                    # Business logic
 │       ├── __init__.py
 │       ├── bot.py                   # Keyword-triggered auto-reply bot
+│       ├── cache.py                 # Local JSON cache per BLE device
 │       ├── dedup.py                 # Message deduplication
 │       └── route_builder.py         # Route data construction
 ├── docs/

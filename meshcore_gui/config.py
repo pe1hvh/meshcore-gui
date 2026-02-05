@@ -41,3 +41,13 @@ CHANNELS_CONFIG: List[Dict] = [
     {'idx': 3, 'name': 'RahanSom'},
     {'idx': 4, 'name': '#bot'},
 ]
+
+
+# ==============================================================================
+# CACHE / REFRESH
+# ==============================================================================
+
+# Interval in seconds between periodic contact refreshes from the device.
+# Contacts are merged (new/changed contacts update the cache; contacts
+# only present in cache are kept so offline nodes are preserved).
+CONTACT_REFRESH_SECONDS: float = 300.0  # 5 minutes

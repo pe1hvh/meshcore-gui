@@ -1,7 +1,6 @@
 # MeshCore GUI
-![Status](https://img.shields.io/badge/Status-Testing%20%2F%20Not%20Production%20Ready-orange.svg)
-> ⚠️  **This branch is in active development and testing. It is not production-ready. Use at your own risk. **
-                                                  
+![Status](https://https://img.shields.io/badge/Status-ProductionReady-green.svg)
+
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-orange.svg)
@@ -16,27 +15,32 @@ This project provides a **native desktop GUI** that connects to your MeshCore de
 
 > **Note:** This application has only been tested on Linux (Ubuntu 24.04). macOS and Windows should work since all dependencies (`bleak`, `nicegui`, `meshcore`) are cross-platform, but this has not been verified. Feedback and contributions for other platforms are welcome.
 
-Under the hood it uses `bleak` for Bluetooth Low Energy (which talks to BlueZ on Linux, CoreBluetooth on macOS, and WinRT on Windows), `meshcore` as the protocol layer, and `NiceGUI` for the web-based interface.
+Under the hood it uses `bleak` for Bluetooth Low Energy (which talks to BlueZ on Linux, CoreBluetooth on macOS, and WinRT on Windows), `meshcore` as the protocol layer, `meshcoredecoder` for raw LoRa packet decryption and route extraction, and `NiceGUI` for the web-based interface.
 
 > **Linux users:** BLE on Linux can be temperamental. BlueZ occasionally gets into a bad state, especially after repeated connect/disconnect cycles. If you run into connection issues, see the [Troubleshooting Guide](docs/TROUBLESHOOTING.md). On macOS and Windows, BLE is generally more stable out of the box.
 
 ## TODO
+
 * **Message persistence** — Store sent and received messages to disk so chat history is preserved across sessions
 * **Automatic channel discovery** — Robustly detect and subscribe to available channels without manual configuration
 * **Auto-detect BLE address** — Automatically discover and store the BLE device address in config, eliminating manual entry
+
 ## Features
 
-- **Real-time Dashboard** - Device info, contacts, messages and RX log
-- **Interactive Map** - Leaflet map with markers for own position and contacts
-- **Channel Messages** - Send and receive messages on channels
-- **Direct Messages** - Click on a contact to send a DM
-- **Message Filtering** - Filter messages per channel via checkboxes
-- **Threaded Architecture** - BLE communication in separate thread for stable UI
+- **Real-time Dashboard** — Device info, contacts, messages and RX log
+- **Interactive Map** — Leaflet map with markers for own position and contacts
+- **Channel Messages** — Send and receive messages on channels
+- **Direct Messages** — Click on a contact to send a DM
+- **Message Filtering** — Filter messages per channel via checkboxes
+- **Message Route Visualization** — Click any message to open a detailed route page showing the path (hops) through the mesh network on an interactive map, with a hop summary, route table and reply panel
+- **Keyword Bot** — Built-in auto-reply bot that responds to configurable keywords on selected channels, with cooldown and loop prevention
+- **Packet Decoding** — Raw LoRa packets from RX log are decoded and decrypted using channel keys, providing message hashes, path hashes and hop data
+- **Message Deduplication** — Dual-strategy dedup (hash-based and content-based) prevents duplicate messages from appearing
+- **Threaded Architecture** — BLE communication in separate thread for stable UI
 
 ## Screenshots
-
-<img width="1613" height="898" alt="Screenshot from 2026-02-05 18-35-07" src="https://github.com/user-attachments/assets/2c7ec433-9666-4b88-9eb0-da5be8205095" />
-<img width="681" height="820" alt="Screenshot from 2026-02-05 12-23-24" src="https://github.com/user-attachments/assets/f516d4e7-0754-4703-9d5c-416c50ea468a" />
+<img width="1613" height="898" alt="Screenshot from 2026-02-05 18-35-07" src="https://github.com/user-attachments/assets/a0e5f2bc-555b-415f-924a-434b0ba7e05e" />
+<img width="681" height="820" alt="Screenshot from 2026-02-05 12-23-24" src="https://github.com/user-attachments/assets/c8fba47a-470d-4c21-8ac2-48547bfeae3e" />
 
 ## Requirements
 
@@ -97,7 +101,7 @@ venv\Scripts\activate
 ### 4. Install Python packages
 
 ```bash
-pip install nicegui meshcore bleak
+pip install nicegui meshcore bleak meshcoredecoder
 ```
 
 ## Usage
@@ -169,17 +173,27 @@ python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF
 
 Replace `literal:AA:BB:CC:DD:EE:FF` with the MAC address of your device.
 
+For verbose debug logging:
+
+```bash
+python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --debug-on
+```
+
 ### 5. Open the interface
 
 The GUI opens automatically in your browser at `http://localhost:8080`
 
 ## Configuration
 
-| Setting | Description |
-|---------|-------------|
-| `DEBUG` | Set to `True` for verbose logging |
-| `CHANNELS_CONFIG` | List of channels (hardcoded due to BLE timing issues) |
-| BLE Address | Command line argument |
+| Setting | Location | Description |
+|---------|----------|-------------|
+| `DEBUG` | `meshcore_gui/config.py` | Set to `True` for verbose logging (or use `--debug-on`) |
+| `CHANNELS_CONFIG` | `meshcore_gui/config.py` | List of channels (hardcoded due to BLE timing issues) |
+| `BOT_CHANNELS` | `meshcore_gui/services/bot.py` | Channel indices the bot listens on |
+| `BOT_NAME` | `meshcore_gui/services/bot.py` | Display name prepended to bot replies |
+| `BOT_COOLDOWN_SECONDS` | `meshcore_gui/services/bot.py` | Minimum seconds between bot replies |
+| `BOT_KEYWORDS` | `meshcore_gui/services/bot.py` | Keyword → reply template mapping |
+| BLE Address | Command line argument | |
 
 ## Functionality
 
@@ -206,6 +220,38 @@ The GUI opens automatically in your browser at `http://localhost:8080`
 - A dialog opens where you can type your message
 - Click "Send" to send the DM
 
+### Message Route Visualization
+
+Click on any message in the messages list to open a route page in a new tab. The route page shows:
+
+- **Hop summary** — Number of hops and SNR
+- **Interactive map** — Leaflet map with markers for sender, repeaters and receiver, connected by a polyline showing the message path
+- **Route table** — Detailed table with each hop: name, ID (first byte of public key), node type and GPS coordinates
+- **Reply panel** — Pre-filled reply message with route acknowledgement (sender, path length, repeater IDs)
+
+Route data is resolved from two sources (in priority order):
+1. **RX log packet decode** — Path hashes extracted from the raw LoRa packet via `meshcoredecoder`
+2. **Contact out_path** — Stored route from the sender's contact record (fallback)
+
+### Keyword Bot
+
+The built-in bot automatically replies to messages containing recognised keywords. Enable or disable it via the 🤖 BOT checkbox in the filter bar.
+
+**Default keywords:**
+
+| Keyword | Reply |
+|---------|-------|
+| `test` | `Zwolle Bot: <sender>, rcvd \| SNR <snr> \| path(<hops>); <repeaters>` |
+| `ping` | `Zwolle Bot: Pong!` |
+| `help` | `Zwolle Bot: test, ping, help` |
+
+**Safety guards:**
+- Only replies on configured channels (`BOT_CHANNELS`)
+- Ignores own messages and messages from other bots (names ending in "Bot")
+- Cooldown period between replies (default: 5 seconds)
+
+**Customisation:** Edit `BOT_KEYWORDS` in `meshcore_gui/services/bot.py`. Templates support `{bot}`, `{sender}`, `{snr}` and `{path}` variables.
+
 ### RX Log
 - Received packets with SNR and type
 
@@ -221,14 +267,19 @@ The GUI opens automatically in your browser at `http://localhost:8080`
 │   (NiceGUI)     │     │   (asyncio)     │
 │                 │     │                 │
 │  ┌───────────┐  │     │  ┌───────────┐  │
-│  │    GUI    │◄─┼──┬──┼─►│ BLEWorker │  │
-│  └───────────┘  │  │  │  └───────────┘  │
+│  │ Dashboard │◄─┼──┬──┼─►│ BLEWorker │  │
+│  └───────────┘  │  │  │  └─────┬─────┘  │
 │        │        │  │  │        │        │
-│        ▼        │  │  │        ▼        │
-│  ┌───────────┐  │  │  │  ┌───────────┐  │
-│  │  Timer    │  │  │  │  │  MeshCore │  │
-│  │  (500ms)  │  │  │  │  │    BLE    │  │
-│  └───────────┘  │  │  │  └───────────┘  │
+│        ▼        │  │  │   ┌────┴────┐   │
+│  ┌───────────┐  │  │  │   │Commands │   │
+│  │  Timer    │  │  │  │   │Events   │   │
+│  │  (500ms)  │  │  │  │   │Decoder  │   │
+│  └───────────┘  │  │  │   └────┬────┘   │
+│        │        │  │  │        │        │
+│  ┌─────┴─────┐  │  │  │   ┌────┴────┐   │
+│  │  Panels   │  │  │  │   │   Bot   │   │
+│  │  RoutePage│  │  │  │   │  Dedup  │   │
+│  └───────────┘  │  │  │   └─────────┘   │
 └─────────────────┘  │  └─────────────────┘
                      │
               ┌──────┴──────┐
@@ -239,15 +290,21 @@ The GUI opens automatically in your browser at `http://localhost:8080`
 ```
 
 - **BLEWorker**: Runs in separate thread with its own asyncio loop
-- **SharedData**: Thread-safe data sharing between BLE and GUI
-- **MeshCoreGUI**: NiceGUI interface in main thread
-- **Communication**: Via queue (GUI→BLE) and shared state with flags (BLE→GUI)
+- **CommandHandler**: Executes commands (send message, advert, refresh)
+- **EventHandler**: Processes incoming BLE events (messages, RX log)
+- **PacketDecoder**: Decodes raw LoRa packets and extracts route data
+- **MeshBot**: Keyword-triggered auto-reply on configured channels
+- **DualDeduplicator**: Prevents duplicate messages (hash-based + content-based)
+- **SharedData**: Thread-safe data sharing between BLE and GUI via Protocol interfaces
+- **DashboardPage**: Main GUI with modular panels (device, contacts, map, messages, etc.)
+- **RoutePage**: Standalone route visualization page opened per message
+- **Communication**: Via command queue (GUI→BLE) and shared state with flags (BLE→GUI)
 
 ## Known Limitations
 
-1. **Channels hardcoded** - The `get_channel()` function in meshcore-py is unreliable via BLE
-2. **send_appstart() sometimes fails** - Device info may remain empty with connection problems
-3. **Initial load time** - GUI waits for BLE data before the first render is complete
+1. **Channels hardcoded** — The `get_channel()` function in meshcore-py is unreliable via BLE
+2. **send_appstart() sometimes fails** — Device info may remain empty with connection problems
+3. **Initial load time** — GUI waits for BLE data before the first render is complete
 
 ## Troubleshooting
 
@@ -305,11 +362,13 @@ Make sure the MeshCore device is powered on and in BLE Companion mode. Run the B
 
 ### Debug mode
 
-Set `DEBUG = True` in the script for verbose logging:
+Enable via command line flag:
 
-```python
-DEBUG = True
+```bash
+python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --debug-on
 ```
+
+Or set `DEBUG = True` in `meshcore_gui/config.py`.
 
 ### Project structure
 
@@ -318,17 +377,42 @@ meshcore-gui/
 ├── meshcore_gui.py                  # Entry point
 ├── meshcore_gui/                    # Application package
 │   ├── __init__.py
-│   ├── ble_worker.py
-│   ├── config.py
-│   ├── main_page.py
-│   ├── protocols.py
-│   ├── route_builder.py
-│   ├── route_page.py
-│   └── shared_data.py
+│   ├── __main__.py                  # Alternative entry: python -m meshcore_gui
+│   ├── config.py                    # DEBUG flag, channel configuration
+│   ├── ble/                         # BLE communication layer
+│   │   ├── __init__.py
+│   │   ├── worker.py                # BLE thread, connection lifecycle
+│   │   ├── commands.py              # Command execution (send, refresh, advert)
+│   │   ├── events.py                # Event callbacks (messages, RX log)
+│   │   └── packet_decoder.py        # Raw LoRa packet decoding via meshcoredecoder
+│   ├── core/                        # Domain models and shared state
+│   │   ├── __init__.py
+│   │   ├── models.py                # Dataclasses: Message, Contact, RouteNode, etc.
+│   │   ├── shared_data.py           # Thread-safe shared data store
+│   │   └── protocols.py             # Protocol interfaces (ISP/DIP)
+│   ├── gui/                         # NiceGUI web interface
+│   │   ├── __init__.py
+│   │   ├── constants.py             # UI display constants
+│   │   ├── dashboard.py             # Main dashboard page orchestrator
+│   │   ├── route_page.py            # Message route visualization page
+│   │   └── panels/                  # Modular UI panels
+│   │       ├── __init__.py
+│   │       ├── device_panel.py      # Device info display
+│   │       ├── contacts_panel.py    # Contacts list with DM support
+│   │       ├── map_panel.py         # Leaflet map
+│   │       ├── input_panel.py       # Message input and channel select
+│   │       ├── filter_panel.py      # Channel filters and bot toggle
+│   │       ├── messages_panel.py    # Filtered message display
+│   │       ├── actions_panel.py     # Refresh and advert buttons
+│   │       └── rxlog_panel.py       # RX log table
+│   └── services/                    # Business logic
+│       ├── __init__.py
+│       ├── bot.py                   # Keyword-triggered auto-reply bot
+│       ├── dedup.py                 # Message deduplication
+│       └── route_builder.py         # Route data construction
 ├── docs/
-│   ├── SOLID_ANALYSIS.md
-│   ├── TROUBLESHOOTING.md
-│   ├── MeshCore_GUI_Design.docx
+│   ├── TROUBLESHOOTING.md           # BLE troubleshooting guide (Linux)
+│   ├── MeshCore_GUI_Design.docx     # Design document
 │   ├── ble_capture_workflow_t_1000_e_explanation.md
 │   └── ble_capture_workflow_t_1000_e_uitleg.md
 ├── .gitattributes
@@ -336,8 +420,6 @@ meshcore-gui/
 ├── LICENSE
 └── README.md
 ```
-
-For a SOLID principles analysis of the project structure, see [SOLID_ANALYSIS.md](docs/SOLID_ANALYSIS.md).
 
 ## Disclaimer
 
@@ -349,12 +431,13 @@ MIT License - see LICENSE file
 
 ## Author
 
-**PE1HVH** - [GitHub](https://github.com/pe1hvh)
+**PE1HVH** — [GitHub](https://github.com/pe1hvh)
 
 ## Acknowledgments
 
-- [MeshCore](https://github.com/meshcore-dev) - Mesh networking firmware and protocol
-- [meshcore_py](https://github.com/meshcore-dev/meshcore_py) - Python bindings for MeshCore
-- [meshcore-cli](https://github.com/meshcore-dev/meshcore-cli) - Command line interface
-- [NiceGUI](https://nicegui.io/) - Python GUI framework
-- [Bleak](https://github.com/hbldh/bleak) - Cross-platform Bluetooth Low Energy library
+- [MeshCore](https://github.com/meshcore-dev) — Mesh networking firmware and protocol
+- [meshcore_py](https://github.com/meshcore-dev/meshcore_py) — Python bindings for MeshCore
+- [meshcore-cli](https://github.com/meshcore-dev/meshcore-cli) — Command line interface
+- [meshcoredecoder](https://github.com/meshcore-dev/meshcoredecoder) — LoRa packet decoder and channel crypto
+- [NiceGUI](https://nicegui.io/) — Python GUI framework
+- [Bleak](https://github.com/hbldh/bleak) — Cross-platform Bluetooth Low Energy library

@@ -1,5 +1,5 @@
 # MeshCore GUI
-![Status](https://https://img.shields.io/badge/Status-ProductionReady-green.svg)
+![Status](https://img.shields.io/badge/Status-Production-green.svg)
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)

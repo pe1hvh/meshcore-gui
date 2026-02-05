@@ -32,12 +32,16 @@ no sanity-margin heuristics.
 
 import asyncio
 import threading
+import time
 from datetime import datetime
 from typing import Dict, List, Optional, Set
 
 from meshcore import MeshCore, EventType
 
-from meshcore_gui.config import CHANNELS_CONFIG, debug_print
+from meshcore_gui.config import (
+    BOT_CHANNEL, BOT_COOLDOWN_SECONDS, BOT_KEYWORDS, BOT_NAME,
+    CHANNELS_CONFIG, debug_print,
+)
 from meshcore_gui.packet_parser import PacketDecoder, PayloadType
 from meshcore_gui.protocols import SharedDataWriter
 
@@ -67,6 +71,9 @@ class BLEWorker:
 
         # Packet decoder (channel keys loaded at startup)
         self._decoder = PacketDecoder()
+
+        # BOT: timestamp of last reply (cooldown enforcement)
+        self._bot_last_reply: float = 0.0
 
         # Deduplication: message_hash values already processed via
         # RX_LOG_DATA decode.  When CHANNEL_MSG_RECV arrives for the
@@ -287,18 +294,25 @@ class BLEWorker:
         if action == 'send_message':
             channel = cmd.get('channel', 0)
             text = cmd.get('text', '')
+            is_bot = cmd.get('_bot', False)
             if text and self.mc:
                 await self.mc.commands.send_chan_msg(channel, text)
-                self.shared.add_message({
-                    'time': datetime.now().strftime('%H:%M:%S'),
-                    'sender': 'Me',
-                    'text': text,
-                    'channel': channel,
-                    'direction': 'out',
-                    'sender_pubkey': '',
-                    'path_hashes': [],
-                })
-                debug_print(f"Sent message to channel {channel}: {text[:30]}")
+                # Bot replies appear via the radio echo (RX_LOG),
+                # so only add manual messages to the message list.
+                if not is_bot:
+                    self.shared.add_message({
+                        'time': datetime.now().strftime('%H:%M:%S'),
+                        'sender': 'Me',
+                        'text': text,
+                        'channel': channel,
+                        'direction': 'out',
+                        'sender_pubkey': '',
+                        'path_hashes': [],
+                    })
+                debug_print(
+                    f"{'BOT' if is_bot else 'Sent'} message to "
+                    f"channel {channel}: {text[:30]}"
+                )
 
         elif action == 'send_advert':
             if self.mc:
@@ -327,6 +341,107 @@ class BLEWorker:
             if self.mc:
                 debug_print("Refresh requested")
                 await self._load_data()
+
+    # ------------------------------------------------------------------
+    # BOT — keyword-triggered auto-reply
+    # ------------------------------------------------------------------
+
+    def _bot_check_and_queue(
+        self,
+        sender: str,
+        text: str,
+        channel_idx,
+        snr,
+        path_len: int,
+        path_hashes: Optional[List[str]] = None,
+    ) -> None:
+        """Queue a BOT reply if all guards pass.
+
+        Guards:
+            1. BOT is enabled (checkbox in GUI)
+            2. Message is on the configured BOT_CHANNEL
+            3. Sender is not the BOT itself (prevent self-reply)
+            4. Sender name does not end with 'Bot' (prevent bot-to-bot loops)
+            5. Cooldown period has elapsed
+            6. Message text contains a recognised keyword
+        """
+        # Guard 1: BOT enabled?
+        if not self.shared.is_bot_enabled():
+            return
+
+        # Guard 2: correct channel?
+        if channel_idx != BOT_CHANNEL:
+            return
+
+        # Guard 3: skip own messages (use BOT_NAME as identifier, not device name)
+        if sender == 'Me' or (text and text.startswith(BOT_NAME)):
+            return
+
+        # Guard 4: skip other bots (name ends with "Bot")
+        if sender and sender.rstrip().lower().endswith('bot'):
+            debug_print(f"BOT: skipping message from other bot '{sender}'")
+            return
+
+        # Guard 5: cooldown
+        now = time.time()
+        if now - self._bot_last_reply < BOT_COOLDOWN_SECONDS:
+            debug_print("BOT: cooldown active, skipping")
+            return
+
+        # Guard 6: keyword match (case-insensitive, first match wins)
+        text_lower = (text or '').lower()
+        matched_template = None
+        for keyword, template in BOT_KEYWORDS.items():
+            if keyword in text_lower:
+                matched_template = template
+                break
+
+        if matched_template is None:
+            return
+
+        # Build path string: "path(N); A>B" or "path(0)"
+        path_str = self._format_path(path_len, path_hashes)
+
+        # Build reply
+        snr_str = f"{snr:.1f}" if snr is not None else "?"
+        reply = matched_template.format(
+            bot=BOT_NAME,
+            sender=sender or "?",
+            snr=snr_str,
+            path=path_str,
+        )
+
+        # Update cooldown timestamp
+        self._bot_last_reply = now
+
+        # Queue as internal command — picked up by _process_commands
+        self.shared.put_command({
+            'action': 'send_message',
+            'channel': BOT_CHANNEL,
+            'text': reply,
+            '_bot': True,
+        })
+
+        debug_print(f"BOT: queued reply to '{sender}': {reply}")
+
+    def _format_path(
+        self, path_len: int, path_hashes: Optional[List[str]],
+    ) -> str:
+        """Format path info as ``path(N); 8D>A8`` or ``path(0)``.
+
+        Shows raw 1-byte hashes in uppercase hex.
+        """
+        if not path_len:
+            return "path(0)"
+
+        if not path_hashes:
+            return f"path({path_len})"
+
+        hop_names = [h.upper() for h in path_hashes if h and len(h) >= 2]
+
+        if hop_names:
+            return f"path({path_len}); {'>'.join(hop_names)}"
+        return f"path({path_len})"
 
     # ------------------------------------------------------------------
     # Event callbacks
@@ -407,6 +522,16 @@ class BLEWorker:
                 f"path={decoded.path_hashes}"
             )
 
+            # BOT: check for keyword and queue reply
+            self._bot_check_and_queue(
+                sender=decoded.sender,
+                text=decoded.text,
+                channel_idx=decoded.channel_idx,
+                snr=snr,
+                path_len=decoded.path_length,
+                path_hashes=decoded.path_hashes,
+            )
+
     def _on_channel_msg(self, event) -> None:
         """Callback for channel messages — fallback only.
 
@@ -484,6 +609,15 @@ class BLEWorker:
             'path_hashes': [],       # No path data from companion event
             'message_hash': msg_hash,
         })
+
+        # BOT: check for keyword and queue reply (fallback path)
+        self._bot_check_and_queue(
+            sender=sender,
+            text=msg_text,
+            channel_idx=payload.get('channel_idx'),
+            snr=msg_snr,
+            path_len=payload.get('path_len', 0),
+        )
 
     def _on_contact_msg(self, event) -> None:
         """Callback for received DMs; resolves sender name via pubkey."""

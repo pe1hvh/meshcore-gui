@@ -7,10 +7,21 @@ messaging, filters and RX log.  The 500 ms update timer lives here.
 
 from typing import Dict, List
 
+import logging
+
 from nicegui import ui
 
 from meshcore_gui.config import TYPE_ICONS, TYPE_NAMES
 from meshcore_gui.protocols import SharedDataReader
+
+
+# Suppress the harmless "Client has been deleted" warning that NiceGUI
+# emits when a browser tab is refreshed while a ui.timer is active.
+class _DeletedClientFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return 'Client has been deleted' not in record.getMessage()
+
+logging.getLogger('nicegui').addFilter(_DeletedClientFilter())
 
 
 class DashboardPage:
@@ -30,6 +41,7 @@ class DashboardPage:
         self._channel_select = None
         self._channels_filter_container = None
         self._channel_filters: Dict = {}
+        self._bot_checkbox = None
         self._contacts_container = None
         self._map_widget = None
         self._messages_container = None
@@ -42,12 +54,23 @@ class DashboardPage:
         # Channel data for message display
         self._last_channels: List[Dict] = []
 
+        # Local first-render flag — each new browser tab gets its own
+        # DashboardPage instance and must render device/contacts once.
+        self._initialized: bool = False
+
     # ------------------------------------------------------------------
     # Public
     # ------------------------------------------------------------------
 
     def render(self) -> None:
         """Build the complete dashboard layout and start the timer."""
+        # Reset per-tab state — same DashboardPage instance is reused
+        # across browser reconnects, so force a fresh first-render.
+        self._initialized = False
+        self._markers.clear()
+        self._channel_filters = {}
+        self._last_channels = []
+
         ui.dark_mode(False)
 
         # Header
@@ -158,7 +181,7 @@ class DashboardPage:
                 return
 
             data = self._shared.get_snapshot()
-            is_first = not data['gui_initialized']
+            is_first = not self._initialized
 
             self._status_label.text = data['status']
 
@@ -181,6 +204,7 @@ class DashboardPage:
             self._shared.clear_update_flags()
 
             if is_first and data['channels'] and data['contacts']:
+                self._initialized = True
                 self._shared.mark_gui_initialized()
 
         except Exception as e:
@@ -217,6 +241,17 @@ class DashboardPage:
         self._channel_filters = {}
 
         with self._channels_filter_container:
+            # BOT toggle — controls auto-reply, not display filtering
+            self._bot_checkbox = ui.checkbox(
+                '🤖 BOT',
+                value=data.get('bot_enabled', False),
+                on_change=lambda e: self._shared.set_bot_enabled(e.value),
+            )
+
+            # Visual separator
+            ui.label('│').classes('text-gray-300')
+
+            # Display filters: DM + channels
             cb_dm = ui.checkbox('DM', value=True)
             self._channel_filters['DM'] = cb_dm
             for ch in data['channels']:

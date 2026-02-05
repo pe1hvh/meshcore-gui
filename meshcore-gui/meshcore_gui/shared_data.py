@@ -79,6 +79,9 @@ class SharedData:
         # Flag to track if GUI has done first render
         self.gui_initialized: bool = False
 
+        # BOT enabled flag (toggled from GUI)
+        self.bot_enabled: bool = False
+
     # ------------------------------------------------------------------
     # Device info updates
     # ------------------------------------------------------------------
@@ -117,6 +120,21 @@ class SharedData:
         """Update connection status."""
         with self.lock:
             self.connected = connected
+
+    # ------------------------------------------------------------------
+    # BOT
+    # ------------------------------------------------------------------
+
+    def set_bot_enabled(self, enabled: bool) -> None:
+        """Toggle the BOT on or off."""
+        with self.lock:
+            self.bot_enabled = enabled
+            debug_print(f"BOT {'enabled' if enabled else 'disabled'}")
+
+    def is_bot_enabled(self) -> bool:
+        """Return whether the BOT is currently enabled."""
+        with self.lock:
+            return self.bot_enabled
 
     # ------------------------------------------------------------------
     # Command queue
@@ -210,6 +228,7 @@ class SharedData:
                 'channels_updated': self.channels_updated,
                 'rxlog_updated': self.rxlog_updated,
                 'gui_initialized': self.gui_initialized,
+                'bot_enabled': self.bot_enabled,
             }
 
     def clear_update_flags(self) -> None:

@@ -4,11 +4,17 @@ Thread-safe shared data container for MeshCore GUI.
 SharedData is the central data store shared between the BLE worker thread
 and the GUI main thread.  All access goes through methods that acquire a
 threading.Lock so both threads can safely read and write.
+
+Single-source architecture
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+Path data (repeater hashes) is embedded in each message dict at creation
+time — decoded from the raw LoRa packet via ``meshcoredecoder``.  There
+is no temporal archive or deferred matching.
 """
 
 import queue
 import threading
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from meshcore_gui.config import debug_print
 
@@ -155,8 +161,9 @@ class SharedData:
         Add a message to the messages list (max 100).
 
         Args:
-            msg: Message dict with time, sender, text, channel,
-                 direction, path_len, snr, sender_pubkey
+            msg: Message dict with keys: time, sender, text, channel,
+                 direction, path_len, path_hashes, message_hash,
+                 sender_pubkey, snr
         """
         with self.lock:
             self.messages.append(msg)
@@ -261,3 +268,42 @@ class SharedData:
                         return name
 
         return pubkey_prefix[:8]
+
+    # ------------------------------------------------------------------
+    # Contact lookup by name
+    # ------------------------------------------------------------------
+
+    def get_contact_by_name(self, name: str) -> Optional[Tuple[str, Dict]]:
+        """
+        Look up a contact by advertised name.
+
+        Tries in order: exact match → case-insensitive → startswith
+        (either direction, to handle truncated names).
+
+        Returns:
+            ``(pubkey, contact_dict)`` tuple, or ``None`` if no match.
+        """
+        if not name:
+            return None
+
+        with self.lock:
+            # Strategy 1: exact match
+            for key, contact in self.contacts.items():
+                if contact.get('adv_name', '') == name:
+                    return (key, contact.copy())
+
+            # Strategy 2: case-insensitive
+            name_lower = name.lower()
+            for key, contact in self.contacts.items():
+                if contact.get('adv_name', '').lower() == name_lower:
+                    return (key, contact.copy())
+
+            # Strategy 3: one name starts with the other
+            for key, contact in self.contacts.items():
+                adv = contact.get('adv_name', '')
+                if not adv:
+                    continue
+                if name.startswith(adv) or adv.startswith(name):
+                    return (key, contact.copy())
+
+        return None

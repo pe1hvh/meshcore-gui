@@ -314,7 +314,7 @@ class DashboardPage:
         channel_names = {ch['idx']: ch['name'] for ch in self._last_channels}
 
         filtered = []
-        for msg in data['messages']:
+        for orig_idx, msg in enumerate(data['messages']):
             ch = msg['channel']
             if ch is None:
                 if self._channel_filters.get('DM') and not self._channel_filters['DM'].value:
@@ -322,12 +322,12 @@ class DashboardPage:
             else:
                 if ch in self._channel_filters and not self._channel_filters[ch].value:
                     continue
-            filtered.append(msg)
+            filtered.append((orig_idx, msg))
 
         self._messages_container.clear()
 
         with self._messages_container:
-            for msg in reversed(filtered[-50:]):
+            for orig_idx, msg in reversed(filtered[-50:]):
                 direction = '→' if msg['direction'] == 'out' else '←'
                 ch = msg['channel']
 
@@ -339,18 +339,21 @@ class DashboardPage:
 
                 sender = msg.get('sender', '')
                 path_len = msg.get('path_len', 0)
-                hop_tag = f' [{path_len}h]' if msg['direction'] == 'in' and path_len > 0 else ''
+                has_path = bool(msg.get('path_hashes'))
+                if msg['direction'] == 'in' and path_len > 0:
+                    hop_tag = f' [{path_len}h{"✓" if has_path else ""}]'
+                else:
+                    hop_tag = ''
 
                 if sender:
                     line = f"{msg['time']} {direction} {ch_label}{hop_tag} {sender}: {msg['text']}"
                 else:
                     line = f"{msg['time']} {direction} {ch_label}{hop_tag} {msg['text']}"
 
-                msg_idx = len(filtered) - 1 - filtered[::-1].index(msg)
                 ui.label(line).classes(
                     'text-xs leading-tight cursor-pointer '
                     'hover:bg-blue-50 rounded px-1'
-                ).on('click', lambda e, i=msg_idx: ui.navigate.to(
+                ).on('click', lambda e, i=orig_idx: ui.navigate.to(
                     f'/route/{i}', new_tab=True
                 ))
 

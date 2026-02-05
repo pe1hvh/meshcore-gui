@@ -37,6 +37,7 @@ class SharedDataWriter(Protocol):
     def add_rx_log(self, entry: Dict) -> None: ...
     def get_next_command(self) -> Optional[Dict]: ...
     def get_contact_name_by_prefix(self, pubkey_prefix: str) -> str: ...
+    def get_contact_by_name(self, name: str) -> Optional[tuple]: ...
 
 
 # ----------------------------------------------------------------------
@@ -65,11 +66,14 @@ class SharedDataReader(Protocol):
 class ContactLookup(Protocol):
     """Contact lookup interface used by RouteBuilder.
 
-    RouteBuilder only needs to resolve public key prefixes to
-    contact records.
+    RouteBuilder needs to resolve public key prefixes and names
+    to contact records.  Path hashes are always available in the
+    message dict (decoded from the raw packet), so no archive
+    lookup is needed.
     """
 
     def get_contact_by_prefix(self, pubkey_prefix: str) -> Optional[Dict]: ...
+    def get_contact_by_name(self, name: str) -> Optional[tuple]: ...
 
 
 # ----------------------------------------------------------------------

@@ -21,8 +21,6 @@ Under the hood it uses `bleak` for Bluetooth Low Energy (which talks to BlueZ on
 > **Linux users:** BLE on Linux can be temperamental. BlueZ occasionally gets into a bad state, especially after repeated connect/disconnect cycles. If you run into connection issues, see the [Troubleshooting Guide](docs/TROUBLESHOOTING.md). On macOS and Windows, BLE is generally more stable out of the box.
 
 ## TODO
-
-* **Message route visualization** — Display message paths on the map showing the route (hops) each message has taken through the mesh network
 * **Message persistence** — Store sent and received messages to disk so chat history is preserved across sessions
 * **Automatic channel discovery** — Robustly detect and subscribe to available channels without manual configuration
 * **Auto-detect BLE address** — Automatically discover and store the BLE device address in config, eliminating manual entry

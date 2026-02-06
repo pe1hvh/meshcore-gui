@@ -123,7 +123,7 @@ venv\Scripts\activate
 ```bash
 bluetoothctl scan on
 ```
-Look for your MeshCore device and note the MAC address (e.g., `literal:AA:BB:CC:DD:EE:FF`).
+Look for your MeshCore device and note the MAC address (e.g., `AA:BB:CC:DD:EE:FF`).
 
 **macOS / Windows:**
 ```bash
@@ -156,7 +156,7 @@ CHANNELS_CONFIG = [
 **Tip:** Use `meshcli` to determine your channels:
 
 ```bash
-meshcli -d literal:AA:BB:CC:DD:EE:FF
+meshcli -d AA:BB:CC:DD:EE:FF
 > get_channel 0
 > get_channel 1
 # etc.
@@ -165,15 +165,15 @@ meshcli -d literal:AA:BB:CC:DD:EE:FF
 ### 4. Start the GUI
 
 ```bash
-python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF
+python meshcore_gui.py AA:BB:CC:DD:EE:FF
 ```
 
-Replace `literal:AA:BB:CC:DD:EE:FF` with the MAC address of your device.
+Replace `AA:BB:CC:DD:EE:FF` with the MAC address of your device.
 
 For verbose debug logging:
 
 ```bash
-python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --debug-on
+python meshcore_gui.py AA:BB:CC:DD:EE:FF --debug-on
 ```
 
 ### 5. Open the interface
@@ -344,7 +344,7 @@ For comprehensive Linux BLE troubleshooting (including the `EOFError` / `start_n
 
 1. First disconnect any existing BLE connections:
    ```bash
-   bluetoothctl disconnect literal:AA:BB:CC:DD:EE:FF
+   bluetoothctl disconnect AA:BB:CC:DD:EE:FF
    ```
 2. Wait 2 seconds:
    ```bash
@@ -352,7 +352,7 @@ For comprehensive Linux BLE troubleshooting (including the `EOFError` / `start_n
    ```
 3. Restart the GUI:
    ```bash
-   python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF
+   python meshcore_gui.py AA:BB:CC:DD:EE:FF
    ```
 
 ##### Bluetooth permissions
@@ -401,7 +401,7 @@ The cache will be recreated on the next successful BLE connection.
 Enable via command line flag:
 
 ```bash
-python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --debug-on
+python meshcore_gui.py AA:BB:CC:DD:EE:FF --debug-on
 ```
 
 Or set `DEBUG = True` in `meshcore_gui/config.py`.

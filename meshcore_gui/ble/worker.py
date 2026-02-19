@@ -41,6 +41,7 @@ v5.1 changes
 """
 
 import asyncio
+import sys
 import threading
 import time
 from typing import Dict, List, Optional, Set
@@ -131,6 +132,50 @@ class BLEWorker:
         # ── Step 1: Start PIN agent (BEFORE any BLE connection) ──
         await self._agent.start()
 
+        # ── Step 1b: Warn if PIN agent failed (Linux only) ──
+        if not self._agent.is_registered and sys.platform == "linux":
+            print(
+                "BLE: ❌ PIN agent is NOT registered — BLE pairing "
+                "will fail with 'Not Paired'."
+            )
+            print("BLE: ──────────────────────────────────────────")
+            print("BLE: Fix: install the D-Bus policy file:")
+            print("BLE:   bash install_ble_stable.sh")
+            print("BLE: Or manually:")
+            print(
+                "BLE:   sudo tee /etc/dbus-1/system.d/"
+                "meshcore-ble.conf << EOF"
+            )
+            print("BLE:   <busconfig>")
+            print('BLE:     <policy user="YOUR_USER">')
+            print(
+                'BLE:       <allow send_destination="org.bluez"/>'
+            )
+            print(
+                'BLE:       <allow send_interface='
+                '"org.bluez.Agent1"/>'
+            )
+            print(
+                'BLE:       <allow send_interface='
+                '"org.bluez.AgentManager1"/>'
+            )
+            print("BLE:     </policy>")
+            print("BLE:   </busconfig>")
+            print("BLE:   EOF")
+            print("BLE: Then restart the application.")
+            print("BLE: ──────────────────────────────────────────")
+            # Also log to file so it survives terminal scroll
+            debug_print(
+                "PIN agent NOT registered — D-Bus policy file "
+                "likely missing. BLE pairing will fail. "
+                "Install /etc/dbus-1/system.d/meshcore-ble.conf "
+                "or run: bash install_ble_stable.sh"
+            )
+            self.shared.set_status(
+                "❌ BLE PIN agent failed — "
+                "see terminal for fix instructions"
+            )
+
         # ── Step 2: Remove stale bond (clean slate) ──
         await remove_bond(self.address)
         await asyncio.sleep(1)
@@ -144,6 +189,7 @@ class BLEWorker:
                 if not self.mc:
                     # Initial connect failed — wait and retry
                     print("BLE: Initial connection failed, retrying in 30s...")
+                    debug_print("Initial connection failed, retrying in 30s")
                     self.shared.set_status("⚠️ Connection failed — retrying...")
                     await asyncio.sleep(30)
                     await remove_bond(self.address)
@@ -174,6 +220,7 @@ class BLEWorker:
                             )
                         ):
                             print(f"BLE: ⚠️  Connection error detected: {e}")
+                            debug_print(f"Connection error detected: {e}")
                             self._disconnected = True
                             break
                         debug_print(f"Command processing error: {e}")
@@ -204,9 +251,10 @@ class BLEWorker:
                 if self._disconnected and self.running:
                     self.shared.set_connected(False)
                     self.shared.set_status(
-                        "🔄 Verbinding verloren — herverbinden..."
+                        "🔄 Connection lost — reconnecting..."
                     )
-                    print("BLE: Verbinding verloren, start reconnect...")
+                    print("BLE: Connection lost, starting reconnect...")
+                    debug_print("Connection lost, starting reconnect")
                     self.mc = None
 
                     async def _create_fresh_connection() -> MeshCore:
@@ -264,18 +312,21 @@ class BLEWorker:
                         # Reload data and resume
                         await self._load_data()
                         await self.mc.start_auto_message_fetching()
-                        # Re-seed dedup so replayed messages are suppressed
-                        self._seed_dedup_from_messages()
                         self.shared.set_connected(True)
-                        self.shared.set_status("✅ Herverbonden")
-                        print("BLE: ✅ Herverbonden en operationeel")
+                        self.shared.set_status("✅ Reconnected")
+                        print("BLE: ✅ Reconnected and operational")
+                        debug_print("Reconnected and operational")
                     else:
                         self.shared.set_status(
-                            "❌ Herverbinding mislukt — herstart nodig"
+                            "❌ Reconnect failed — restart required"
                         )
                         print(
-                            "BLE: ❌ Kan niet herverbinden — "
-                            "wacht 60s en probeer opnieuw..."
+                            "BLE: ❌ Cannot reconnect — "
+                            "waiting 60s and trying again..."
+                        )
+                        debug_print(
+                            "Reconnect failed after all attempts, "
+                            "waiting 60s before next cycle"
                         )
                         await asyncio.sleep(60)
                         await remove_bond(self.address)
@@ -293,15 +344,19 @@ class BLEWorker:
         if self._cache.load():
             self._apply_cache()
             print("BLE: Cache loaded — GUI populated from disk")
+            debug_print("Cache loaded from disk")
         else:
             print("BLE: No cache found — waiting for BLE data")
+            debug_print("No cache found")
 
         # Phase 2: Connect BLE
         self.shared.set_status(f"🔄 Connecting to {self.address}...")
         try:
             print(f"BLE: Connecting to {self.address}...")
+            debug_print(f"Connecting to {self.address}")
             self.mc = await MeshCore.create_ble(self.address, auto_reconnect=False, default_timeout=BLE_DEFAULT_TIMEOUT, debug=BLE_LIB_DEBUG)
             print("BLE: Connected!")
+            debug_print(f"Connected to {self.address}")
 
             await asyncio.sleep(1)
             debug_print("Post-connection sleep done, wiring collaborators")
@@ -344,6 +399,13 @@ class BLEWorker:
 
         except Exception as e:
             print(f"BLE: Connection error: {e}")
+            debug_print(f"Connection error: {e}")
+            if "not paired" in str(e).lower() or "authentication" in str(e).lower():
+                debug_print(
+                    "Pairing failure detected — likely cause: "
+                    "D-Bus policy file missing or bluetooth group "
+                    "not configured. Check install instructions."
+                )
             if self._cache.has_cache:
                 self.shared.set_status(f"⚠️ Offline — using cached data ({e})")
             else:
@@ -431,10 +493,6 @@ class BLEWorker:
         count = self.shared.load_recent_from_archive(limit=100)
         if count:
             debug_print(f"Cache → {count} recent messages from archive")
-
-        # Seed deduplicator with archived messages so that BLE events
-        # for already-known messages are suppressed on (re)connect.
-        self._seed_dedup_from_messages()
 
     # ------------------------------------------------------------------
     # Initial data loading (refreshes cache)
@@ -806,26 +864,6 @@ class BLEWorker:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    def _seed_dedup_from_messages(self) -> None:
-        """Seed the deduplicator with messages already in SharedData.
-
-        Called after archive load so that BLE events carrying the same
-        message_hash or content as an already-displayed message are
-        correctly suppressed.  This prevents duplicates when the mesh
-        device replays pending messages after a (re)connect.
-        """
-        snapshot = self.shared.get_snapshot()
-        messages = snapshot.get('messages', [])
-        seeded = 0
-        for msg in messages:
-            if msg.message_hash:
-                self._dedup.mark_hash(msg.message_hash)
-                seeded += 1
-            if msg.sender and msg.text:
-                self._dedup.mark_content(msg.sender, msg.channel, msg.text)
-                seeded += 1
-        debug_print(f"Dedup seeded with {seeded} entries from {len(messages)} messages")
 
     @staticmethod
     def _extract_secret(secret) -> Optional[bytes]:

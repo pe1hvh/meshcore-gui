@@ -1,16 +1,16 @@
 """
-Automatische BLE reconnect met bond-opruiming via D-Bus.
+Automatic BLE reconnect with bond cleanup via D-Bus.
 
-Vervangt handmatige ``bluetoothctl remove`` stappen.  Biedt twee
-functies:
+Replaces manual ``bluetoothctl remove`` steps.  Provides two
+functions:
 
-- :func:`remove_bond` — verwijdert een BLE bond via D-Bus
-  (equivalent van ``bluetoothctl remove <address>``)
-- :func:`reconnect_loop` — exponential backoff reconnect met
-  automatische bond-opruiming
+- :func:`remove_bond` — removes a BLE bond via D-Bus
+  (equivalent of ``bluetoothctl remove <address>``)
+- :func:`reconnect_loop` — linear backoff reconnect with
+  automatic bond cleanup
 
-Beide functies zijn async en kunnen direct in de BLEWorker's
-asyncio event loop worden aangeroepen.
+Both functions are async and can be called directly in the
+BLEWorker's asyncio event loop.
 
                    Author: PE1HVH / Claude
   SPDX-License-Identifier: MIT
@@ -27,21 +27,21 @@ logger = logging.getLogger(__name__)
 
 
 async def remove_bond(device_address: str) -> bool:
-    """Verwijder BLE bond via D-Bus.
+    """Remove BLE bond via D-Bus.
 
-    Equivalent van::
+    Equivalent of::
 
         bluetoothctl remove <address>
 
     Args:
-        device_address: BLE MAC-adres (bijv. ``"FF:05:D6:71:83:8D"``).
-            Het ``literal:`` prefix wordt automatisch verwijderd.
+        device_address: BLE MAC address (e.g. ``"FF:05:D6:71:83:8D"``).
+            The ``literal:`` prefix is automatically stripped.
 
     Returns:
-        True als de bond succesvol verwijderd is, False bij een fout
-        (bijv. als het device al verwijderd was).
+        True if the bond was successfully removed, False on error
+        (e.g. if the device was already removed).
     """
-    # Strip 'literal:' prefix als aanwezig
+    # Strip 'literal:' prefix if present
     clean_address = device_address.replace("literal:", "")
     dev_path = "/org/bluez/hci0/dev_" + clean_address.replace(":", "_")
 
@@ -54,18 +54,18 @@ async def remove_bond(device_address: str) -> bool:
         )
         adapter = proxy.get_interface("org.bluez.Adapter1")
         await adapter.call_remove_device(dev_path)
-        logger.info(f"Bond verwijderd voor {clean_address}")
-        print(f"BLE: Bond verwijderd voor {clean_address}")
+        logger.info(f"Bond removed for {clean_address}")
+        print(f"BLE: Bond removed for {clean_address}")
         return True
     except Exception as e:
-        # "Does Not Exist" is normaal als device al verwijderd was
+        # "Does Not Exist" is normal if the device was already removed
         error_str = str(e)
         if "DoesNotExist" in error_str or "Does Not Exist" in error_str:
-            logger.debug(f"Bond al verwijderd voor {clean_address}")
-            print(f"BLE: Bond was al verwijderd voor {clean_address}")
+            logger.debug(f"Bond already removed for {clean_address}")
+            print(f"BLE: Bond already removed for {clean_address}")
         else:
-            logger.warning(f"Bond verwijdering mislukt: {e}")
-            print(f"BLE: ⚠️  Bond verwijdering mislukt: {e}")
+            logger.warning(f"Bond removal failed: {e}")
+            print(f"BLE: ⚠️  Bond removal failed: {e}")
         return False
     finally:
         if bus:
@@ -78,48 +78,47 @@ async def reconnect_loop(
     max_retries: int = 5,
     base_delay: float = 5.0,
 ) -> Optional[Any]:
-    """Reconnect-loop: bond verwijderen, wachten, opnieuw verbinden.
+    """Reconnect loop: remove bond, wait, reconnect.
 
-    Gebruikt exponential backoff: de wachttijd verdubbelt bij elke
-    mislukte poging (5s, 10s, 15s, 20s, 25s).
+    Uses linear backoff: the wait time increases with each failed
+    attempt (5s, 10s, 15s, 20s, 25s).
 
     Args:
-        create_connection_func: Async functie die een nieuwe BLE-
-            verbinding opzet en het ``MeshCore`` object teruggeeft.
-        device_address: BLE MAC-adres.
-        max_retries: Maximaal aantal pogingen per disconnect.
-        base_delay: Basis wachttijd in seconden (vermenigvuldigt
-            met poging-nummer).
+        create_connection_func: Async function that creates a new BLE
+            connection and returns the ``MeshCore`` object.
+        device_address: BLE MAC address.
+        max_retries: Maximum number of attempts per disconnect.
+        base_delay: Base delay in seconds (multiplied by attempt number).
 
     Returns:
-        Het nieuwe ``MeshCore`` object bij succes, of ``None`` als
-        alle pogingen mislukt zijn.
+        The new ``MeshCore`` object on success, or ``None`` if all
+        attempts failed.
     """
     for attempt in range(1, max_retries + 1):
         delay = base_delay * attempt
         logger.info(
-            f"Reconnect poging {attempt}/{max_retries} over {delay:.0f}s..."
+            f"Reconnect attempt {attempt}/{max_retries} in {delay:.0f}s..."
         )
         print(
-            f"BLE: 🔄 Reconnect poging {attempt}/{max_retries} "
-            f"over {delay:.0f}s..."
+            f"BLE: 🔄 Reconnect attempt {attempt}/{max_retries} "
+            f"in {delay:.0f}s..."
         )
         await asyncio.sleep(delay)
 
-        # Stap 1: Verwijder de stale bond
+        # Step 1: Remove stale bond
         await remove_bond(device_address)
         await asyncio.sleep(2)
 
-        # Stap 2: Probeer opnieuw te verbinden
+        # Step 2: Try to reconnect
         try:
             connection = await create_connection_func()
-            logger.info(f"Herverbonden na poging {attempt}")
-            print(f"BLE: ✅ Herverbonden na poging {attempt}")
+            logger.info(f"Reconnected after attempt {attempt}")
+            print(f"BLE: ✅ Reconnected after attempt {attempt}")
             return connection
         except Exception as e:
-            logger.error(f"Reconnect poging {attempt} mislukt: {e}")
-            print(f"BLE: ❌ Reconnect poging {attempt} mislukt: {e}")
+            logger.error(f"Reconnect attempt {attempt} failed: {e}")
+            print(f"BLE: ❌ Reconnect attempt {attempt} failed: {e}")
 
-    logger.error(f"Reconnect mislukt na {max_retries} pogingen")
-    print(f"BLE: ❌ Reconnect mislukt na {max_retries} pogingen")
+    logger.error(f"Reconnect failed after {max_retries} attempts")
+    print(f"BLE: ❌ Reconnect failed after {max_retries} attempts")
     return None

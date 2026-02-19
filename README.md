@@ -19,7 +19,7 @@ A graphical user interface for MeshCore mesh network devices via Bluetooth Low E
   - [5.2. Clone the Repository](#52-clone-the-repository)
   - [5.3. Create Virtual Environment](#53-create-virtual-environment)
   - [5.4. Install Python Packages](#54-install-python-packages)
-  - [5.5. BLE PIN Pairing](#55-ble-pin-pairing-linux-only--automatic)
+  - [5.5. BLE Pairing Setup](#55-ble-pairing-setup-linux-only--required)
 - [6. Usage](#6-usage)
   - [6.1. Activate the Virtual Environment](#61-activate-the-virtual-environment)
   - [6.2. Find Your BLE Device Address](#62-find-your-ble-device-address)
@@ -142,13 +142,16 @@ Under the hood it uses `bleak` for Bluetooth Low Energy (which talks to BlueZ on
 **Linux (Ubuntu/Debian):**
 ```bash
 sudo apt update
-sudo apt install python3-pip python3-venv bluetooth bluez
+sudo apt install python3 python3-pip python3-venv bluetooth bluez
+sudo usermod -aG bluetooth $USER
 ```
+
+> **Important:** Log out and back in after adding yourself to the `bluetooth` group. Without this step, BLE connections will fail with permission errors.
 
 **Raspberry Pi (Raspberry Pi OS Lite):**
 ```bash
 sudo apt update
-sudo apt install python3-pip python3-venv bluetooth bluez git
+sudo apt install python3 python3-pip python3-venv bluetooth bluez git
 sudo usermod -aG bluetooth $USER
 ```
 
@@ -190,13 +193,21 @@ venv\Scripts\activate
 pip install nicegui meshcore bleak meshcoredecoder
 ```
 
-### 5.5. BLE PIN Pairing (Linux only — automatic)
+### 5.5. BLE Pairing Setup (Linux only — required)
 
-Since v5.11.0, MeshCore GUI includes a **built-in D-Bus PIN agent** that handles BLE pairing automatically. No external tools or services are required.
+MeshCore GUI includes a built-in D-Bus PIN agent that handles BLE pairing automatically at runtime. However, **one-time setup is required** to grant the agent permission to access BlueZ via D-Bus.
 
-> **Note:** On macOS and Windows, BLE pairing is handled natively by the OS. If your MeshCore device does not have PIN pairing enabled, no setup is needed.
+> **Note:** On macOS and Windows, BLE pairing is handled natively by the OS. Skip this step.
 
-The built-in agent requires permission to access BlueZ via D-Bus. The automated installer (`install_ble_stable.sh`) creates this configuration automatically. For manual setup, create a D-Bus policy file:
+**Option A — Automated (recommended):**
+
+```bash
+bash install_ble_stable.sh
+```
+
+This creates the D-Bus policy file and optionally sets up a systemd service.
+
+**Option B — Manual:**
 
 ```bash
 sudo tee /etc/dbus-1/system.d/meshcore-ble.conf << EOF
@@ -211,6 +222,14 @@ sudo tee /etc/dbus-1/system.d/meshcore-ble.conf << EOF
 </busconfig>
 EOF
 ```
+
+**Verify** the file exists before proceeding:
+
+```bash
+ls /etc/dbus-1/system.d/meshcore-ble.conf
+```
+
+> **⚠️ Without this step, the application will show "Not Paired" errors and BLE connections will fail repeatedly.**
 
 The PIN defaults to `123456` and can be overridden at startup with `--ble-pin=PIN`, or by editing `BLE_PIN` in `meshcore_gui/config.py`.
 
@@ -700,7 +719,7 @@ The built-in bot automatically replies to messages containing recognised keyword
 ## 11. Known Limitations
 
 1. **Channel discovery timing** — Dynamic channel discovery probes the device at startup; on very slow BLE connections, some channels may be missed on first attempt. Channels are retried in the background and cached for subsequent startups when `CHANNEL_CACHE_ENABLED = True`
-2. **BLE command reliability** — Resolved in v5.6.0. The meshcore SDK previously had a race condition where device responses were missed. The patched SDK ([PR #52](https://github.com/meshcore-dev/meshcore_py/pull/52)) uses subscribe-before-send to eliminate this. Until merged upstream, install the patched version: `pip install --force-reinstall git+https://github.com/PE1HVH/meshcore_py.git@fix/event-race-condition`
+2. **BLE command reliability** — Resolved. The meshcore SDK previously had a race condition where device responses were missed. This was fixed via the subscribe-before-send pattern ([PR #52](https://github.com/meshcore-dev/meshcore_py/pull/52)) and is included in the current release of `meshcore`. No special installation required.
 3. **Initial load time** — GUI waits for BLE data before the first render is complete (mitigated by cache: if cached data exists, the GUI populates instantly)
 4. **Archive route map visualization** — Route table names and IDs are now stored at receive time and display correctly regardless of current contacts. However, the route *map* still depends on GPS coordinates from contacts currently in memory; archived messages without recent contact data may show incomplete map markers
 <!-- CHANGED: Partially resolved in v1.7.1 — route table self-contained, map still depends on live GPS -->

@@ -7,6 +7,73 @@ All notable changes to MeshCore GUI are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
 ---
+## v1.9.12 — Not Paired Fix (2026-02-19)
+
+### Bug Fixes
+
+- **PIN agent failure detection** — Added `is_registered` check after
+  `_agent.start()` in `worker.py`. When the D-Bus PIN agent fails to
+  register on Linux, the application now shows a clear error message
+  in the browser UI ("❌ BLE PIN agent failed — see terminal for fix
+  instructions") and prints step-by-step repair instructions to the
+  terminal and log file. Previously, the agent failed silently and
+  the application entered an endless "Not Paired" retry loop with no
+  indication of what was wrong.
+
+- **Platform-scoped warning** — The PIN agent warning only triggers on
+  Linux (`sys.platform == "linux"`), avoiding false alarms on macOS
+  and Windows where D-Bus is not used.
+
+### Diagnostics
+
+- **`debug_print` added to full connection lifecycle** — All critical
+  points in the BLE connection flow now log to the rotating log file
+  (when `--debug-on` is active), so diagnostics survive terminal
+  scroll and are available for post-mortem analysis:
+  1. PIN agent registration result
+  2. Cache load status
+  3. BLE connect attempt and result
+  4. Connection errors with pairing-failure hint ("Not Paired",
+     "Authentication Failed" → extra diagnostic line)
+  5. Initial connect retry
+  6. Disconnect detection
+  7. Reconnect start, success, and failure
+
+### Documentation
+
+- **§5.1 System Dependencies** — Added `sudo usermod -aG bluetooth $USER`
+  to the Linux (Ubuntu/Debian) section. Previously this was only
+  documented for Raspberry Pi. Also added `python3` to the apt install
+  line for minimal installations.
+
+- **§5.5 BLE Pairing Setup** — Renamed from "BLE PIN Pairing (Linux
+  only — automatic)" to "BLE Pairing Setup (Linux only — required)".
+  Restructured to lead with the action (`install_ble_stable.sh` or
+  manual D-Bus policy creation) instead of burying it below text that
+  says "no external tools required". Added explicit warning about
+  "Not Paired" errors if this step is skipped.
+
+- **§11 Known Limitations #2** — Updated to reflect that the meshcore
+  SDK race condition fix (subscribe-before-send, PR #52) is now merged
+  upstream. Removed reference to the forked repository.
+
+### Internationalization
+
+- **All BLE module messages translated to English** — `ble_agent.py`,
+  `ble_reconnect.py`, and `worker.py` now use English for all `print()`,
+  `logger.*()`, and `debug_print()` output. Docstrings also translated.
+
+### Changed Files
+
+| File | Change |
+|------|--------|
+| `meshcore_gui/config.py` | Version bump to 1.9.12 |
+| `meshcore_gui/ble/worker.py` | `import sys`, `is_registered` check, `debug_print` at 10 connection points, Dutch→English |
+| `meshcore_gui/ble/ble_agent.py` | Dutch→English (prints, logs, docstrings) |
+| `meshcore_gui/ble/ble_reconnect.py` | Dutch→English (prints, logs, docstrings) |
+| `README.md` | §5.1 bluetooth group + python3, §5.5 rewrite, §11 update, TOC |
+
+---
 
 ## [1.9.11] - 2026-02-19 — Message Dedup Hotfix
 

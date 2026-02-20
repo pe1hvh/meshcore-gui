@@ -375,7 +375,7 @@ class BLEWorker:
     # ------------------------------------------------------------------
 
     async def _ensure_paired(self) -> "BleakClient | None":
-        """Pre-pair with the device and return the connected client.
+        """Pre-pair with the device and return a connected client.
 
         Required for BlueZ >= 5.78 where on-demand pairing on
         encrypted characteristic writes no longer works.  On older
@@ -383,6 +383,10 @@ class BLEWorker:
         automatic re-pairing).
 
         The PIN agent must be started BEFORE calling this method.
+
+        After pairing, the client is disconnected and reconnected
+        so that GATT services are cleanly discovered with the
+        encrypted bond in place.
 
         Returns:
             A connected and paired BleakClient that can be passed
@@ -399,6 +403,7 @@ class BLEWorker:
         debug_print(f"Pre-pair: connecting with bleak to {self.address}")
 
         try:
+            # Phase 1: Connect and pair (establishes bond)
             client = BleakClient(self.address, timeout=30)
             await client.connect()
             debug_print(f"Pre-pair: bleak connected={client.is_connected}")
@@ -411,6 +416,21 @@ class BLEWorker:
                 debug_print(f"Pre-pair: pair() result: {e}")
 
             await asyncio.sleep(1)
+
+            # Phase 2: Disconnect and reconnect for clean GATT discovery
+            # After pair(), GATT services may be stale. A fresh connect
+            # with the bond in place gives meshcore_py clean characteristics.
+            debug_print("Pre-pair: disconnecting to refresh GATT services")
+            await client.disconnect()
+            await asyncio.sleep(1)
+
+            debug_print("Pre-pair: reconnecting with bond for clean GATT")
+            client = BleakClient(self.address, timeout=30)
+            await client.connect()
+            debug_print(
+                f"Pre-pair: reconnected={client.is_connected}, "
+                f"services={len(client.services.services) if client.services else 'none'}"
+            )
             print("BLE: ✅ Pre-pairing complete, passing client to meshcore")
             return client
 

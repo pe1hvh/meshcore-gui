@@ -47,8 +47,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 
 ### System Requirements (BlueZ ≥ 5.78)
 
-- `/etc/bluetooth/main.conf` must have `Pairable = true` under `[General]`
-  (BlueZ 5.82 defaults to `Pairable: no`, unlike 5.72 which defaults to `yes`)
+- `Pairable` is enabled automatically by the application via D-Bus at startup
+  (BlueZ 5.82 defaults to `Pairable: no`; the `Pairable` setting in
+  `/etc/bluetooth/main.conf` is ignored by modern BlueZ)
 - D-Bus policy file (`/etc/dbus-1/system.d/meshcore-ble.conf`) unchanged
 
 ### Diagnostics

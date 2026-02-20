@@ -72,7 +72,7 @@ from meshcore_gui.config import (
 )
 from meshcore_gui.core.protocols import SharedDataWriter
 from meshcore_gui.ble.ble_agent import BleAgentManager
-from meshcore_gui.ble.ble_reconnect import reconnect_loop, remove_bond
+from meshcore_gui.ble.ble_reconnect import ensure_adapter_pairable, reconnect_loop, remove_bond
 from meshcore_gui.ble.commands import CommandHandler
 from meshcore_gui.ble.events import EventHandler
 from meshcore_gui.ble.packet_decoder import PacketDecoder
@@ -373,6 +373,9 @@ class BLEWorker:
         The PIN agent must be started BEFORE calling this method.
         """
         from bleak import BleakClient
+
+        # Step 0: Ensure adapter is pairable (BlueZ >= 5.78 defaults to no)
+        await ensure_adapter_pairable()
 
         self.shared.set_status(f"🔄 Pre-pairing with {self.address}...")
         print(f"BLE: Pre-pairing with {self.address} (BlueZ >= 5.78 mode)...")

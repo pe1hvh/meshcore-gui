@@ -237,30 +237,19 @@ ls /etc/dbus-1/system.d/meshcore-ble.conf
 
 > **⚠️ Without this step, the application will show "Not Paired" errors and BLE connections will fail repeatedly.**
 
-**Step 2 — Enable Pairable (BlueZ ≥ 5.78 only):**
+**Step 2 — Pairable (BlueZ ≥ 5.78 — handled automatically):**
 
-BlueZ 5.78 and newer (including 5.82 on current Raspberry Pi OS) default to `Pairable: no`, which prevents the PIN agent from initiating pairing. Check your version and pairable status:
+BlueZ 5.78 and newer (including 5.82 on current Raspberry Pi OS) default to `Pairable: no`, which prevents BLE pairing. MeshCore GUI detects this at startup and **automatically enables Pairable via D-Bus** — no manual configuration needed.
 
-```bash
-bluetoothd --version
-bluetoothctl show | grep Pairable
-```
+> **Note:** On BlueZ ≤ 5.72 (Ubuntu 24.04, RPi5 with Bookworm), `Pairable` defaults to `yes` and this step is not relevant. The startup banner shows the detected mode: `BlueZ: 5.82 (pre-pair)` or `BlueZ: 5.72 (legacy)`.
 
-If `Pairable` is `no`, make it persistent:
+If for some reason the automatic setting fails (e.g. D-Bus permission issues), you will see a warning in the terminal. In that case you can set it manually:
 
 ```bash
-sudo sed -i '/^\[General\]/a Pairable = true' /etc/bluetooth/main.conf
-sudo systemctl restart bluetooth
+bluetoothctl pairable on
 ```
 
-Verify:
-
-```bash
-bluetoothctl show | grep Pairable
-# Should show: Pairable: yes
-```
-
-> **Note:** On BlueZ ≤ 5.72 (Ubuntu 24.04, RPi5 with Bookworm), `Pairable` defaults to `yes` and this step is not needed. MeshCore GUI detects the BlueZ version at startup and displays the mode in the startup banner (`pre-pair` for ≥ 5.78, `legacy` for older).
+> **⚠️ Do not use `/etc/bluetooth/main.conf`** to set `Pairable = true` — modern BlueZ ignores this setting in the config file. The only reliable way is via D-Bus (which the application does) or via `bluetoothctl`.
 
 **After steps 1 and 2, you can run MeshCore GUI directly from the command line** — see [7. Starting the Application](#7-starting-the-application) for methods 1 (foreground) and 2 (background). For method 3 (daemon), see [7.4](#74-method-3-systemd-service-recommended-for-production).
 
@@ -454,6 +443,15 @@ sudo systemctl start meshcore-gui
 | `sudo systemctl stop meshcore-gui` | Stop the service |
 | `sudo systemctl disable meshcore-gui` | Prevent starting on boot |
 
+> **Switching to foreground/nohup:** Even with the daemon installed, you can still start MeshCore GUI from the prompt (method 1 or 2). Stop the daemon first to free the port:
+> ```bash
+> sudo systemctl stop meshcore-gui
+> python meshcore_gui.py AA:BB:CC:DD:EE:FF --debug-on
+> ```
+> If you skip this, you will get `address already in use` on port 8081. Alternatively, use a different port: `--port=8082`.
+>
+> The daemon stays installed — `sudo systemctl start meshcore-gui` brings it back at any time.
+
 ### 7.5. Accessing the Interface
 
 Once the application is running (via any method), open a browser and navigate to:
@@ -507,7 +505,7 @@ sudo usermod -aG bluetooth $USER
 
 If your MeshCore device has BLE PIN pairing enabled, make sure the D-Bus policy file is installed (see step 5 under Installation, or use `install_ble_stable.sh`). The built-in PIN agent handles pairing automatically.
 
-> **BlueZ version difference:** Raspberry Pi OS ships different BlueZ versions depending on the hardware and OS version. The RPi5 with Bookworm typically has BlueZ 5.66, while the RPi4 with current Raspberry Pi OS has BlueZ 5.82. MeshCore GUI detects this automatically — on BlueZ ≥ 5.78, it uses a pre-pair step before connecting. Make sure `Pairable = true` is set in `/etc/bluetooth/main.conf` on systems with BlueZ ≥ 5.78 (see [5.5. BLE Pairing Setup](#55-ble-pairing-setup-linux-only--required)).
+> **BlueZ version difference:** Raspberry Pi OS ships different BlueZ versions depending on the hardware and OS version. The RPi5 with Bookworm typically has BlueZ 5.66, while the RPi4 with current Raspberry Pi OS has BlueZ 5.82. MeshCore GUI detects this automatically — on BlueZ ≥ 5.78, it enables `Pairable` via D-Bus and uses a pre-pair step before connecting. No manual configuration needed (see [5.5. BLE Pairing Setup](#55-ble-pairing-setup-linux-only--required)).
 
 ## 8. Configuration
 
@@ -765,16 +763,15 @@ For comprehensive Linux BLE troubleshooting (including the `EOFError` / `start_n
 
 ##### BlueZ ≥ 5.78: ConnectionAttemptFailed / immediate disconnect
 
-If the startup banner shows `BlueZ: 5.78+ (pre-pair)` and connections fail immediately:
+If the startup banner shows `BlueZ: 5.82 (pre-pair)` and connections fail immediately:
 
-1. Check that `Pairable` is enabled:
-   ```bash
-   bluetoothctl show | grep Pairable
+1. MeshCore GUI should enable `Pairable` automatically. Check the terminal output for:
    ```
-   If `no`, fix it:
+   BLE: ✅ Adapter Pairable enabled (via D-Bus)
+   ```
+   If you see a warning instead, set it manually:
    ```bash
-   sudo sed -i '/^\[General\]/a Pairable = true' /etc/bluetooth/main.conf
-   sudo systemctl restart bluetooth
+   bluetoothctl pairable on
    ```
 2. Verify the startup banner shows the correct BlueZ mode:
    ```

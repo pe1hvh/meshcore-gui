@@ -318,6 +318,28 @@ RECONNECT_MAX_RETRIES: int = 5
 # attempt number for linear backoff: 5s, 10s, 15s, 20s, 25s).
 RECONNECT_BASE_DELAY: float = 5.0
 
+# ── BlueZ version detection ──
+# BlueZ >= 5.78 no longer auto-initiates pairing when writing to an
+# encrypted characteristic.  Instead of triggering the D-Bus agent,
+# it disconnects the device.  NEEDS_PREPAIR enables the workaround:
+# pre-pair with bleak before meshcore_py connects.
+import subprocess as _subprocess
+
+def _get_bluez_version() -> tuple:
+    """Return BlueZ (major, minor) version tuple."""
+    try:
+        _result = _subprocess.run(
+            ["bluetoothd", "--version"],
+            capture_output=True, text=True, timeout=5,
+        )
+        _parts = _result.stdout.strip().split(".")
+        return (int(_parts[0]), int(_parts[1]))
+    except Exception:
+        return (5, 72)  # Safe default: assume old behavior
+
+BLUEZ_VERSION: tuple = _get_bluez_version()
+NEEDS_PREPAIR: bool = BLUEZ_VERSION >= (5, 78)
+
 # Interval in seconds between periodic contact refreshes from the device.
 # Contacts are merged (new/changed contacts update the cache; contacts
 # only present in cache are kept so offline nodes are preserved).

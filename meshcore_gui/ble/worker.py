@@ -21,6 +21,14 @@ Bot logic          → :mod:`meshcore_gui.services.bot`
 Deduplication      → :mod:`meshcore_gui.services.dedup`
 Cache              → :mod:`meshcore_gui.services.cache`
 
+v5.3 changes (BlueZ >= 5.78 compatibility)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+- Pre-pair mode: BlueZ >= 5.78 no longer auto-initiates pairing on
+  encrypted writes. ``_ensure_paired()`` uses bleak to pair before
+  ``meshcore_py.create_ble()`` connects.
+- Conditional ``remove_bond``: only on BlueZ < 5.78 (where it is safe).
+- BlueZ version detection via ``config.NEEDS_PREPAIR``.
+
 v5.2 changes (BLE stability)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 - Built-in D-Bus PIN agent: eliminates ``bt-agent.service``.
@@ -55,6 +63,7 @@ from meshcore_gui.config import (
     CHANNEL_CACHE_ENABLED,
     CONTACT_REFRESH_SECONDS,
     MAX_CHANNELS,
+    NEEDS_PREPAIR,
     RECONNECT_BASE_DELAY,
     RECONNECT_MAX_RETRIES,
     debug_data,
@@ -176,9 +185,15 @@ class BLEWorker:
                 "see terminal for fix instructions"
             )
 
-        # ── Step 2: Remove stale bond (clean slate) ──
-        await remove_bond(self.address)
-        await asyncio.sleep(1)
+        # ── Step 2: Prepare BLE connection ──
+        if NEEDS_PREPAIR:
+            # BlueZ >= 5.78: pre-pair with bleak (agent provides PIN)
+            await self._ensure_paired()
+            await asyncio.sleep(1)
+        else:
+            # BlueZ < 5.78: remove stale bond (auto re-pairs on write)
+            await remove_bond(self.address)
+            await asyncio.sleep(1)
 
         # ── Step 3: Connect + main loop (with reconnect wrapper) ──
         try:
@@ -192,8 +207,12 @@ class BLEWorker:
                     debug_print("Initial connection failed, retrying in 30s")
                     self.shared.set_status("⚠️ Connection failed — retrying...")
                     await asyncio.sleep(30)
-                    await remove_bond(self.address)
-                    await asyncio.sleep(1)
+                    if NEEDS_PREPAIR:
+                        await self._ensure_paired()
+                        await asyncio.sleep(1)
+                    else:
+                        await remove_bond(self.address)
+                        await asyncio.sleep(1)
                     continue
 
                 # ── Main loop ──
@@ -329,11 +348,59 @@ class BLEWorker:
                             "waiting 60s before next cycle"
                         )
                         await asyncio.sleep(60)
-                        await remove_bond(self.address)
-                        await asyncio.sleep(1)
+                        if NEEDS_PREPAIR:
+                            await self._ensure_paired()
+                            await asyncio.sleep(1)
+                        else:
+                            await remove_bond(self.address)
+                            await asyncio.sleep(1)
         finally:
             # ── Cleanup: stop PIN agent ──
             await self._agent.stop()
+
+    # ------------------------------------------------------------------
+    # Pre-pairing (BlueZ >= 5.78)
+    # ------------------------------------------------------------------
+
+    async def _ensure_paired(self) -> None:
+        """Pre-pair with the device if no bond exists.
+
+        Required for BlueZ >= 5.78 where on-demand pairing on
+        encrypted characteristic writes no longer works.  On older
+        BlueZ this is never called (legacy flow uses remove_bond +
+        automatic re-pairing).
+
+        The PIN agent must be started BEFORE calling this method.
+        """
+        from bleak import BleakClient
+
+        self.shared.set_status(f"🔄 Pre-pairing with {self.address}...")
+        print(f"BLE: Pre-pairing with {self.address} (BlueZ >= 5.78 mode)...")
+        debug_print(f"Pre-pair: connecting with bleak to {self.address}")
+
+        try:
+            client = BleakClient(self.address, timeout=30)
+            await client.connect()
+            debug_print(f"Pre-pair: bleak connected={client.is_connected}")
+
+            try:
+                await client.pair()
+                debug_print("Pre-pair: pair() completed")
+            except Exception as e:
+                # Already paired, or pairing handled transparently
+                debug_print(f"Pre-pair: pair() result: {e}")
+
+            await asyncio.sleep(1)
+            await client.disconnect()
+            debug_print("Pre-pair: disconnected, bond established")
+            print("BLE: ✅ Pre-pairing complete")
+
+        except Exception as e:
+            print(
+                f"BLE: ⚠️ Pre-pair failed "
+                f"(may still work with existing bond): {e}"
+            )
+            debug_print(f"Pre-pair failed: {e}")
 
     # ------------------------------------------------------------------
     # Connection (cache-first)

@@ -7,9 +7,23 @@ All notable changes to MeshCore GUI are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
 ---
-## v1.9.12 — Not Paired Fix (2026-02-19)
+## v1.9.12 — Not Paired Fix + BlueZ ≥ 5.78 Compatibility (2026-02-20)
 
 ### Bug Fixes
+
+- **BlueZ ≥ 5.78 BLE pairing fix** — Added pre-pair step using `bleak`
+  before `meshcore_py` connects. BlueZ 5.78+ no longer auto-initiates
+  pairing when writing to encrypted NUS characteristics, causing immediate
+  disconnects (`ConnectionAttemptFailed` / `AuthenticationCanceled`).
+  The new `_ensure_paired()` method in `worker.py` establishes the bond
+  explicitly, with the D-Bus PIN agent providing credentials automatically.
+  See also: [meshcore_py issue #33](https://github.com/meshcore-dev/meshcore_py/issues/33).
+
+- **Conditional bond removal** — `remove_bond()` is now only called on
+  BlueZ < 5.78 where it's safe (automatic re-pairing on write). On
+  BlueZ ≥ 5.78, bond removal is skipped to preserve the required bond.
+  Applies to all 4 call sites: startup, retry, reconnect failure
+  (`worker.py`) and reconnect loop (`ble_reconnect.py`).
 
 - **PIN agent failure detection** — Added `is_registered` check after
   `_agent.start()` in `worker.py`. When the D-Bus PIN agent fails to
@@ -23,6 +37,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 - **Platform-scoped warning** — The PIN agent warning only triggers on
   Linux (`sys.platform == "linux"`), avoiding false alarms on macOS
   and Windows where D-Bus is not used.
+
+### New Features
+
+- **BlueZ version detection** — Automatic detection via `bluetoothd --version`
+  at startup. Systems with BlueZ ≥ 5.78 use pre-pair mode; older systems
+  retain the legacy remove-bond-and-reconnect flow. Displayed in startup
+  banner as `BlueZ: 5.82 (pre-pair)` or `BlueZ: 5.72 (legacy)`.
+
+### System Requirements (BlueZ ≥ 5.78)
+
+- `/etc/bluetooth/main.conf` must have `Pairable = true` under `[General]`
+  (BlueZ 5.82 defaults to `Pairable: no`, unlike 5.72 which defaults to `yes`)
+- D-Bus policy file (`/etc/dbus-1/system.d/meshcore-ble.conf`) unchanged
 
 ### Diagnostics
 

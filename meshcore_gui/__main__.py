@@ -175,6 +175,8 @@ def main():
     print(f"BLE PIN:    {config.BLE_PIN}")
     print(f"SSL:        {'ON (https)' if ssl_enabled else 'OFF (http)'}")
     print(f"Debug mode: {'ON' if config.DEBUG else 'OFF'}")
+    print(f"BlueZ:      {config.BLUEZ_VERSION[0]}.{config.BLUEZ_VERSION[1]} "
+          f"({'pre-pair' if config.NEEDS_PREPAIR else 'legacy'})")
     print("=" * 50)
 
     # Assemble components

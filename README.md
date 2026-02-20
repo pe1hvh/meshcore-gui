@@ -27,16 +27,15 @@ A graphical user interface for MeshCore mesh network devices via Bluetooth Low E
   - [6.4. Start the GUI](#64-start-the-gui)
 - [7. Starting the Application](#7-starting-the-application)
   - [7.1. Command-Line Options](#71-command-line-options)
-  - [7.2. Method 1: Interactive (foreground)](#72-method-1-interactive-foreground)
-  - [7.3. Method 2: Background with Visible Output](#73-method-2-background-with-visible-output-nohup--tail)
-  - [7.4. Method 3: Background with Terminal Free](#74-method-3-background-with-terminal-free-nohup)
-  - [7.5. Method 4: systemd Service](#75-method-4-systemd-service-recommended-for-production)
-    - [7.5.1. Automated Setup](#751-automated-setup)
-    - [7.5.2. Manual Setup](#752-manual-setup)
-  - [7.6. Accessing the Interface](#76-accessing-the-interface)
-  - [7.7. Running Multiple Instances](#77-running-multiple-instances)
-  - [7.8. Migrating Existing Data](#78-migrating-existing-data)
-  - [7.9. Raspberry Pi 5 Notes](#79-raspberry-pi-5-notes)
+  - [7.2. Method 1: Foreground](#72-method-1-foreground-terminal-occupied)
+  - [7.3. Method 2: Background with nohup](#73-method-2-background-with-nohup-terminal-free)
+  - [7.4. Method 3: systemd Service](#74-method-3-systemd-service-recommended-for-production)
+    - [7.4.1. Automated Setup](#741-automated-setup)
+    - [7.4.2. Manual Setup](#742-manual-setup)
+  - [7.5. Accessing the Interface](#75-accessing-the-interface)
+  - [7.6. Running Multiple Instances](#76-running-multiple-instances)
+  - [7.7. Migrating Existing Data](#77-migrating-existing-data)
+  - [7.8. Raspberry Pi Notes](#78-raspberry-pi-notes)
 - [8. Configuration](#8-configuration)
 - [9. Functionality](#9-functionality)
   - [9.1. Device Info](#91-device-info)
@@ -84,11 +83,11 @@ This project provides a **native desktop GUI** that connects to your MeshCore de
 
 > **Note:** This project is under active development. Not all features from the official MeshCore Companion apps have been implemented yet. Contributions and feedback are welcome.
 
-> **Note:** This application has been tested on Linux (Ubuntu 24.04) and Raspberry Pi 5 (Debian Bookworm, headless). macOS and Windows should work since all dependencies (`bleak`, `nicegui`, `meshcore`) are cross-platform, but this has not been verified. Feedback and contributions for other platforms are welcome.
+> **Note:** This application has been tested on Linux (Ubuntu 24.04), Raspberry Pi 5 (Debian Bookworm, headless) and Raspberry Pi 4 (Raspberry Pi OS, headless, BlueZ 5.82). macOS and Windows should work since all dependencies (`bleak`, `nicegui`, `meshcore`) are cross-platform, but this has not been verified. Feedback and contributions for other platforms are welcome.
 
 Under the hood it uses `bleak` for Bluetooth Low Energy (which talks to BlueZ on Linux, CoreBluetooth on macOS, and WinRT on Windows), `meshcore` as the protocol layer, `meshcoredecoder` for raw LoRa packet decryption and route extraction, and `NiceGUI` for the web-based interface.
 
-> **Linux users:** BLE on Linux can be temperamental. BlueZ occasionally gets into a bad state, especially after repeated connect/disconnect cycles. Since v5.11.0 MeshCore GUI includes a **built-in BLE PIN agent** and **automatic reconnect with bond cleanup**, eliminating the need for external tools like `bt-agent` or manual `bluetoothctl remove` commands. If you run into connection issues, see the [Troubleshooting Guide](docs/TROUBLESHOOTING.md). On macOS and Windows, BLE is generally more stable out of the box.
+> **Linux users:** BLE on Linux can be temperamental. BlueZ occasionally gets into a bad state, especially after repeated connect/disconnect cycles. Since v5.11.0 MeshCore GUI includes a **built-in BLE PIN agent** and **automatic reconnect with bond cleanup**, eliminating the need for external tools like `bt-agent` or manual `bluetoothctl remove` commands. Since v1.9.12, **BlueZ ≥ 5.78 is fully supported** with automatic pre-pair detection (BlueZ 5.78+ changed pairing behavior, see [5.5. BLE Pairing Setup](#55-ble-pairing-setup-linux-only--required)). If you run into connection issues, see the [Troubleshooting Guide](docs/TROUBLESHOOTING.md). On macOS and Windows, BLE is generally more stable out of the box.
 
 
 ## 2. Features
@@ -112,7 +111,7 @@ Under the hood it uses `bleak` for Bluetooth Low Energy (which talks to BlueZ on
 - **Local Cache** — Device info, contacts and channel keys are cached to disk (`~/.meshcore-gui/cache/`) so the GUI is instantly populated on startup from the last known state, even before BLE connects. Contacts from the device are merged with cached contacts so offline nodes are preserved. Channel keys that fail to load at startup are retried in the background every 30 seconds
 - **Periodic Contact Refresh** — Contacts are automatically refreshed from the device at a configurable interval (default: 5 minutes) and merged with the cache
 - **Threaded Architecture** — BLE communication in separate thread for stable UI
-- **BLE Connection Stability** — Built-in D-Bus PIN agent (no external `bt-agent` needed), automatic bond cleanup on startup, and automatic reconnect with linear backoff after disconnect
+- **BLE Connection Stability** — Built-in D-Bus PIN agent (no external `bt-agent` needed), automatic bond cleanup on startup, automatic reconnect with linear backoff after disconnect, and BlueZ ≥ 5.78 pre-pair support (auto-detected at startup)
 
 ## 3. Screenshots
 
@@ -128,14 +127,29 @@ Under the hood it uses `bleak` for Bluetooth Low Energy (which talks to BlueZ on
 
 ### 4.1. Platform Support
 
-| Platform | BLE Backend | Status |
-|---|---|---|
-| Linux (Ubuntu/Debian) | BlueZ/D-Bus | ✅ Tested |
-| Raspberry Pi 5 (Debian Bookworm) | BlueZ/D-Bus | ✅ Tested (headless) |
-| macOS | CoreBluetooth | ⬜ Untested |
-| Windows 10/11 | WinRT | ⬜ Untested |
+| Platform | BLE Backend | BlueZ | Status |
+|---|---|---|---|
+| Linux (Ubuntu 24.04) | BlueZ/D-Bus | 5.72 | ✅ Tested |
+| Raspberry Pi 5 (Bookworm) | BlueZ/D-Bus | 5.66 | ✅ Tested (headless) |
+| Raspberry Pi 4 (Bookworm) | BlueZ/D-Bus | 5.82 | ✅ Tested (headless) |
+| macOS | CoreBluetooth | — | ⬜ Untested |
+| Windows 10/11 | WinRT | — | ⬜ Untested |
+
+> **BlueZ version note:** BlueZ ≥ 5.78 changed how BLE pairing works — on-demand pairing on encrypted characteristic writes no longer triggers automatically. MeshCore GUI detects the BlueZ version at startup and uses the appropriate connection strategy (pre-pair for ≥ 5.78, legacy for older). See [5.5. BLE Pairing Setup](#55-ble-pairing-setup-linux-only--required) for details.
 
 ## 5. Installation
+
+There are three ways to run MeshCore GUI:
+
+| Method | Terminal | Survives reboot | Installation |
+|--------|----------|-----------------|--------------|
+| **1. Foreground** — run directly from the prompt | Occupied (Ctrl+C to stop) | No | Steps 5.1 – 5.5 |
+| **2. Background (nohup)** — run from the prompt, terminal stays free | Free | No (survives closing SSH) | Steps 5.1 – 5.5 |
+| **3. Daemon (systemd)** — starts on boot, restarts on crash | Not needed | Yes | Steps 5.1 – 5.5 + extra setup in [7.4](#74-method-3-systemd-service-recommended-for-production) |
+
+For **methods 1 and 2**, complete steps 5.1 through 5.5 below and you are ready to go — jump straight to [7. Starting the Application](#7-starting-the-application).
+
+For **method 3** (daemon), complete the same steps 5.1–5.5 first, then follow the additional systemd setup in section [7.4](#74-method-3-systemd-service-recommended-for-production). The `install_ble_stable.sh` script automates that extra step.
 
 ### 5.1. System Dependencies
 
@@ -199,15 +213,7 @@ MeshCore GUI includes a built-in D-Bus PIN agent that handles BLE pairing automa
 
 > **Note:** On macOS and Windows, BLE pairing is handled natively by the OS. Skip this step.
 
-**Option A — Automated (recommended):**
-
-```bash
-bash install_ble_stable.sh
-```
-
-This creates the D-Bus policy file and optionally sets up a systemd service.
-
-**Option B — Manual:**
+**Step 1 — D-Bus policy file (required for all setups):**
 
 ```bash
 sudo tee /etc/dbus-1/system.d/meshcore-ble.conf << EOF
@@ -223,13 +229,40 @@ sudo tee /etc/dbus-1/system.d/meshcore-ble.conf << EOF
 EOF
 ```
 
-**Verify** the file exists before proceeding:
+Verify the file exists:
 
 ```bash
 ls /etc/dbus-1/system.d/meshcore-ble.conf
 ```
 
 > **⚠️ Without this step, the application will show "Not Paired" errors and BLE connections will fail repeatedly.**
+
+**Step 2 — Enable Pairable (BlueZ ≥ 5.78 only):**
+
+BlueZ 5.78 and newer (including 5.82 on current Raspberry Pi OS) default to `Pairable: no`, which prevents the PIN agent from initiating pairing. Check your version and pairable status:
+
+```bash
+bluetoothd --version
+bluetoothctl show | grep Pairable
+```
+
+If `Pairable` is `no`, make it persistent:
+
+```bash
+sudo sed -i '/^\[General\]/a Pairable = true' /etc/bluetooth/main.conf
+sudo systemctl restart bluetooth
+```
+
+Verify:
+
+```bash
+bluetoothctl show | grep Pairable
+# Should show: Pairable: yes
+```
+
+> **Note:** On BlueZ ≤ 5.72 (Ubuntu 24.04, RPi5 with Bookworm), `Pairable` defaults to `yes` and this step is not needed. MeshCore GUI detects the BlueZ version at startup and displays the mode in the startup banner (`pre-pair` for ≥ 5.78, `legacy` for older).
+
+**After steps 1 and 2, you can run MeshCore GUI directly from the command line** — see [7. Starting the Application](#7-starting-the-application) for methods 1 (foreground) and 2 (background). For method 3 (daemon), see [7.4](#74-method-3-systemd-service-recommended-for-production).
 
 The PIN defaults to `123456` and can be overridden at startup with `--ble-pin=PIN`, or by editing `BLE_PIN` in `meshcore_gui/config.py`.
 
@@ -293,9 +326,9 @@ See [7. Starting the Application](#7-starting-the-application) below for all sta
 
 ## 7. Starting the Application
 
-MeshCore GUI is a web-based application powered by NiceGUI. Once started, it serves a dashboard that you can access from any browser — locally or over your network. There are several ways to run it, depending on your use case.
+MeshCore GUI is a web-based application powered by NiceGUI. Once started, it serves a dashboard that you can access from any browser — locally or over your network.
 
-All examples below assume you have activated the virtual environment and are in the project directory:
+All examples below assume you have completed steps 5.1–5.5, activated the virtual environment and are in the project directory:
 
 ```bash
 cd ~/meshcore-gui
@@ -316,7 +349,7 @@ All flags are optional and can be combined in any order:
 python meshcore_gui.py AA:BB:CC:DD:EE:FF --debug-on --port=8082 --ble-pin=171227
 ```
 
-### 7.2. Method 1: Interactive (foreground)
+### 7.2. Method 1: Foreground (terminal occupied)
 
 The simplest way to start — runs in your current terminal. Output is visible directly. Press `Ctrl+C` to stop.
 
@@ -328,35 +361,26 @@ Open your browser at `http://localhost:8081` (or the port you specified with `--
 
 This is the recommended method during development or when debugging, because you see all output immediately in your terminal.
 
-### 7.3. Method 2: Background with Visible Output (nohup + tail)
+### 7.3. Method 2: Background with nohup (terminal free)
 
-Runs in the background but keeps the output visible in your terminal. Useful for SSH sessions where you want to monitor the application while keeping the terminal usable.
+Runs in the background so your terminal stays free. The application survives closing your SSH session, but does **not** start automatically on reboot.
 
 ```bash
 nohup python meshcore_gui.py AA:BB:CC:DD:EE:FF --debug-on > ~/meshcore.log 2>&1 &
+```
+
+To follow the output in real-time:
+
+```bash
 tail -f ~/meshcore.log
 ```
 
-The first command starts the application in the background and writes all output to `~/meshcore.log`. The `&` at the end returns control to your terminal. The second command follows the log file in real-time — press `Ctrl+C` to stop following (the application keeps running).
-
-### 7.4. Method 3: Background with Terminal Free (nohup)
-
-Runs entirely in the background. Your terminal is free and the application survives closing your SSH session. Ideal for headless devices where you start the application once and leave it running.
-
-```bash
-nohup python meshcore_gui.py AA:BB:CC:DD:EE:FF --debug-on > ~/meshcore.log 2>&1 &
-```
+Press `Ctrl+C` to stop following — the application keeps running.
 
 To check if it is running:
 
 ```bash
 ps aux | grep meshcore_gui
-```
-
-To view recent output:
-
-```bash
-tail -50 ~/meshcore.log
 ```
 
 To stop it:
@@ -367,20 +391,22 @@ pkill -f meshcore_gui
 
 > **Tip:** Avoid redirecting to `/dev/null` — keeping the output in a log file preserves connection errors and other diagnostics. When `--debug-on` is enabled, detailed debug output is also written to a per-device rotating log file at `~/.meshcore-gui/logs/<ADDRESS>_meshcore_gui.log` (e.g. `F0_9E_9E_75_A3_01_meshcore_gui.log`, max 20 MB, rotates automatically).
 
-### 7.5. Method 4: systemd Service (recommended for production)
+### 7.4. Method 3: systemd Service (recommended for production)
 
 A systemd service starts automatically on boot, restarts on crashes, and integrates with system logging. This is the recommended method for permanent headless deployments (e.g. Raspberry Pi).
 
-#### 7.5.1. Automated Setup
+> **Extra step required:** This method needs a systemd service file in addition to the installation steps in section 5. You can set this up automatically or manually.
 
-The included install script auto-detects your username, project directory and Python venv path, then creates and enables the service. It also installs the D-Bus policy for BLE PIN pairing.
+#### 7.4.1. Automated Setup
+
+The included install script auto-detects your username, project directory and Python venv path, then creates and enables the service. It also installs the D-Bus policy for BLE PIN pairing (if not already present from step 5.5).
 
 ```bash
 cd ~/meshcore-gui
 BLE_ADDRESS=AA:BB:CC:DD:EE:FF bash install_ble_stable.sh
 ```
 
-#### 7.5.2. Manual Setup
+#### 7.4.2. Manual Setup
 
 **Step 1 — Create the service file:**
 
@@ -428,7 +454,7 @@ sudo systemctl start meshcore-gui
 | `sudo systemctl stop meshcore-gui` | Stop the service |
 | `sudo systemctl disable meshcore-gui` | Prevent starting on boot |
 
-### 7.6. Accessing the Interface
+### 7.5. Accessing the Interface
 
 Once the application is running (via any method), open a browser and navigate to:
 
@@ -444,7 +470,7 @@ http://<hostname-or-ip>:8081
 
 For example: `http://raspberrypi5nas:8081` or `http://192.168.2.234:8081`. This works from any device on the same network — desktop, laptop, tablet or phone.
 
-### 7.7. Running Multiple Instances
+### 7.6. Running Multiple Instances
 
 You can run multiple instances simultaneously (e.g. for different MeshCore devices) by assigning each a different port:
 
@@ -455,7 +481,7 @@ python meshcore_gui.py 11:22:33:44:55:66 --port=8082 --ble-pin=654321 &
 
 Each instance gets its own log file, cache and archive, all keyed by the BLE address.
 
-### 7.8. Migrating Existing Data
+### 7.7. Migrating Existing Data
 
 If you are moving from an existing installation, copy the data directory to preserve your cache, pinned contacts, room server passwords and message archive:
 
@@ -463,9 +489,9 @@ If you are moving from an existing installation, copy the data directory to pres
 scp -r ~/.meshcore-gui user@headless-device:~/
 ```
 
-### 7.9. Raspberry Pi 5 Notes
+### 7.8. Raspberry Pi Notes
 
-The Raspberry Pi 5 is a good fit for running MeshCore GUI headless:
+The Raspberry Pi 4 and 5 are both good fits for running MeshCore GUI headless:
 
 - **BLE**: Built-in Bluetooth 5.0/BLE — no USB dongle required
 - **RAM**: 2 GB is sufficient; 4 GB or more provides extra headroom for long-running operation
@@ -481,6 +507,8 @@ sudo usermod -aG bluetooth $USER
 
 If your MeshCore device has BLE PIN pairing enabled, make sure the D-Bus policy file is installed (see step 5 under Installation, or use `install_ble_stable.sh`). The built-in PIN agent handles pairing automatically.
 
+> **BlueZ version difference:** Raspberry Pi OS ships different BlueZ versions depending on the hardware and OS version. The RPi5 with Bookworm typically has BlueZ 5.66, while the RPi4 with current Raspberry Pi OS has BlueZ 5.82. MeshCore GUI detects this automatically — on BlueZ ≥ 5.78, it uses a pre-pair step before connecting. Make sure `Pairable = true` is set in `/etc/bluetooth/main.conf` on systems with BlueZ ≥ 5.78 (see [5.5. BLE Pairing Setup](#55-ble-pairing-setup-linux-only--required)).
+
 ## 8. Configuration
 
 | Setting | Location | Description |
@@ -491,6 +519,8 @@ If your MeshCore device has BLE PIN pairing enabled, make sure the D-Bus policy 
 | `MAX_CHANNELS` | `meshcore_gui/config.py` | Maximum channel slots to probe on device (default: 8) |
 | `CHANNEL_CACHE_ENABLED` | `meshcore_gui/config.py` | Cache discovered channels to disk for faster startup (default: `False` — always fresh from device) |
 | `BLE_PIN` | `meshcore_gui/config.py` | BLE pairing PIN for the MeshCore device (default: `123456`). Override at startup with `--ble-pin=PIN` |
+| `BLUEZ_VERSION` | `meshcore_gui/config.py` | Auto-detected BlueZ version tuple, e.g. `(5, 82)`. Used to determine connection strategy |
+| `NEEDS_PREPAIR` | `meshcore_gui/config.py` | Auto-set to `True` on BlueZ ≥ 5.78; enables pre-pair with `bleak` before `meshcore_py` connects |
 | `RECONNECT_MAX_RETRIES` | `meshcore_gui/config.py` | Maximum reconnect attempts after a BLE disconnect (default: 5) |
 | `RECONNECT_BASE_DELAY` | `meshcore_gui/config.py` | Base delay in seconds between reconnect attempts, multiplied by attempt number (default: 5.0) |
 | `CONTACT_REFRESH_SECONDS` | `meshcore_gui/config.py` | Interval between periodic contact refreshes (default: 300s / 5 minutes) |
@@ -696,9 +726,9 @@ The built-in bot automatically replies to messages containing recognised keyword
               └─────────────┘     └───────────────┘
 ```
 
-- **BLEWorker**: Runs in separate thread with its own asyncio loop, with built-in PIN agent, automatic bond cleanup, disconnect detection, auto-reconnect and background retry for missing channel keys
+- **BLEWorker**: Runs in separate thread with its own asyncio loop, with built-in PIN agent, BlueZ version-aware connection (pre-pair for ≥ 5.78, legacy bond cleanup for older), disconnect detection, auto-reconnect and background retry for missing channel keys
 - **BleAgentManager**: Built-in D-Bus PIN agent that registers with BlueZ and handles pairing requests automatically (replaces external `bt-agent.service`)
-- **reconnect_loop**: Bond cleanup via D-Bus + reconnect with linear backoff after disconnect (replaces manual `bluetoothctl remove`)
+- **reconnect_loop**: Reconnect with linear backoff after disconnect; bond cleanup is conditional on BlueZ version (skipped on ≥ 5.78 to preserve pre-paired bond)
 - **CommandHandler**: Executes commands (send message, advert, refresh, purge unpinned, set auto-add, set bot name, restore name, login room, send room msg, remove single contact)
 - **EventHandler**: Processes incoming BLE events (messages, RX log) with path hash caching between RX_LOG and fallback handlers, and resolves repeater names at receive time for self-contained archive data
 - **PacketDecoder**: Decodes raw LoRa packets and extracts route data
@@ -732,6 +762,31 @@ The built-in bot automatically replies to messages containing recognised keyword
 For comprehensive Linux BLE troubleshooting (including the `EOFError` / `start_notify` issue), see [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 #### 12.1.1. Quick Fixes
+
+##### BlueZ ≥ 5.78: ConnectionAttemptFailed / immediate disconnect
+
+If the startup banner shows `BlueZ: 5.78+ (pre-pair)` and connections fail immediately:
+
+1. Check that `Pairable` is enabled:
+   ```bash
+   bluetoothctl show | grep Pairable
+   ```
+   If `no`, fix it:
+   ```bash
+   sudo sed -i '/^\[General\]/a Pairable = true' /etc/bluetooth/main.conf
+   sudo systemctl restart bluetooth
+   ```
+2. Verify the startup banner shows the correct BlueZ mode:
+   ```
+   BlueZ:      5.82 (pre-pair)
+   ```
+3. If the pre-pair step fails, try manually removing the device and restarting:
+   ```bash
+   bluetoothctl remove AA:BB:CC:DD:EE:FF
+   sudo systemctl restart meshcore-gui
+   ```
+
+See also: [meshcore_py issue #33](https://github.com/meshcore-dev/meshcore_py/issues/33).
 
 ##### GUI remains empty / BLE connection fails
 
@@ -823,12 +878,12 @@ meshcore-gui/
 ├── meshcore_gui/                    # Application package
 │   ├── __init__.py
 │   ├── __main__.py                  # Alternative entry: python -m meshcore_gui
-│   ├── config.py                    # OPERATOR_CALLSIGN, LANDING_SVG_PATH, DEBUG flag, channel discovery settings (MAX_CHANNELS, CHANNEL_CACHE_ENABLED), BLE_PIN, RECONNECT_* settings, refresh interval, retention settings, BOT_DEVICE_NAME, per-device log file naming
+│   ├── config.py                    # OPERATOR_CALLSIGN, LANDING_SVG_PATH, DEBUG flag, channel discovery settings (MAX_CHANNELS, CHANNEL_CACHE_ENABLED), BLE_PIN, BLUEZ_VERSION/NEEDS_PREPAIR auto-detection, RECONNECT_* settings, refresh interval, retention settings, BOT_DEVICE_NAME, per-device log file naming
 │   ├── ble/                         # BLE communication layer
 │   │   ├── __init__.py
-│   │   ├── worker.py                # BLE thread, connection lifecycle, cache-first startup, disconnect detection, auto-reconnect, background key retry
+│   │   ├── worker.py                # BLE thread, connection lifecycle, cache-first startup, BlueZ version-aware pre-pair, disconnect detection, auto-reconnect, background key retry
 │   │   ├── ble_agent.py             # Built-in BlueZ D-Bus PIN agent (replaces bt-agent.service)
-│   │   ├── ble_reconnect.py         # Bond cleanup via D-Bus + reconnect loop with linear backoff
+│   │   ├── ble_reconnect.py         # Conditional bond cleanup via D-Bus + reconnect loop with linear backoff
 │   │   ├── commands.py              # Command execution (send, refresh, advert)
 │   │   ├── events.py                # Event callbacks (messages, RX log) with path hash caching and name resolution at receive time
 │   │   └── packet_decoder.py        # Raw LoRa packet decoding via meshcoredecoder

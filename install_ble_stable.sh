@@ -90,10 +90,10 @@ if [[ -z "${BLE_ADDRESS}" ]]; then
     echo "You can specify it in two ways:"
     echo ""
     echo "  1. As an environment variable:"
-    echo "     BLE_ADDRESS=FF:05:D6:71:83:8D bash install_ble_stable.sh"
+    echo "     BLE_ADDRESS=AA:BB:CC:DD:EE:FF bash install_ble_stable.sh"
     echo ""
     echo "  2. Enter manually:"
-    read -rp "     BLE MAC address (e.g. FF:05:D6:71:83:8D): " BLE_ADDRESS
+    read -rp "     BLE MAC address (e.g. AA:BB:CC:DD:EE:FF): " BLE_ADDRESS
     echo ""
 fi
 

@@ -105,9 +105,16 @@ async def reconnect_loop(
         )
         await asyncio.sleep(delay)
 
-        # Step 1: Remove stale bond
-        await remove_bond(device_address)
-        await asyncio.sleep(2)
+        # Step 1: Prepare bond for reconnect
+        from meshcore_gui.config import NEEDS_PREPAIR
+        if not NEEDS_PREPAIR:
+            # BlueZ < 5.78: remove stale bond (auto re-pairs on write)
+            await remove_bond(device_address)
+            await asyncio.sleep(2)
+        else:
+            # BlueZ >= 5.78: keep bond intact (pre-pair handles this)
+            logger.info("BlueZ >= 5.78: skipping remove_bond in reconnect")
+            await asyncio.sleep(1)
 
         # Step 2: Try to reconnect
         try:

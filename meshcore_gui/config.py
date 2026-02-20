@@ -14,6 +14,7 @@ Debug output is written to both stdout and a rotating log file at
 
 import json
 import logging
+import os
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -25,7 +26,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.9.12"
+VERSION: str = "1.9.13"
 
 
 # ==============================================================================
@@ -307,9 +308,15 @@ BLE_DEFAULT_TIMEOUT: float = 10.0
 BLE_LIB_DEBUG: bool = True
 
 # BLE pairing PIN for the MeshCore device (T1000e default: 123456).
-# Used by the built-in D-Bus agent to answer pairing requests
-# automatically — eliminates the need for bt-agent.service.
-BLE_PIN: str = "123456"
+# Used by meshcore-ble-connect (--pin parameter) and by the built-in
+# D-Bus agent (legacy fallback) to answer pairing requests.
+# Can be overridden via CLI: --ble-pin=PIN or --pin=PIN
+# Or via environment variable: MESHCORE_BLE_PIN (for systemd)
+BLE_PIN: str = os.environ.get("MESHCORE_BLE_PIN", "123456")
+
+# Timeout in seconds for the meshcore-ble-connect subprocess.
+# Increase if pairing takes longer (e.g. on slow Bluetooth adapters).
+BLE_CONNECT_TIMEOUT: int = 60
 
 # Maximum number of reconnect attempts after a BLE disconnect.
 RECONNECT_MAX_RETRIES: int = 5

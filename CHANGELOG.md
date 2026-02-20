@@ -7,6 +7,50 @@ All notable changes to MeshCore GUI are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
 ---
+## v1.9.13 — External Bond Manager Support (2026-02-20)
+
+### New Features
+
+- **External bond manager support** — `ble_connector.py` provides optional
+  integration with an external BLE bond manager. If
+  [`meshcore-ble-connect`](https://github.com/PE1HVH/meshcore-ble-connect)
+  is installed, the BLEWorker uses it automatically before every connect
+  and reconnect attempt. If not installed, the built-in D-Bus PIN agent
+  handles pairing as before. The integration is transparent to the user.
+
+- **`--pin` CLI parameter** — Added `--pin=PIN` as a short alias for
+  `--ble-pin=PIN`.
+
+- **`MESHCORE_BLE_PIN` environment variable** — `BLE_PIN` in config.py now
+  reads from the `MESHCORE_BLE_PIN` environment variable when present.
+  Useful for systemd deployments.
+
+### Changed
+
+- **`worker.py`** — Refactored `_async_main()`: calls `ensure_bond()` before
+  each connect/reconnect attempt when external bond manager is available.
+  Falls back to existing `BleAgentManager` + `_ensure_paired()` flow
+  otherwise. No functional change when external tool is absent.
+
+- **`config.py`** — Added `BLE_CONNECT_TIMEOUT = 60`, `os` import, and
+  `MESHCORE_BLE_PIN` env var support.
+
+- **`__main__.py`** — Added `--pin` parsing, updated help text.
+
+### Changed Files
+
+| File | Change |
+|------|--------|
+| `meshcore_gui/config.py` | Version bump to 1.9.13, `BLE_CONNECT_TIMEOUT`, env var support |
+| `meshcore_gui/__main__.py` | `--pin` alias, startup banner |
+| `meshcore_gui/ble/ble_connector.py` | **New** — external bond manager integration |
+| `meshcore_gui/ble/worker.py` | `ensure_bond()` pre-check, graceful fallback |
+| `meshcore_gui/ble/__init__.py` | Updated docstring |
+| `docs/INSTALLATIE.md` | Updated for v1.9.13 |
+| `README.md` | Optional dependency note, `--pin` in CLI options |
+| `CHANGELOG.md` | This entry |
+
+---
 ## v1.9.12 — Not Paired Fix + BlueZ ≥ 5.78 Compatibility (2026-02-20)
 
 ### Bug Fixes

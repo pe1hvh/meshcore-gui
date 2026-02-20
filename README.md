@@ -87,7 +87,7 @@ This project provides a **native desktop GUI** that connects to your MeshCore de
 
 Under the hood it uses `bleak` for Bluetooth Low Energy (which talks to BlueZ on Linux, CoreBluetooth on macOS, and WinRT on Windows), `meshcore` as the protocol layer, `meshcoredecoder` for raw LoRa packet decryption and route extraction, and `NiceGUI` for the web-based interface.
 
-> **Linux users:** BLE on Linux can be temperamental. BlueZ occasionally gets into a bad state, especially after repeated connect/disconnect cycles. Since v5.11.0 MeshCore GUI includes a **built-in BLE PIN agent** and **automatic reconnect with bond cleanup**, eliminating the need for external tools like `bt-agent` or manual `bluetoothctl remove` commands. Since v1.9.12, **BlueZ ≥ 5.78 is fully supported** with automatic pre-pair detection (BlueZ 5.78+ changed pairing behavior, see [5.5. BLE Pairing Setup](#55-ble-pairing-setup-linux-only--required)). If you run into connection issues, see the [Troubleshooting Guide](docs/TROUBLESHOOTING.md). On macOS and Windows, BLE is generally more stable out of the box.
+> **Linux users:** BLE on Linux can be temperamental. BlueZ occasionally gets into a bad state, especially after repeated connect/disconnect cycles. MeshCore GUI includes a **built-in BLE PIN agent** and **automatic reconnect with bond cleanup**. Since v1.9.12, **BlueZ ≥ 5.78 is fully supported** with automatic pre-pair detection (BlueZ 5.78+ changed pairing behavior, see [5.5. BLE Pairing Setup](#55-ble-pairing-setup-linux-only--required)). If you run into connection issues, see the [Troubleshooting Guide](docs/TROUBLESHOOTING.md). On macOS and Windows, BLE is generally more stable out of the box.
 
 
 ## 2. Features
@@ -111,7 +111,7 @@ Under the hood it uses `bleak` for Bluetooth Low Energy (which talks to BlueZ on
 - **Local Cache** — Device info, contacts and channel keys are cached to disk (`~/.meshcore-gui/cache/`) so the GUI is instantly populated on startup from the last known state, even before BLE connects. Contacts from the device are merged with cached contacts so offline nodes are preserved. Channel keys that fail to load at startup are retried in the background every 30 seconds
 - **Periodic Contact Refresh** — Contacts are automatically refreshed from the device at a configurable interval (default: 5 minutes) and merged with the cache
 - **Threaded Architecture** — BLE communication in separate thread for stable UI
-- **BLE Connection Stability** — Built-in D-Bus PIN agent (no external `bt-agent` needed), automatic bond cleanup on startup, automatic reconnect with linear backoff after disconnect, and BlueZ ≥ 5.78 pre-pair support (auto-detected at startup)
+- **BLE Connection Stability** — Built-in D-Bus PIN agent, automatic bond cleanup on startup, automatic reconnect with linear backoff after disconnect, and BlueZ ≥ 5.78 pre-pair support (auto-detected at startup). Optionally uses `meshcore-ble-connect` for enhanced bond management if installed
 
 ## 3. Screenshots
 
@@ -207,6 +207,8 @@ venv\Scripts\activate
 pip install nicegui meshcore bleak meshcoredecoder
 ```
 
+**Optional dependency:** [`meshcore-ble-connect`](https://github.com/PE1HVH/meshcore-ble-connect) can be installed separately for enhanced BLE bond management. If present, MeshCore GUI uses it automatically. If not, the built-in BLE agent handles pairing.
+
 ### 5.5. BLE Pairing Setup (Linux only — required)
 
 MeshCore GUI includes a built-in D-Bus PIN agent that handles BLE pairing automatically at runtime. However, **one-time setup is required** to grant the agent permission to access BlueZ via D-Bus.
@@ -253,14 +255,7 @@ bluetoothctl pairable on
 
 **After steps 1 and 2, you can run MeshCore GUI directly from the command line** — see [7. Starting the Application](#7-starting-the-application) for methods 1 (foreground) and 2 (background). For method 3 (daemon), see [7.4](#74-method-3-systemd-service-recommended-for-production).
 
-The PIN defaults to `123456` and can be overridden at startup with `--ble-pin=PIN`, or by editing `BLE_PIN` in `meshcore_gui/config.py`.
-
-> **Migrating from bt-agent:** If you previously used `bt-agent.service` for PIN pairing, it is no longer needed. Remove it:
-> ```bash
-> sudo systemctl disable --now bt-agent
-> sudo apt remove bluez-tools   # optional
-> rm -f ~/.meshcore-ble-pin
-> ```
+The PIN defaults to `123456` and can be overridden at startup with `--pin=PIN` (or `--ble-pin=PIN`), via the `MESHCORE_BLE_PIN` environment variable, or by editing `BLE_PIN` in `meshcore_gui/config.py`.
 
 ## 6. Usage
 
@@ -331,11 +326,12 @@ source venv/bin/activate       # Linux / macOS
 | `--debug-on` | Enable verbose debug logging (stdout + log file) | Off |
 | `--port=PORT` | Web server port | `8081` |
 | `--ble-pin=PIN` | BLE pairing PIN | `123456` |
+| `--pin=PIN` | Alias for `--ble-pin` | `123456` |
 
 All flags are optional and can be combined in any order:
 
 ```bash
-python meshcore_gui.py AA:BB:CC:DD:EE:FF --debug-on --port=8082 --ble-pin=171227
+python meshcore_gui.py AA:BB:CC:DD:EE:FF --debug-on --port=8082 --pin=171227
 ```
 
 ### 7.2. Method 1: Foreground (terminal occupied)
@@ -413,7 +409,7 @@ Wants=bluetooth.target
 Type=simple
 User=your-username
 WorkingDirectory=/home/your-username/meshcore-gui
-ExecStart=/home/your-username/meshcore-gui/venv/bin/python meshcore_gui.py AA:BB:CC:DD:EE:FF --debug-on --port=8081 --ble-pin=123456
+ExecStart=/home/your-username/meshcore-gui/.venv/bin/python -m meshcore_gui literal:AA:BB:CC:DD:EE:FF --debug-on --port=8081 --pin=123456
 Restart=on-failure
 RestartSec=30
 Environment=DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
@@ -422,7 +418,7 @@ Environment=DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
 WantedBy=multi-user.target
 ```
 
-Replace `your-username`, `AA:BB:CC:DD:EE:FF`, port and PIN with your actual values. Bond cleanup and PIN pairing are handled automatically by the built-in agent — no `ExecStartPre` or `bt-agent` dependency needed.
+Replace `your-username`, `AA:BB:CC:DD:EE:FF`, port and PIN with your actual values. Bond cleanup and PIN pairing are handled automatically at runtime.
 
 **Step 2 — Enable and start:**
 
@@ -516,9 +512,10 @@ If your MeshCore device has BLE PIN pairing enabled, make sure the D-Bus policy 
 | `DEBUG` | `meshcore_gui/config.py` | Set to `True` for verbose logging (or use `--debug-on`) |
 | `MAX_CHANNELS` | `meshcore_gui/config.py` | Maximum channel slots to probe on device (default: 8) |
 | `CHANNEL_CACHE_ENABLED` | `meshcore_gui/config.py` | Cache discovered channels to disk for faster startup (default: `False` — always fresh from device) |
-| `BLE_PIN` | `meshcore_gui/config.py` | BLE pairing PIN for the MeshCore device (default: `123456`). Override at startup with `--ble-pin=PIN` |
+| `BLE_PIN` | `meshcore_gui/config.py` | BLE pairing PIN for the MeshCore device (default: `123456`). Override with `--pin=PIN`, `--ble-pin=PIN`, or `MESHCORE_BLE_PIN` env var |
+| `BLE_CONNECT_TIMEOUT` | `meshcore_gui/config.py` | Timeout in seconds for the external bond manager subprocess (default: 60) |
 | `BLUEZ_VERSION` | `meshcore_gui/config.py` | Auto-detected BlueZ version tuple, e.g. `(5, 82)`. Used to determine connection strategy |
-| `NEEDS_PREPAIR` | `meshcore_gui/config.py` | Auto-set to `True` on BlueZ ≥ 5.78; enables pre-pair with `bleak` before `meshcore_py` connects |
+| `NEEDS_PREPAIR` | `meshcore_gui/config.py` | Auto-set to `True` on BlueZ ≥ 5.78; enables pre-pair with `bleak` before `meshcore_py` connects (legacy fallback only) |
 | `RECONNECT_MAX_RETRIES` | `meshcore_gui/config.py` | Maximum reconnect attempts after a BLE disconnect (default: 5) |
 | `RECONNECT_BASE_DELAY` | `meshcore_gui/config.py` | Base delay in seconds between reconnect attempts, multiplied by attempt number (default: 5.0) |
 | `CONTACT_REFRESH_SECONDS` | `meshcore_gui/config.py` | Interval between periodic contact refreshes (default: 300s / 5 minutes) |
@@ -705,8 +702,9 @@ The built-in bot automatically replies to messages containing recognised keyword
 │  │ ArchivePg │  │  │  │   │  Cache  │   │
 │  │ RoomSrvPnl│  │  │  │   └─────────┘   │
 │  └───────────┘  │  │  │   ┌─────────┐   │
-│                 │  │  │   │BleAgent │   │
+│                 │  │  │   │BleConnct│   │
 │                 │  │  │   │Reconnect│   │
+│                 │  │  │   │(Agent)  │   │
 │                 │  │  │   └─────────┘   │
 └─────────────────┘  │  └─────────────────┘
               ┌──────┴──────┐
@@ -724,9 +722,10 @@ The built-in bot automatically replies to messages containing recognised keyword
               └─────────────┘     └───────────────┘
 ```
 
-- **BLEWorker**: Runs in separate thread with its own asyncio loop, with built-in PIN agent, BlueZ version-aware connection (pre-pair for ≥ 5.78, legacy bond cleanup for older), disconnect detection, auto-reconnect and background retry for missing channel keys
-- **BleAgentManager**: Built-in D-Bus PIN agent that registers with BlueZ and handles pairing requests automatically (replaces external `bt-agent.service`)
-- **reconnect_loop**: Reconnect with linear backoff after disconnect; bond cleanup is conditional on BlueZ version (skipped on ≥ 5.78 to preserve pre-paired bond)
+- **BLEWorker**: Runs in separate thread with its own asyncio loop, with built-in PIN agent, disconnect detection, auto-reconnect and background retry for missing channel keys
+- **ble_connector**: Optional integration with external bond manager; transparent fallback to built-in agent
+- **BleAgentManager**: Built-in D-Bus PIN agent that registers with BlueZ and handles pairing requests automatically
+- **reconnect_loop**: Reconnect with linear backoff after disconnect with automatic bond cleanup
 - **CommandHandler**: Executes commands (send message, advert, refresh, purge unpinned, set auto-add, set bot name, restore name, login room, send room msg, remove single contact)
 - **EventHandler**: Processes incoming BLE events (messages, RX log) with path hash caching between RX_LOG and fallback handlers, and resolves repeater names at receive time for self-contained archive data
 - **PacketDecoder**: Decodes raw LoRa packets and extracts route data
@@ -875,11 +874,12 @@ meshcore-gui/
 ├── meshcore_gui/                    # Application package
 │   ├── __init__.py
 │   ├── __main__.py                  # Alternative entry: python -m meshcore_gui
-│   ├── config.py                    # OPERATOR_CALLSIGN, LANDING_SVG_PATH, DEBUG flag, channel discovery settings (MAX_CHANNELS, CHANNEL_CACHE_ENABLED), BLE_PIN, BLUEZ_VERSION/NEEDS_PREPAIR auto-detection, RECONNECT_* settings, refresh interval, retention settings, BOT_DEVICE_NAME, per-device log file naming
+│   ├── config.py                    # OPERATOR_CALLSIGN, LANDING_SVG_PATH, DEBUG flag, channel discovery settings (MAX_CHANNELS, CHANNEL_CACHE_ENABLED), BLE_PIN (with MESHCORE_BLE_PIN env var), BLE_CONNECT_TIMEOUT, BLUEZ_VERSION/NEEDS_PREPAIR auto-detection, RECONNECT_* settings, refresh interval, retention settings, BOT_DEVICE_NAME, per-device log file naming
 │   ├── ble/                         # BLE communication layer
 │   │   ├── __init__.py
-│   │   ├── worker.py                # BLE thread, connection lifecycle, cache-first startup, BlueZ version-aware pre-pair, disconnect detection, auto-reconnect, background key retry
-│   │   ├── ble_agent.py             # Built-in BlueZ D-Bus PIN agent (replaces bt-agent.service)
+│   │   ├── worker.py                # BLE thread, connection lifecycle, cache-first startup, disconnect detection, auto-reconnect, background key retry
+│   │   ├── ble_connector.py         # Optional external bond manager integration (graceful degradation)
+│   │   ├── ble_agent.py             # Built-in BlueZ D-Bus PIN agent
 │   │   ├── ble_reconnect.py         # Conditional bond cleanup via D-Bus + reconnect loop with linear backoff
 │   │   ├── commands.py              # Command execution (send, refresh, advert)
 │   │   ├── events.py                # Event callbacks (messages, RX log) with path hash caching and name resolution at receive time
@@ -918,6 +918,7 @@ meshcore-gui/
 │       └── route_builder.py         # Route data construction
 ├── docs/
 │   ├── TROUBLESHOOTING.md           # BLE troubleshooting guide (Linux)
+│   ├── INSTALLATIE.md               # Installation guide (Dutch)
 │   ├── MeshCore_GUI_Design.docx     # Design document
 │   ├── ble_capture_workflow_t_1000_e_explanation.md
 │   └── ble_capture_workflow_t_1000_e_uitleg.md

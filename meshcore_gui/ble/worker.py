@@ -9,17 +9,30 @@ Responsibilities deliberately kept narrow (SRP):
     - Thread lifecycle and asyncio loop
     - BLE connection and initial data loading
     - Wiring CommandHandler and EventHandler
-    - PIN pairing via built-in D-Bus agent
+    - BLE bond management via meshcore-ble-connect
     - Disconnect detection and automatic reconnect
 
 Command execution  → :mod:`meshcore_gui.ble.commands`
 Event handling     → :mod:`meshcore_gui.ble.events`
 Packet decoding    → :mod:`meshcore_gui.ble.packet_decoder`
-PIN agent          → :mod:`meshcore_gui.ble.ble_agent`
+BLE bond manager   → :mod:`meshcore_gui.ble.ble_connector`
+PIN agent          → :mod:`meshcore_gui.ble.ble_agent` (legacy fallback)
 Reconnect logic    → :mod:`meshcore_gui.ble.ble_reconnect`
 Bot logic          → :mod:`meshcore_gui.services.bot`
 Deduplication      → :mod:`meshcore_gui.services.dedup`
 Cache              → :mod:`meshcore_gui.services.cache`
+
+v5.4 changes (meshcore-ble-connect integration)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+- BLE bond management via ``meshcore-ble-connect`` subprocess: before
+  every bleak connect attempt, the external tool ensures the bond is
+  valid.  Replaces the built-in D-Bus agent + ``_ensure_paired()``
+  flow as the primary pairing mechanism.
+- Graceful degradation: if ``meshcore-ble-connect`` is not installed,
+  the legacy ``BleAgentManager`` + bleak pairing path is used.
+- Exit codes from ``meshcore-ble-connect`` are translated to clear
+  GUI status messages.
+- ``bt-agent.service`` is no longer needed.
 
 v5.3 changes (BlueZ >= 5.78 compatibility)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -31,7 +44,8 @@ v5.3 changes (BlueZ >= 5.78 compatibility)
 
 v5.2 changes (BLE stability)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-- Built-in D-Bus PIN agent: eliminates ``bt-agent.service``.
+- Built-in D-Bus PIN agent (legacy fallback for when
+  ``meshcore-ble-connect`` is not installed).
 - Automatic bond removal on startup (clean slate).
 - Disconnect detection in the main loop with auto-reconnect.
 - Bond cleanup before each reconnect attempt (fixes "PIN or Key
@@ -72,6 +86,7 @@ from meshcore_gui.config import (
 )
 from meshcore_gui.core.protocols import SharedDataWriter
 from meshcore_gui.ble.ble_agent import BleAgentManager
+from meshcore_gui.ble.ble_connector import ensure_bond, is_ble_connect_available
 from meshcore_gui.ble.ble_reconnect import ensure_adapter_pairable, reconnect_loop, remove_bond
 from meshcore_gui.ble.commands import CommandHandler
 from meshcore_gui.ble.events import EventHandler
@@ -103,7 +118,12 @@ class BLEWorker:
         self.running = True
         self._disconnected = False
 
-        # BLE PIN agent (replaces external bt-agent.service)
+        # BLE bond manager: prefer meshcore-ble-connect, fall back to
+        # built-in D-Bus agent if the tool is not installed.
+        self._use_ble_connect: bool = is_ble_connect_available()
+
+        # BLE PIN agent (legacy fallback when meshcore-ble-connect is
+        # not available)
         self._agent = BleAgentManager(pin=_config.BLE_PIN)
 
         # Local cache (one file per device)
@@ -141,67 +161,69 @@ class BLEWorker:
         asyncio.run(self._async_main())
 
     async def _async_main(self) -> None:
-        # ── Step 1: Start PIN agent (BEFORE any BLE connection) ──
-        await self._agent.start()
-
-        # ── Step 1b: Warn if PIN agent failed (Linux only) ──
-        if not self._agent.is_registered and sys.platform == "linux":
-            print(
-                "BLE: ❌ PIN agent is NOT registered — BLE pairing "
-                "will fail with 'Not Paired'."
+        # ── Step 1: BLE bond setup ──
+        # Primary: meshcore-ble-connect (handles all BlueZ versions)
+        # Fallback: built-in D-Bus PIN agent + bleak pairing
+        if self._use_ble_connect:
+            # meshcore-ble-connect handles bonding — verify bond now
+            print("BLE: Using meshcore-ble-connect for bond management")
+            success, rc, msg = await ensure_bond(
+                self.address, pin=_config.BLE_PIN,
             )
-            print("BLE: ──────────────────────────────────────────")
-            print("BLE: Fix: install the D-Bus policy file:")
-            print("BLE:   bash install_ble_stable.sh")
-            print("BLE: Or manually:")
-            print(
-                "BLE:   sudo tee /etc/dbus-1/system.d/"
-                "meshcore-ble.conf << EOF"
-            )
-            print("BLE:   <busconfig>")
-            print('BLE:     <policy user="YOUR_USER">')
-            print(
-                'BLE:       <allow send_destination="org.bluez"/>'
-            )
-            print(
-                'BLE:       <allow send_interface='
-                '"org.bluez.Agent1"/>'
-            )
-            print(
-                'BLE:       <allow send_interface='
-                '"org.bluez.AgentManager1"/>'
-            )
-            print("BLE:     </policy>")
-            print("BLE:   </busconfig>")
-            print("BLE:   EOF")
-            print("BLE: Then restart the application.")
-            print("BLE: ──────────────────────────────────────────")
-            # Also log to file so it survives terminal scroll
-            debug_print(
-                "PIN agent NOT registered — D-Bus policy file "
-                "likely missing. BLE pairing will fail. "
-                "Install /etc/dbus-1/system.d/meshcore-ble.conf "
-                "or run: bash install_ble_stable.sh"
-            )
-            self.shared.set_status(
-                "❌ BLE PIN agent failed — "
-                "see terminal for fix instructions"
-            )
-
-        # ── Step 2: Prepare BLE connection ──
-        if NEEDS_PREPAIR:
-            # BlueZ >= 5.78: pre-pair with bleak (agent provides PIN)
-            self._prepair_client = await self._ensure_paired()
-            await asyncio.sleep(1)
+            if not success:
+                self.shared.set_status(msg)
+                print(f"BLE: Initial bond check failed: {msg}")
+                debug_print(f"Initial ensure_bond failed: rc={rc} msg={msg}")
+                # Non-fatal: we'll retry before each connect attempt
         else:
-            # BlueZ < 5.78: remove stale bond (auto re-pairs on write)
-            await remove_bond(self.address)
-            await asyncio.sleep(1)
+            # Legacy fallback: start built-in D-Bus PIN agent
+            await self._agent.start()
 
-        # ── Step 3: Connect + main loop (with reconnect wrapper) ──
+            if not self._agent.is_registered and sys.platform == "linux":
+                print(
+                    "BLE: ❌ PIN agent is NOT registered — BLE pairing "
+                    "will fail with 'Not Paired'."
+                )
+                print("BLE: ──────────────────────────────────────────")
+                print("BLE: Fix: install meshcore-ble-connect:")
+                print("BLE:   pip install meshcore-ble-connect")
+                print("BLE: Or install the D-Bus policy file:")
+                print("BLE:   bash install_ble_stable.sh")
+                print("BLE: ──────────────────────────────────────────")
+                debug_print(
+                    "PIN agent NOT registered — install "
+                    "meshcore-ble-connect or D-Bus policy file"
+                )
+                self.shared.set_status(
+                    "❌ BLE PIN agent failed — "
+                    "install meshcore-ble-connect or see terminal"
+                )
+
+            # Legacy bond preparation
+            if NEEDS_PREPAIR:
+                self._prepair_client = await self._ensure_paired()
+                await asyncio.sleep(1)
+            else:
+                await remove_bond(self.address)
+                await asyncio.sleep(1)
+
+        # ── Step 2: Connect + main loop (with reconnect wrapper) ──
         try:
             while self.running:
                 self._disconnected = False
+
+                # Ensure bond before every connect attempt
+                if self._use_ble_connect:
+                    success, rc, msg = await ensure_bond(
+                        self.address, pin=_config.BLE_PIN,
+                    )
+                    if not success:
+                        self.shared.set_status(msg)
+                        print(f"BLE: Bond failed before connect: {msg}")
+                        debug_print(f"Pre-connect ensure_bond failed: rc={rc}")
+                        await asyncio.sleep(30)
+                        continue
+
                 await self._connect()
 
                 if not self.mc:
@@ -210,12 +232,14 @@ class BLEWorker:
                     debug_print("Initial connection failed, retrying in 30s")
                     self.shared.set_status("⚠️ Connection failed — retrying...")
                     await asyncio.sleep(30)
-                    if NEEDS_PREPAIR:
-                        self._prepair_client = await self._ensure_paired()
-                        await asyncio.sleep(1)
-                    else:
-                        await remove_bond(self.address)
-                        await asyncio.sleep(1)
+                    if not self._use_ble_connect:
+                        # Legacy: re-prepare bond
+                        if NEEDS_PREPAIR:
+                            self._prepair_client = await self._ensure_paired()
+                            await asyncio.sleep(1)
+                        else:
+                            await remove_bond(self.address)
+                            await asyncio.sleep(1)
                     continue
 
                 # ── Main loop ──
@@ -279,8 +303,20 @@ class BLEWorker:
                     debug_print("Connection lost, starting reconnect")
                     self.mc = None
 
+                    # Re-bond before reconnect (detects stale bonds)
+                    if self._use_ble_connect:
+                        success, rc, msg = await ensure_bond(
+                            self.address, pin=_config.BLE_PIN,
+                        )
+                        if not success:
+                            debug_print(
+                                f"Pre-reconnect ensure_bond failed: "
+                                f"rc={rc} — continuing with reconnect"
+                            )
+
                     async def _create_fresh_connection() -> MeshCore:
-                        if NEEDS_PREPAIR:
+                        if not self._use_ble_connect and NEEDS_PREPAIR:
+                            # Legacy: pre-pair with bleak
                             client = await self._ensure_paired()
                             if client and client.is_connected:
                                 return await MeshCore.create_ble(
@@ -360,22 +396,31 @@ class BLEWorker:
                             "waiting 60s before next cycle"
                         )
                         await asyncio.sleep(60)
-                        if NEEDS_PREPAIR:
-                            self._prepair_client = await self._ensure_paired()
-                            await asyncio.sleep(1)
-                        else:
-                            await remove_bond(self.address)
-                            await asyncio.sleep(1)
+                        if not self._use_ble_connect:
+                            # Legacy: re-prepare bond
+                            if NEEDS_PREPAIR:
+                                self._prepair_client = (
+                                    await self._ensure_paired()
+                                )
+                                await asyncio.sleep(1)
+                            else:
+                                await remove_bond(self.address)
+                                await asyncio.sleep(1)
         finally:
-            # ── Cleanup: stop PIN agent ──
-            await self._agent.stop()
+            # ── Cleanup: stop PIN agent (if legacy mode was used) ──
+            if not self._use_ble_connect:
+                await self._agent.stop()
 
     # ------------------------------------------------------------------
-    # Pre-pairing (BlueZ >= 5.78)
+    # Pre-pairing (BlueZ >= 5.78) — legacy fallback
     # ------------------------------------------------------------------
 
     async def _ensure_paired(self) -> "BleakClient | None":
         """Pre-pair with the device and return a connected client.
+
+        **Legacy fallback** — only used when ``meshcore-ble-connect``
+        is not installed.  When the external tool is available, bond
+        management is handled entirely by :func:`ensure_bond`.
 
         Required for BlueZ >= 5.78 where on-demand pairing on
         encrypted characteristic writes no longer works.  On older
@@ -448,6 +493,9 @@ class BLEWorker:
 
     async def _connect(self) -> None:
         # Phase 1: Load cache → GUI is instantly populated
+        # Note: BLE bond has already been ensured by _async_main via
+        # ensure_bond() (meshcore-ble-connect) or _ensure_paired()
+        # (legacy) before this method is called.
         if self._cache.load():
             self._apply_cache()
             print("BLE: Cache loaded — GUI populated from disk")
@@ -530,8 +578,9 @@ class BLEWorker:
             if "not paired" in str(e).lower() or "authentication" in str(e).lower():
                 debug_print(
                     "Pairing failure detected — likely cause: "
-                    "D-Bus policy file missing or bluetooth group "
-                    "not configured. Check install instructions."
+                    "meshcore-ble-connect not installed, or "
+                    "D-Bus policy file missing. "
+                    "Install: pip install meshcore-ble-connect"
                 )
             if self._cache.has_cache:
                 self.shared.set_status(f"⚠️ Offline — using cached data ({e})")

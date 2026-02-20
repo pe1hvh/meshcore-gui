@@ -11,6 +11,7 @@ Usage:
     python meshcore_gui.py <BLE_ADDRESS> --debug-on
     python meshcore_gui.py <BLE_ADDRESS> --port=9090
     python meshcore_gui.py <BLE_ADDRESS> --ble-pin=000000
+    python meshcore_gui.py <BLE_ADDRESS> --pin=000000
     python meshcore_gui.py <BLE_ADDRESS> --ssl
     python -m meshcore_gui <BLE_ADDRESS>
 
@@ -87,17 +88,19 @@ def main():
     if not args:
         print("MeshCore GUI - Threaded BLE Edition")
         print("=" * 40)
-        print("Usage: python meshcore_gui.py <BLE_ADDRESS> [--debug-on] [--port=PORT] [--ble-pin=PIN] [--ssl]")
+        print("Usage: python meshcore_gui.py <BLE_ADDRESS> [--debug-on] [--port=PORT] [--ble-pin=PIN] [--pin=PIN] [--ssl]")
         print("Example: python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF")
         print("         python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --debug-on")
         print("         python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --port=9090")
         print("         python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --ble-pin=000000")
+        print("         python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --pin=000000")
         print("         python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --ssl")
         print()
         print("Options:")
         print("  --debug-on        Enable verbose debug logging")
         print("  --port=PORT       Web server port (default: 8081)")
         print("  --ble-pin=PIN     BLE pairing PIN (default: 123456)")
+        print("  --pin=PIN         Alias for --ble-pin")
         print("  --ssl             Enable HTTPS with auto-generated self-signed certificate")
         print()
         print("Tip: Use 'bluetoothctl scan on' to find devices")
@@ -120,9 +123,9 @@ def main():
                 print(f"ERROR: Invalid port number: {flag}")
                 sys.exit(1)
 
-    # Apply --ble-pin flag
+    # Apply --ble-pin / --pin flag (--pin is a short alias)
     for flag in flags:
-        if flag.startswith('--ble-pin='):
+        if flag.startswith('--ble-pin=') or flag.startswith('--pin='):
             config.BLE_PIN = flag.split('=', 1)[1]
 
     # Apply --ssl flag (auto-generate self-signed certificate if needed)
@@ -167,12 +170,16 @@ def main():
             print(f"Using existing certificate from {ssl_dir}/")
 
     # Startup banner
+    from meshcore_gui.ble.ble_connector import is_ble_connect_available
+    ble_connect_status = "installed" if is_ble_connect_available() else "not found (legacy agent)"
+
     print("=" * 50)
     print("MeshCore GUI - Threaded BLE Edition")
     print("=" * 50)
     print(f"Device:     {ble_address}")
     print(f"Port:       {port}")
     print(f"BLE PIN:    {config.BLE_PIN}")
+    print(f"BLE bond:   meshcore-ble-connect {ble_connect_status}")
     print(f"SSL:        {'ON (https)' if ssl_enabled else 'OFF (http)'}")
     print(f"Debug mode: {'ON' if config.DEBUG else 'OFF'}")
     print(f"BlueZ:      {config.BLUEZ_VERSION[0]}.{config.BLUEZ_VERSION[1]} "

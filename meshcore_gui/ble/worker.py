@@ -121,6 +121,9 @@ class BLEWorker:
         # Channel indices that still need keys from device
         self._pending_keys: Set[int] = set()
 
+        # Pre-paired BleakClient (BlueZ >= 5.78 only)
+        self._prepair_client = None
+
         # Dynamically discovered channels from device
         self._channels: List[Dict] = []
 
@@ -188,7 +191,7 @@ class BLEWorker:
         # ── Step 2: Prepare BLE connection ──
         if NEEDS_PREPAIR:
             # BlueZ >= 5.78: pre-pair with bleak (agent provides PIN)
-            await self._ensure_paired()
+            self._prepair_client = await self._ensure_paired()
             await asyncio.sleep(1)
         else:
             # BlueZ < 5.78: remove stale bond (auto re-pairs on write)
@@ -208,7 +211,7 @@ class BLEWorker:
                     self.shared.set_status("⚠️ Connection failed — retrying...")
                     await asyncio.sleep(30)
                     if NEEDS_PREPAIR:
-                        await self._ensure_paired()
+                        self._prepair_client = await self._ensure_paired()
                         await asyncio.sleep(1)
                     else:
                         await remove_bond(self.address)
@@ -277,6 +280,15 @@ class BLEWorker:
                     self.mc = None
 
                     async def _create_fresh_connection() -> MeshCore:
+                        if NEEDS_PREPAIR:
+                            client = await self._ensure_paired()
+                            if client and client.is_connected:
+                                return await MeshCore.create_ble(
+                                    client=client,
+                                    auto_reconnect=False,
+                                    default_timeout=BLE_DEFAULT_TIMEOUT,
+                                    debug=BLE_LIB_DEBUG,
+                                )
                         return await MeshCore.create_ble(
                             self.address,
                             auto_reconnect=False,
@@ -349,7 +361,7 @@ class BLEWorker:
                         )
                         await asyncio.sleep(60)
                         if NEEDS_PREPAIR:
-                            await self._ensure_paired()
+                            self._prepair_client = await self._ensure_paired()
                             await asyncio.sleep(1)
                         else:
                             await remove_bond(self.address)
@@ -362,8 +374,8 @@ class BLEWorker:
     # Pre-pairing (BlueZ >= 5.78)
     # ------------------------------------------------------------------
 
-    async def _ensure_paired(self) -> None:
-        """Pre-pair with the device if no bond exists.
+    async def _ensure_paired(self) -> "BleakClient | None":
+        """Pre-pair with the device and return the connected client.
 
         Required for BlueZ >= 5.78 where on-demand pairing on
         encrypted characteristic writes no longer works.  On older
@@ -371,6 +383,11 @@ class BLEWorker:
         automatic re-pairing).
 
         The PIN agent must be started BEFORE calling this method.
+
+        Returns:
+            A connected and paired BleakClient that can be passed
+            directly to ``MeshCore.create_ble(client=...)``, or
+            ``None`` if pre-pairing failed.
         """
         from bleak import BleakClient
 
@@ -394,9 +411,8 @@ class BLEWorker:
                 debug_print(f"Pre-pair: pair() result: {e}")
 
             await asyncio.sleep(1)
-            await client.disconnect()
-            debug_print("Pre-pair: disconnected, bond established")
-            print("BLE: ✅ Pre-pairing complete")
+            print("BLE: ✅ Pre-pairing complete, passing client to meshcore")
+            return client
 
         except Exception as e:
             print(
@@ -404,6 +420,7 @@ class BLEWorker:
                 f"(may still work with existing bond): {e}"
             )
             debug_print(f"Pre-pair failed: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # Connection (cache-first)
@@ -424,7 +441,27 @@ class BLEWorker:
         try:
             print(f"BLE: Connecting to {self.address}...")
             debug_print(f"Connecting to {self.address}")
-            self.mc = await MeshCore.create_ble(self.address, auto_reconnect=False, default_timeout=BLE_DEFAULT_TIMEOUT, debug=BLE_LIB_DEBUG)
+
+            # Use pre-paired client if available (BlueZ >= 5.78)
+            client = self._prepair_client
+            self._prepair_client = None  # consume it
+
+            if client and client.is_connected:
+                debug_print("Using pre-paired BleakClient for create_ble")
+                self.mc = await MeshCore.create_ble(
+                    client=client,
+                    auto_reconnect=False,
+                    default_timeout=BLE_DEFAULT_TIMEOUT,
+                    debug=BLE_LIB_DEBUG,
+                )
+            else:
+                debug_print("No pre-paired client, connecting by address")
+                self.mc = await MeshCore.create_ble(
+                    self.address,
+                    auto_reconnect=False,
+                    default_timeout=BLE_DEFAULT_TIMEOUT,
+                    debug=BLE_LIB_DEBUG,
+                )
             print("BLE: Connected!")
             debug_print(f"Connected to {self.address}")
 

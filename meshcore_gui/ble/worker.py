@@ -165,16 +165,9 @@ class BLEWorker:
         # Primary: meshcore-ble-connect (handles all BlueZ versions)
         # Fallback: built-in D-Bus PIN agent + bleak pairing
         if self._use_ble_connect:
-            # meshcore-ble-connect handles bonding — verify bond now
+            # meshcore-ble-connect handles bonding — bond will be
+            # ensured before each connect attempt in the loop below.
             print("BLE: Using meshcore-ble-connect for bond management")
-            success, rc, msg = await ensure_bond(
-                self.address, pin=_config.BLE_PIN,
-            )
-            if not success:
-                self.shared.set_status(msg)
-                print(f"BLE: Initial bond check failed: {msg}")
-                debug_print(f"Initial ensure_bond failed: rc={rc} msg={msg}")
-                # Non-fatal: we'll retry before each connect attempt
         else:
             # Legacy fallback: start built-in D-Bus PIN agent
             await self._agent.start()
@@ -223,6 +216,12 @@ class BLEWorker:
                         debug_print(f"Pre-connect ensure_bond failed: rc={rc}")
                         await asyncio.sleep(30)
                         continue
+
+                    # Bond is valid — create a connected BleakClient so
+                    # that create_ble() reuses it instead of opening a
+                    # fresh connection (which disconnects immediately on
+                    # BlueZ >= 5.78 due to encrypted GATT discovery).
+                    self._prepair_client = await self._bleak_connect_after_bond()
 
                 await self._connect()
 
@@ -303,19 +302,22 @@ class BLEWorker:
                     debug_print("Connection lost, starting reconnect")
                     self.mc = None
 
-                    # Re-bond before reconnect (detects stale bonds)
-                    if self._use_ble_connect:
-                        success, rc, msg = await ensure_bond(
-                            self.address, pin=_config.BLE_PIN,
-                        )
-                        if not success:
-                            debug_print(
-                                f"Pre-reconnect ensure_bond failed: "
-                                f"rc={rc} — continuing with reconnect"
-                            )
-
                     async def _create_fresh_connection() -> MeshCore:
-                        if not self._use_ble_connect and NEEDS_PREPAIR:
+                        if self._use_ble_connect:
+                            # Re-bond and create a connected BleakClient
+                            success, _rc, _msg = await ensure_bond(
+                                self.address, pin=_config.BLE_PIN,
+                            )
+                            if success:
+                                client = await self._bleak_connect_after_bond()
+                                if client and client.is_connected:
+                                    return await MeshCore.create_ble(
+                                        client=client,
+                                        auto_reconnect=False,
+                                        default_timeout=BLE_DEFAULT_TIMEOUT,
+                                        debug=BLE_LIB_DEBUG,
+                                    )
+                        elif NEEDS_PREPAIR:
                             # Legacy: pre-pair with bleak
                             client = await self._ensure_paired()
                             if client and client.is_connected:
@@ -410,6 +412,43 @@ class BLEWorker:
             # ── Cleanup: stop PIN agent (if legacy mode was used) ──
             if not self._use_ble_connect:
                 await self._agent.stop()
+
+    # ------------------------------------------------------------------
+    # Post-bond BleakClient (meshcore-ble-connect path)
+    # ------------------------------------------------------------------
+
+    async def _bleak_connect_after_bond(self) -> "BleakClient | None":
+        """Create a connected BleakClient after bond is ensured.
+
+        Called after ``meshcore-ble-connect`` has guaranteed the bond
+        exists in BlueZ.  Creates a BleakClient and connects it so that
+        ``MeshCore.create_ble(client=...)`` can reuse the connection.
+
+        Without this step, ``create_ble(address)`` opens a *fresh*
+        connection which on BlueZ >= 5.78 disconnects immediately during
+        GATT service discovery on encrypted characteristics — even
+        though the bond keys are valid.
+
+        Returns:
+            A connected BleakClient, or ``None`` on failure.
+        """
+        from bleak import BleakClient
+
+        self.shared.set_status(f"🔄 Connecting to {self.address}...")
+        debug_print(f"Post-bond: creating BleakClient for {self.address}")
+
+        try:
+            client = BleakClient(self.address, timeout=30)
+            await client.connect()
+            debug_print(
+                f"Post-bond: connected={client.is_connected}, "
+                f"services={len(client.services.services) if client.services else 'none'}"
+            )
+            return client
+        except Exception as e:
+            debug_print(f"Post-bond: BleakClient connect failed: {e}")
+            print(f"BLE: ⚠️ Post-bond connect failed: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # Pre-pairing (BlueZ >= 5.78) — legacy fallback

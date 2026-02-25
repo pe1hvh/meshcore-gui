@@ -217,8 +217,16 @@ class BLEWorker:
                         await asyncio.sleep(30)
                         continue
 
-                    # Bond is valid — create a connected BleakClient so
-                    # that create_ble() reuses it instead of opening a
+                    # Bond is valid — give device time to become
+                    # connectable again after meshcore-ble-connect
+                    # releases its connection.  Without this delay,
+                    # BleakClient.connect() fails immediately with
+                    # "Not connected" on BlueZ 5.82.
+                    debug_print("Bond OK, waiting 4s for device to settle")
+                    await asyncio.sleep(4)
+
+                    # Create a connected BleakClient so that
+                    # create_ble() reuses it instead of opening a
                     # fresh connection (which disconnects immediately on
                     # BlueZ >= 5.78 due to encrypted GATT discovery).
                     self._prepair_client = await self._bleak_connect_after_bond()
@@ -309,6 +317,11 @@ class BLEWorker:
                                 self.address, pin=_config.BLE_PIN,
                             )
                             if success:
+                                debug_print(
+                                    "Reconnect: bond OK, waiting 4s "
+                                    "for device to settle"
+                                )
+                                await asyncio.sleep(4)
                                 client = await self._bleak_connect_after_bond()
                                 if client and client.is_connected:
                                     return await MeshCore.create_ble(

@@ -22,6 +22,20 @@ Bot logic          → :mod:`meshcore_gui.services.bot`
 Deduplication      → :mod:`meshcore_gui.services.dedup`
 Cache              → :mod:`meshcore_gui.services.cache`
 
+v5.5 changes (subprocess-based BLE connection)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+- On BlueZ 5.82+, BleakClient.connect() cannot connect to bonded
+  MeshCore devices.  The new approach uses ``meshcore-ble-connect
+  --connect`` as a subprocess that holds the D-Bus connection open.
+  BleakClient then attaches to the already-connected device for GATT
+  service discovery only.
+- New method ``_connect_via_subprocess()`` manages the subprocess
+  lifecycle: start → wait for READY → BleakScanner cache warmup →
+  BleakClient.connect() → MeshCore.create_ble(client=...).
+- Subprocess is killed on disconnect, reconnect, or shutdown.
+- Fallback: if ``--connect`` mode fails, falls back to direct
+  ``MeshCore.create_ble(address)`` for older BlueZ versions.
+
 v5.4 changes (meshcore-ble-connect integration)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 - BLE bond management via ``meshcore-ble-connect`` subprocess: before
@@ -102,6 +116,9 @@ KEY_RETRY_INTERVAL: float = 30.0
 # Seconds between periodic cleanup of old archived data (24 hours).
 CLEANUP_INTERVAL: float = 86400.0
 
+# Timeout (seconds) waiting for READY from meshcore-ble-connect --connect.
+SUBPROCESS_READY_TIMEOUT: float = 60.0
+
 
 class BLEWorker:
     """BLE communication worker that runs in a separate thread.
@@ -147,6 +164,9 @@ class BLEWorker:
         # Dynamically discovered channels from device
         self._channels: List[Dict] = []
 
+        # meshcore-ble-connect --connect subprocess (v5.5)
+        self._ble_connect_proc: Optional[asyncio.subprocess.Process] = None
+
     # ------------------------------------------------------------------
     # Thread lifecycle
     # ------------------------------------------------------------------
@@ -165,9 +185,16 @@ class BLEWorker:
         # Primary: meshcore-ble-connect (handles all BlueZ versions)
         # Fallback: built-in D-Bus PIN agent + bleak pairing
         if self._use_ble_connect:
-            # meshcore-ble-connect handles bonding — bond will be
-            # ensured before each connect attempt in the loop below.
+            # meshcore-ble-connect handles bonding — verify bond now
             print("BLE: Using meshcore-ble-connect for bond management")
+            success, rc, msg = await ensure_bond(
+                self.address, pin=_config.BLE_PIN,
+            )
+            if not success:
+                self.shared.set_status(msg)
+                print(f"BLE: Initial bond check failed: {msg}")
+                debug_print(f"Initial ensure_bond failed: rc={rc} msg={msg}")
+                # Non-fatal: we'll retry before each connect attempt
         else:
             # Legacy fallback: start built-in D-Bus PIN agent
             await self._agent.start()
@@ -216,12 +243,6 @@ class BLEWorker:
                         debug_print(f"Pre-connect ensure_bond failed: rc={rc}")
                         await asyncio.sleep(30)
                         continue
-
-                    # Bond is valid — create a connected BleakClient so
-                    # that create_ble() reuses it instead of opening a
-                    # fresh connection (which disconnects immediately on
-                    # BlueZ >= 5.78 due to encrypted GATT discovery).
-                    self._prepair_client = await self._bleak_connect_after_bond()
 
                 await self._connect()
 
@@ -290,10 +311,27 @@ class BLEWorker:
                         await self._cleanup_old_data()
                         last_cleanup = now
 
+                    # Check if subprocess is still alive (--connect mode)
+                    if self._ble_connect_proc is not None:
+                        if self._ble_connect_proc.returncode is not None:
+                            print(
+                                "BLE: ⚠️  meshcore-ble-connect subprocess "
+                                f"exited with code {self._ble_connect_proc.returncode}"
+                            )
+                            debug_print(
+                                f"Connect subprocess died: rc={self._ble_connect_proc.returncode}"
+                            )
+                            self._ble_connect_proc = None
+                            self._disconnected = True
+                            break
+
                     await asyncio.sleep(0.1)
 
                 # ── Disconnect detected — reconnect ──
                 if self._disconnected and self.running:
+                    # Kill connect subprocess if still running
+                    await self._kill_connect_subprocess()
+
                     self.shared.set_connected(False)
                     self.shared.set_status(
                         "🔄 Connection lost — reconnecting..."
@@ -302,21 +340,21 @@ class BLEWorker:
                     debug_print("Connection lost, starting reconnect")
                     self.mc = None
 
+                    # Re-bond before reconnect (detects stale bonds)
+                    if self._use_ble_connect:
+                        success, rc, msg = await ensure_bond(
+                            self.address, pin=_config.BLE_PIN,
+                        )
+                        if not success:
+                            debug_print(
+                                f"Pre-reconnect ensure_bond failed: "
+                                f"rc={rc} — continuing with reconnect"
+                            )
+
                     async def _create_fresh_connection() -> MeshCore:
                         if self._use_ble_connect:
-                            # Re-bond and create a connected BleakClient
-                            success, _rc, _msg = await ensure_bond(
-                                self.address, pin=_config.BLE_PIN,
-                            )
-                            if success:
-                                client = await self._bleak_connect_after_bond()
-                                if client and client.is_connected:
-                                    return await MeshCore.create_ble(
-                                        client=client,
-                                        auto_reconnect=False,
-                                        default_timeout=BLE_DEFAULT_TIMEOUT,
-                                        debug=BLE_LIB_DEBUG,
-                                    )
+                            # v5.5: use subprocess for connection
+                            return await self._connect_via_subprocess()
                         elif NEEDS_PREPAIR:
                             # Legacy: pre-pair with bleak
                             client = await self._ensure_paired()
@@ -409,213 +447,10 @@ class BLEWorker:
                                 await remove_bond(self.address)
                                 await asyncio.sleep(1)
         finally:
-            # ── Cleanup: stop PIN agent (if legacy mode was used) ──
+            # ── Cleanup: kill subprocess and stop PIN agent ──
+            await self._kill_connect_subprocess()
             if not self._use_ble_connect:
                 await self._agent.stop()
-
-    # ------------------------------------------------------------------
-    # Post-bond BleakClient (meshcore-ble-connect path)
-    # ------------------------------------------------------------------
-
-    async def _bleak_connect_after_bond(self) -> "BleakClient | None":
-        """Create a connected BleakClient after bond is ensured.
-
-        Called after ``meshcore-ble-connect`` (subprocess) has guaranteed
-        the bond exists in BlueZ.
-
-        Strategy — "use bleak's own bus":
-
-        Instead of opening a separate ``dbus-fast`` connection (which
-        conflicts with bleak's internal singleton bus), we:
-
-        1. Initialise bleak's global ``BlueZManager`` — this opens ONE
-           D-Bus system bus and starts monitoring BlueZ signals.
-        2. Call ``Device1.Connect()`` on **that same bus**.
-        3. Wait until the manager sees ``Connected = True``.
-        4. Hand off to ``BleakClient.connect()`` which detects the
-           device is already connected, **skips** its own ``Connect``
-           call, and proceeds directly to service resolution using
-           bleak's proper signal-based ``ServicesResolved`` watcher.
-
-        This eliminates the two-bus conflict that caused
-        ``ServicesResolved`` to never arrive on BlueZ 5.82.
-
-        Falls back to plain ``BleakClient.connect()`` if the manager's
-        internal bus is not accessible (future bleak API changes).
-
-        Returns:
-            A connected BleakClient with GATT services, or ``None``.
-        """
-        from bleak import BleakClient
-
-        DEVICE_IF = "org.bluez.Device1"
-        BLUEZ = "org.bluez"
-        device_path = (
-            "/org/bluez/hci0/dev_"
-            + self.address.upper().replace(":", "_")
-        )
-
-        self.shared.set_status(f"🔄 Connecting to {self.address}...")
-        debug_print(f"Post-bond: connecting via bleak manager bus")
-
-        # ── Step 1: Get bleak's global manager + D-Bus bus ──
-        try:
-            from bleak.backends.bluezdbus.manager import (
-                get_global_bluez_manager,
-            )
-            from dbus_fast import MessageType
-            from dbus_fast.message import Message
-
-            manager = await get_global_bluez_manager()
-            bus = manager._bus
-
-            if not bus or not bus.connected:
-                debug_print(
-                    "Post-bond: manager bus not available, plain connect"
-                )
-                return await self._bleak_plain_connect()
-
-        except Exception as exc:
-            debug_print(f"Post-bond: cannot access manager bus: {exc}")
-            return await self._bleak_plain_connect()
-
-        # ── Step 2: Device1.Connect() via manager's bus ──
-        # Retry loop for le-connection-abort-by-local (same pattern
-        # as bleak 2.1 and meshcore-ble-connect).
-        try:
-            connected = False
-            for attempt in range(1, 6):
-                try:
-                    reply = await asyncio.wait_for(
-                        bus.call(Message(
-                            destination=BLUEZ,
-                            interface=DEVICE_IF,
-                            path=device_path,
-                            member="Connect",
-                        )),
-                        timeout=15,
-                    )
-                except asyncio.TimeoutError:
-                    debug_print(
-                        f"D-Bus Connect attempt {attempt}/5: timeout"
-                    )
-                    continue
-
-                if reply.message_type != MessageType.ERROR:
-                    debug_print(f"D-Bus Connect OK (attempt {attempt})")
-                    connected = True
-                    break
-
-                error_msg = (
-                    reply.body[0] if reply.body else str(reply.error_name)
-                )
-                debug_print(
-                    f"D-Bus Connect attempt {attempt}/5: {error_msg}"
-                )
-
-                # Already connected is fine
-                if "Already Connected" in str(reply.error_name):
-                    debug_print("D-Bus: device already connected")
-                    connected = True
-                    break
-
-                # Retryable error — BlueZ aborted due to prior session
-                if "le-connection-abort-by-local" in str(error_msg):
-                    await asyncio.sleep(1.0 * attempt)
-                    continue
-
-                # Non-retryable error
-                print(f"BLE: ⚠️ D-Bus Connect failed: {error_msg}")
-                return None
-
-            if not connected:
-                print("BLE: ⚠️ D-Bus Connect failed after 5 attempts")
-                return None
-
-            # Small settle time — let manager process property signals
-            await asyncio.sleep(0.5)
-
-            # Verify manager sees the device as connected
-            try:
-                if not manager.is_connected(device_path):
-                    debug_print(
-                        "D-Bus Connect OK but manager doesn't see it "
-                        "yet, waiting..."
-                    )
-                    for _ in range(10):
-                        await asyncio.sleep(0.5)
-                        if manager.is_connected(device_path):
-                            break
-                    else:
-                        debug_print("Manager never saw Connected=True")
-                        # Continue anyway — BleakClient might still work
-            except Exception:
-                pass  # device not yet in manager's cache, continue
-
-        except Exception as exc:
-            debug_print(f"D-Bus Connect phase failed: {exc}")
-            return await self._bleak_plain_connect()
-
-        # ── Step 3: BleakClient.connect() — reuses existing connection ──
-        # bleak will:
-        #   - see is_connected=True → skip Device1.Connect()
-        #   - call get_services() → signal-based ServicesResolved wait
-        try:
-            debug_print(
-                "Post-bond: attaching BleakClient to connected device"
-            )
-            client = BleakClient(self.address, timeout=30)
-            await client.connect()
-
-            svc_count = (
-                len(client.services.services) if client.services else 0
-            )
-            debug_print(
-                f"Post-bond: connected={client.is_connected}, "
-                f"services={svc_count}"
-            )
-            print(
-                f"BLE: ✅ Post-bond connect complete "
-                f"({svc_count} services)"
-            )
-            return client
-
-        except Exception as exc:
-            debug_print(f"Post-bond BleakClient.connect failed: {exc}")
-            print(f"BLE: ⚠️ Post-bond connect failed: {exc}")
-            return None
-
-    async def _bleak_plain_connect(self) -> "BleakClient | None":
-        """Fallback: direct BleakClient.connect() without D-Bus pre-connect.
-
-        Used when:
-        - bleak's manager bus is not accessible (API change)
-        - Running on older BlueZ where plain connect works
-        """
-        from bleak import BleakClient
-
-        debug_print("Fallback: plain BleakClient.connect()")
-        try:
-            client = BleakClient(self.address, timeout=30)
-            await client.connect()
-
-            svc_count = (
-                len(client.services.services) if client.services else 0
-            )
-            debug_print(
-                f"Plain connect: connected={client.is_connected}, "
-                f"services={svc_count}"
-            )
-            if client.is_connected:
-                print(
-                    f"BLE: ✅ Plain connect OK ({svc_count} services)"
-                )
-                return client
-            return None
-
-        except Exception as exc:
-            debug_print(f"Plain connect failed: {exc}")
-            return None
 
     # ------------------------------------------------------------------
     # Pre-pairing (BlueZ >= 5.78) — legacy fallback
@@ -694,6 +529,203 @@ class BLEWorker:
             return None
 
     # ------------------------------------------------------------------
+    # Subprocess-based BLE connection (v5.5)
+    # ------------------------------------------------------------------
+
+    async def _connect_via_subprocess(self) -> MeshCore:
+        """Connect to the device via meshcore-ble-connect --connect.
+
+        This method:
+        1. Starts ``meshcore-ble-connect <MAC> --pin <PIN> --connect``
+           as an async subprocess with stdout piped.
+        2. Reads stdout line-by-line until ``READY`` appears, meaning
+           the subprocess has connected via D-Bus and GATT services
+           are resolved.
+        3. Runs a short ``BleakScanner.find_device_by_address()`` to
+           populate bleak's internal BlueZManager cache with the
+           already-connected device.
+        4. Creates a ``BleakClient`` and calls ``.connect()``.  Because
+           bleak's manager sees the device as already connected in
+           BlueZ, it skips ``Device1.Connect()`` and only performs
+           GATT service discovery.
+        5. Passes the connected client to ``MeshCore.create_ble()``.
+
+        The subprocess is kept alive — its D-Bus connection holds the
+        BLE link open.  It is killed on disconnect or shutdown via
+        ``_kill_connect_subprocess()``.
+
+        Returns:
+            A connected MeshCore instance.
+
+        Raises:
+            Exception: If any step fails (connection, subprocess, etc).
+        """
+        from bleak import BleakClient, BleakScanner
+
+        # Kill any previous subprocess
+        await self._kill_connect_subprocess()
+
+        # ── Step 1: Start subprocess ──
+        cmd = [
+            sys.executable, "-m", "meshcore_ble_connect",
+            self.address,
+            "--pin", str(_config.BLE_PIN),
+            "--connect",
+        ]
+        debug_print(f"Subprocess connect: starting {' '.join(cmd)}")
+        print("BLE: Starting meshcore-ble-connect --connect subprocess...")
+
+        self._ble_connect_proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        # ── Step 2: Wait for READY on stdout ──
+        debug_print("Subprocess connect: waiting for READY")
+        self.shared.set_status("🔄 Subprocess connecting...")
+
+        try:
+            ready_received = False
+            deadline = asyncio.get_event_loop().time() + SUBPROCESS_READY_TIMEOUT
+
+            while asyncio.get_event_loop().time() < deadline:
+                # Check if process died
+                if self._ble_connect_proc.returncode is not None:
+                    stderr_data = b""
+                    if self._ble_connect_proc.stderr:
+                        stderr_data = await self._ble_connect_proc.stderr.read()
+                    raise RuntimeError(
+                        f"meshcore-ble-connect exited with code "
+                        f"{self._ble_connect_proc.returncode}: "
+                        f"{stderr_data.decode(errors='replace').strip()}"
+                    )
+
+                # Read a line with timeout
+                try:
+                    line_bytes = await asyncio.wait_for(
+                        self._ble_connect_proc.stdout.readline(),
+                        timeout=2.0,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                if not line_bytes:
+                    # EOF — process closed stdout
+                    break
+
+                line = line_bytes.decode(errors="replace").strip()
+                debug_print(f"Subprocess stdout: {line}")
+
+                if line == "READY":
+                    ready_received = True
+                    break
+
+            if not ready_received:
+                raise RuntimeError(
+                    f"meshcore-ble-connect did not print READY within "
+                    f"{SUBPROCESS_READY_TIMEOUT}s"
+                )
+
+            print("BLE: ✅ Subprocess READY — device connected via D-Bus")
+            debug_print("Subprocess connect: READY received")
+
+        except Exception:
+            await self._kill_connect_subprocess()
+            raise
+
+        # ── Step 3: Populate bleak's internal cache ──
+        # BleakScanner triggers bleak's BlueZManager to discover
+        # existing BlueZ device objects.  Our device is already
+        # connected (by the subprocess), so the manager will see
+        # Connected=True and skip Device1.Connect() in step 4.
+        debug_print("Subprocess connect: warming bleak scanner cache")
+        try:
+            device = await BleakScanner.find_device_by_address(
+                self.address, timeout=5.0,
+            )
+            if device:
+                debug_print(
+                    f"Subprocess connect: scanner found device: "
+                    f"{device.name} ({device.address})"
+                )
+            else:
+                # Device might not be advertising while connected.
+                # This is OK — bleak's manager may still know about it
+                # from the GetManagedObjects call during scanner init.
+                debug_print(
+                    "Subprocess connect: scanner did not find device "
+                    "(may still work via BlueZ managed objects)"
+                )
+        except Exception as exc:
+            debug_print(f"Subprocess connect: scanner warmup failed: {exc}")
+            # Non-fatal: try to proceed anyway
+
+        # ── Step 4: BleakClient.connect() ──
+        # Bleak sees the device as already connected → skips
+        # Device1.Connect() → only does GATT service discovery.
+        debug_print("Subprocess connect: creating BleakClient")
+        self.shared.set_status("🔄 GATT service discovery...")
+
+        client = BleakClient(self.address, timeout=30)
+        await client.connect()
+
+        debug_print(
+            f"Subprocess connect: bleak connected={client.is_connected}, "
+            f"services={len(client.services.services) if client.services else 'none'}"
+        )
+        print("BLE: ✅ BleakClient attached to subprocess connection")
+
+        # ── Step 5: Create MeshCore with connected client ──
+        mc = await MeshCore.create_ble(
+            client=client,
+            auto_reconnect=False,
+            default_timeout=BLE_DEFAULT_TIMEOUT,
+            debug=BLE_LIB_DEBUG,
+        )
+
+        return mc
+
+    async def _kill_connect_subprocess(self) -> None:
+        """Kill the meshcore-ble-connect --connect subprocess if running.
+
+        Sends SIGTERM first for clean D-Bus disconnect, then SIGKILL
+        after a short grace period if needed.
+        """
+        proc = self._ble_connect_proc
+        if proc is None:
+            return
+
+        if proc.returncode is not None:
+            debug_print(
+                f"Connect subprocess already exited: rc={proc.returncode}"
+            )
+            self._ble_connect_proc = None
+            return
+
+        debug_print("Killing connect subprocess")
+        try:
+            proc.terminate()  # SIGTERM
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=3.0)
+                debug_print(
+                    f"Connect subprocess terminated: rc={proc.returncode}"
+                )
+            except asyncio.TimeoutError:
+                debug_print("Connect subprocess did not exit, sending SIGKILL")
+                proc.kill()
+                await proc.wait()
+                debug_print(
+                    f"Connect subprocess killed: rc={proc.returncode}"
+                )
+        except ProcessLookupError:
+            debug_print("Connect subprocess already gone")
+        except Exception as exc:
+            debug_print(f"Error killing connect subprocess: {exc}")
+        finally:
+            self._ble_connect_proc = None
+
+    # ------------------------------------------------------------------
     # Connection (cache-first)
     # ------------------------------------------------------------------
 
@@ -716,26 +748,54 @@ class BLEWorker:
             print(f"BLE: Connecting to {self.address}...")
             debug_print(f"Connecting to {self.address}")
 
-            # Use pre-paired client if available (BlueZ >= 5.78)
-            client = self._prepair_client
-            self._prepair_client = None  # consume it
-
-            if client and client.is_connected:
-                debug_print("Using pre-paired BleakClient for create_ble")
-                self.mc = await MeshCore.create_ble(
-                    client=client,
-                    auto_reconnect=False,
-                    default_timeout=BLE_DEFAULT_TIMEOUT,
-                    debug=BLE_LIB_DEBUG,
-                )
+            if self._use_ble_connect:
+                # v5.5: Subprocess-based connection (BlueZ 5.82+ fix)
+                # Primary: meshcore-ble-connect --connect holds D-Bus
+                # connection, BleakClient attaches for GATT only.
+                try:
+                    self.mc = await self._connect_via_subprocess()
+                    print("BLE: Connected via subprocess!")
+                    debug_print("Connected via subprocess")
+                except Exception as sub_exc:
+                    # Fallback: try direct BleakClient (may work on
+                    # older BlueZ versions where the bug doesn't exist)
+                    print(
+                        f"BLE: ⚠️ Subprocess connect failed: {sub_exc}"
+                    )
+                    debug_print(
+                        f"Subprocess connect failed, trying direct: {sub_exc}"
+                    )
+                    self.shared.set_status("🔄 Trying direct connect...")
+                    self.mc = await MeshCore.create_ble(
+                        self.address,
+                        auto_reconnect=False,
+                        default_timeout=BLE_DEFAULT_TIMEOUT,
+                        debug=BLE_LIB_DEBUG,
+                    )
+                    print("BLE: Connected via direct fallback!")
+                    debug_print("Connected via direct fallback")
             else:
-                debug_print("No pre-paired client, connecting by address")
-                self.mc = await MeshCore.create_ble(
-                    self.address,
-                    auto_reconnect=False,
-                    default_timeout=BLE_DEFAULT_TIMEOUT,
-                    debug=BLE_LIB_DEBUG,
-                )
+                # Legacy path: use pre-paired client or direct address
+                client = self._prepair_client
+                self._prepair_client = None  # consume it
+
+                if client and client.is_connected:
+                    debug_print("Using pre-paired BleakClient for create_ble")
+                    self.mc = await MeshCore.create_ble(
+                        client=client,
+                        auto_reconnect=False,
+                        default_timeout=BLE_DEFAULT_TIMEOUT,
+                        debug=BLE_LIB_DEBUG,
+                    )
+                else:
+                    debug_print("No pre-paired client, connecting by address")
+                    self.mc = await MeshCore.create_ble(
+                        self.address,
+                        auto_reconnect=False,
+                        default_timeout=BLE_DEFAULT_TIMEOUT,
+                        debug=BLE_LIB_DEBUG,
+                    )
+
             print("BLE: Connected!")
             debug_print(f"Connected to {self.address}")
 
@@ -1317,4 +1377,3 @@ class BLEWorker:
             
         except Exception as exc:
             debug_print(f"Periodic cleanup failed: {exc}")
-

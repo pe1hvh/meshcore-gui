@@ -423,58 +423,83 @@ class BLEWorker:
         Called after ``meshcore-ble-connect`` (subprocess) has guaranteed
         the bond exists in BlueZ.
 
-        The developer guide pattern (§4.3) is::
+        Strategy — "use bleak's own bus":
 
-            ensure_bond()          # subprocess — bond OK
-            BleakClient.connect()  # GATT communication
+        Instead of opening a separate ``dbus-fast`` connection (which
+        conflicts with bleak's internal singleton bus), we:
 
-        On BlueZ >= 5.82, ``BleakClient.connect()`` fails with "failed
-        to discover services" for bonded devices.  This method bridges
-        the gap by establishing the connection via D-Bus first (same
-        ``Device1.Connect()`` + ``ServicesResolved`` pattern that
-        ``meshcore-ble-connect`` uses internally), then letting
-        ``BleakClient`` attach to the existing connection.
+        1. Initialise bleak's global ``BlueZManager`` — this opens ONE
+           D-Bus system bus and starts monitoring BlueZ signals.
+        2. Call ``Device1.Connect()`` on **that same bus**.
+        3. Wait until the manager sees ``Connected = True``.
+        4. Hand off to ``BleakClient.connect()`` which detects the
+           device is already connected, **skips** its own ``Connect``
+           call, and proceeds directly to service resolution using
+           bleak's proper signal-based ``ServicesResolved`` watcher.
 
-        Uses ``dbus-fast`` directly — consistent with how
-        :mod:`meshcore_gui.ble.ble_reconnect` already uses ``dbus-fast``
-        for ``remove_bond()`` and ``ensure_adapter_pairable()``.
+        This eliminates the two-bus conflict that caused
+        ``ServicesResolved`` to never arrive on BlueZ 5.82.
+
+        Falls back to plain ``BleakClient.connect()`` if the manager's
+        internal bus is not accessible (future bleak API changes).
 
         Returns:
-            A connected BleakClient with full GATT services, or
-            ``None`` on failure.
+            A connected BleakClient with GATT services, or ``None``.
         """
         from bleak import BleakClient
-        from dbus_fast import BusType, Message, MessageType
-        from dbus_fast.aio import MessageBus
 
-        BLUEZ = "org.bluez"
         DEVICE_IF = "org.bluez.Device1"
-        PROPS_IF = "org.freedesktop.DBus.Properties"
+        BLUEZ = "org.bluez"
         device_path = (
             "/org/bluez/hci0/dev_"
             + self.address.upper().replace(":", "_")
         )
 
         self.shared.set_status(f"🔄 Connecting to {self.address}...")
-        debug_print(f"Post-bond: D-Bus connect for {self.address}")
+        debug_print(f"Post-bond: connecting via bleak manager bus")
 
-        bus = None
+        # ── Step 1: Get bleak's global manager + D-Bus bus ──
         try:
-            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+            from bleak.backends.bluezdbus.manager import (
+                get_global_bluez_manager,
+            )
+            from dbus_fast import MessageType
+            from dbus_fast.message import Message
 
-            # ── Device1.Connect() with retry on le-connection-abort ──
-            # Same pattern as meshcore-ble-connect device.py:_ble_connect
+            manager = await get_global_bluez_manager()
+            bus = manager._bus
+
+            if not bus or not bus.connected:
+                debug_print(
+                    "Post-bond: manager bus not available, plain connect"
+                )
+                return await self._bleak_plain_connect()
+
+        except Exception as exc:
+            debug_print(f"Post-bond: cannot access manager bus: {exc}")
+            return await self._bleak_plain_connect()
+
+        # ── Step 2: Device1.Connect() via manager's bus ──
+        # Retry loop for le-connection-abort-by-local (same pattern
+        # as bleak 2.1 and meshcore-ble-connect).
+        try:
             connected = False
             for attempt in range(1, 6):
-                reply = await asyncio.wait_for(
-                    bus.call(Message(
-                        destination=BLUEZ,
-                        interface=DEVICE_IF,
-                        path=device_path,
-                        member="Connect",
-                    )),
-                    timeout=10,
-                )
+                try:
+                    reply = await asyncio.wait_for(
+                        bus.call(Message(
+                            destination=BLUEZ,
+                            interface=DEVICE_IF,
+                            path=device_path,
+                            member="Connect",
+                        )),
+                        timeout=15,
+                    )
+                except asyncio.TimeoutError:
+                    debug_print(
+                        f"D-Bus Connect attempt {attempt}/5: timeout"
+                    )
+                    continue
 
                 if reply.message_type != MessageType.ERROR:
                     debug_print(f"D-Bus Connect OK (attempt {attempt})")
@@ -488,56 +513,60 @@ class BLEWorker:
                     f"D-Bus Connect attempt {attempt}/5: {error_msg}"
                 )
 
-                if "le-connection-abort-by-local" not in error_msg:
-                    print(f"BLE: ⚠️ D-Bus Connect failed: {error_msg}")
-                    return None
+                # Already connected is fine
+                if "Already Connected" in str(reply.error_name):
+                    debug_print("D-Bus: device already connected")
+                    connected = True
+                    break
 
-                await asyncio.sleep(1.0 * attempt)
+                # Retryable error — BlueZ aborted due to prior session
+                if "le-connection-abort-by-local" in str(error_msg):
+                    await asyncio.sleep(1.0 * attempt)
+                    continue
+
+                # Non-retryable error
+                print(f"BLE: ⚠️ D-Bus Connect failed: {error_msg}")
+                return None
 
             if not connected:
                 print("BLE: ⚠️ D-Bus Connect failed after 5 attempts")
                 return None
 
-            # ── Wait for ServicesResolved ──
-            debug_print("D-Bus: waiting for ServicesResolved")
-            resolved = False
-            for _ in range(30):  # 30 × 0.5s = 15s max
-                reply = await bus.call(Message(
-                    destination=BLUEZ,
-                    path=device_path,
-                    interface=PROPS_IF,
-                    member="Get",
-                    signature="ss",
-                    body=[DEVICE_IF, "ServicesResolved"],
-                ))
-                if (
-                    reply.message_type != MessageType.ERROR
-                    and reply.body
-                    and reply.body[0].value
-                ):
-                    resolved = True
-                    break
-                await asyncio.sleep(0.5)
+            # Small settle time — let manager process property signals
+            await asyncio.sleep(0.5)
 
-            if not resolved:
-                debug_print("D-Bus: ServicesResolved timeout")
-                try:
-                    await bus.call(Message(
-                        destination=BLUEZ,
-                        interface=DEVICE_IF,
-                        path=device_path,
-                        member="Disconnect",
-                    ))
-                except Exception:
-                    pass
-                print("BLE: ⚠️ GATT services did not resolve")
-                return None
+            # Verify manager sees the device as connected
+            try:
+                if not manager.is_connected(device_path):
+                    debug_print(
+                        "D-Bus Connect OK but manager doesn't see it "
+                        "yet, waiting..."
+                    )
+                    for _ in range(10):
+                        await asyncio.sleep(0.5)
+                        if manager.is_connected(device_path):
+                            break
+                    else:
+                        debug_print("Manager never saw Connected=True")
+                        # Continue anyway — BleakClient might still work
+            except Exception:
+                pass  # device not yet in manager's cache, continue
 
-            debug_print("D-Bus: services resolved, attaching BleakClient")
+        except Exception as exc:
+            debug_print(f"D-Bus Connect phase failed: {exc}")
+            return await self._bleak_plain_connect()
 
-            # ── BleakClient attaches to existing D-Bus connection ──
+        # ── Step 3: BleakClient.connect() — reuses existing connection ──
+        # bleak will:
+        #   - see is_connected=True → skip Device1.Connect()
+        #   - call get_services() → signal-based ServicesResolved wait
+        try:
+            debug_print(
+                "Post-bond: attaching BleakClient to connected device"
+            )
             client = BleakClient(self.address, timeout=30)
             await client.connect()
+
             svc_count = (
                 len(client.services.services) if client.services else 0
             )
@@ -551,13 +580,41 @@ class BLEWorker:
             )
             return client
 
-        except asyncio.TimeoutError:
-            debug_print("D-Bus Connect timed out")
-            print("BLE: ⚠️ D-Bus Connect timed out")
+        except Exception as exc:
+            debug_print(f"Post-bond BleakClient.connect failed: {exc}")
+            print(f"BLE: ⚠️ Post-bond connect failed: {exc}")
             return None
-        except Exception as e:
-            debug_print(f"Post-bond failed: {type(e).__name__}: {e}")
-            print(f"BLE: ⚠️ Post-bond connect failed: {e}")
+
+    async def _bleak_plain_connect(self) -> "BleakClient | None":
+        """Fallback: direct BleakClient.connect() without D-Bus pre-connect.
+
+        Used when:
+        - bleak's manager bus is not accessible (API change)
+        - Running on older BlueZ where plain connect works
+        """
+        from bleak import BleakClient
+
+        debug_print("Fallback: plain BleakClient.connect()")
+        try:
+            client = BleakClient(self.address, timeout=30)
+            await client.connect()
+
+            svc_count = (
+                len(client.services.services) if client.services else 0
+            )
+            debug_print(
+                f"Plain connect: connected={client.is_connected}, "
+                f"services={svc_count}"
+            )
+            if client.is_connected:
+                print(
+                    f"BLE: ✅ Plain connect OK ({svc_count} services)"
+                )
+                return client
+            return None
+
+        except Exception as exc:
+            debug_print(f"Plain connect failed: {exc}")
             return None
 
     # ------------------------------------------------------------------

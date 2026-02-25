@@ -1,11 +1,12 @@
-# MeshCore GUI
+# MeshCore GUI — Native USB & BLE
 ![Status](https://img.shields.io/badge/Status-Production-green.svg)
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-orange.svg)
+![Transport](https://img.shields.io/badge/Transport-USB%20Serial%20%7C%20BLE-blueviolet.svg)
 
-A graphical user interface for MeshCore mesh network devices via USB serial or Bluetooth Low Energy (BLE), for on your desktop or as a headless service on your local network.
+A graphical user interface for MeshCore mesh network devices with native USB serial and Bluetooth Low Energy (BLE) support, for on your desktop or as a headless service on your local network.
 
 ## Table of Contents
 
@@ -16,6 +17,7 @@ A graphical user interface for MeshCore mesh network devices via USB serial or B
   - [4.1. Platform Support](#41-platform-support)
 - [5. Installation](#5-installation)
   - [5.1. System Dependencies](#51-system-dependencies)
+    - [5.1.1. D-Bus Policy for BLE (Linux only)](#511-d-bus-policy-for-ble-linux-only)
   - [5.2. Clone the Repository](#52-clone-the-repository)
   - [5.3. Create Virtual Environment](#53-create-virtual-environment)
   - [5.4. Install Python Packages](#54-install-python-packages)
@@ -54,6 +56,8 @@ A graphical user interface for MeshCore mesh network devices via USB serial or B
 - [11. Known Limitations](#11-known-limitations)
 - [12. Troubleshooting](#12-troubleshooting)
   - [12.1. Linux](#121-linux)
+    - [12.1.1. Serial Quick Fixes](#1211-serial-quick-fixes)
+    - [12.1.2. BLE Quick Fixes](#1212-ble-quick-fixes)
   - [12.2. macOS](#122-macos)
   - [12.3. Windows](#123-windows)
   - [12.4. All Platforms](#124-all-platforms)
@@ -76,7 +80,7 @@ This project provides a **native desktop GUI** that connects to your MeshCore de
 
 - **Dual transport** — auto-detects the connection type from the device argument: serial port path → USB serial, MAC address → Bluetooth LE
 - **Serial mode** — requires Serial Companion firmware on the device; works on all platforms
-- **BLE mode** — connects wirelessly via Bluetooth Low Energy with automatic PIN pairing; requires Linux with BlueZ (D-Bus)
+- **BLE mode** — connects wirelessly via Bluetooth Low Energy with automatic PIN pairing; requires Linux with BlueZ (D-Bus). **Note:** recent BlueZ versions (5.66+) may cause connection instability — see [5.1. System Dependencies](#51-system-dependencies) for details
 - **Cross-platform** — written in Python using cross-platform libraries, runs on Linux, macOS and Windows (serial mode); BLE mode is Linux-only
 - **Headless capable** — since the interface is web-based (powered by NiceGUI), it also runs headless on devices like a Raspberry Pi, accessible from any browser on your local network
 - **Message archive** — all messages are persisted to disk with configurable retention, so you maintain a searchable history of mesh traffic
@@ -138,28 +142,75 @@ Under the hood it uses `meshcore` as the protocol layer, `meshcoredecoder` for r
 
 ### 5.1. System Dependencies
 
-**Linux (Ubuntu/Debian):**
+**Linux (Ubuntu/Debian) — Serial:**
 ```bash
 sudo apt update
 sudo apt install python3-pip python3-venv
 ```
 
-**Raspberry Pi (Raspberry Pi OS Lite):**
+**Linux (Ubuntu/Debian) — BLE (additionally):**
+```bash
+sudo apt install bluetooth bluez
+```
+
+Verify that the Bluetooth service is running:
+```bash
+sudo systemctl status bluetooth
+```
+
+> ⚠️ **BlueZ driver warning:** Recent versions of BlueZ (5.66+, shipped with Ubuntu 24.04 and Debian Bookworm) introduced changes to the BLE connection handling and D-Bus agent API that can cause **connection instability, pairing failures and unexpected disconnects** in BLE mode. Known symptoms include:
+> - Pairing succeeds but the connection drops within seconds
+> - `org.bluez.Error.AuthenticationFailed` or `org.bluez.Error.ConnectionAttemptFailed` in the logs
+> - Repeated bond/unbond cycles without a stable connection
+>
+> **Workaround:** If you experience BLE instability, try downgrading BlueZ to 5.65 or pinning the package version. Alternatively, use **USB serial mode** which is not affected by BlueZ and provides the most reliable connection on all platforms. See [12.1.2. BLE Quick Fixes](#1212-ble-quick-fixes) for troubleshooting steps.
+
+**Raspberry Pi (Raspberry Pi OS Lite) — Serial:**
 ```bash
 sudo apt update
 sudo apt install python3-pip python3-venv git
 ```
+
+**Raspberry Pi — BLE (additionally):**
+```bash
+sudo apt install bluetooth bluez
+```
+The Raspberry Pi 5 has a built-in Bluetooth adapter. Verify with `hciconfig` or `bluetoothctl show`.
+
+> ⚠️ **Raspberry Pi OS Bookworm ships with BlueZ 5.66+** which is affected by the BLE stability issues described above. If BLE connections are unreliable, consider USB serial as the primary transport.
 
 **macOS:**
 ```bash
 # Python 3.10+ via Homebrew (if not already installed)
 brew install python
 ```
-No additional system packages needed.
+No additional system packages needed. BLE mode is not supported on macOS (requires Linux D-Bus).
 
 **Windows:**
 - Install [Python 3.10+](https://www.python.org/downloads/) (check "Add to PATH" during installation)
-- No additional system packages needed.
+- No additional system packages needed. BLE mode is not supported on Windows (requires Linux D-Bus).
+
+#### 5.1.1. D-Bus Policy for BLE (Linux only)
+
+BLE mode uses a D-Bus PIN agent to handle automatic pairing. Your user needs permission to interact with BlueZ over the system bus. Create a policy file:
+
+```bash
+sudo tee /etc/dbus-1/system.d/meshcore-ble.conf > /dev/null << 'EOF'
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <policy user="YOUR_USERNAME">
+    <allow send_destination="org.bluez"/>
+    <allow send_interface="org.bluez.Agent1"/>
+    <allow send_interface="org.bluez.AgentManager1"/>
+  </policy>
+</busconfig>
+EOF
+```
+
+Replace `YOUR_USERNAME` with your actual username. This step is handled automatically if you use the `install_ble_stable.sh` installer (see [7.5.1](#751-automated-setup)).
+
+> **Note:** Without this policy, the BLE PIN agent cannot register with BlueZ and pairing will fail with a D-Bus permission error.
 
 ### 5.2. Clone the Repository
 
@@ -286,8 +337,14 @@ python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --debug-on --ble-pin 654321
 
 The simplest way to start — runs in your current terminal. Output is visible directly. Press `Ctrl+C` to stop.
 
+**Serial:**
 ```bash
 python meshcore_gui.py /dev/ttyUSB0
+```
+
+**BLE:**
+```bash
+python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF
 ```
 
 Open your browser at `http://localhost:8081` (or the port you specified with `--port`).
@@ -298,8 +355,15 @@ This is the recommended method during development or when debugging, because you
 
 Runs in the background but keeps the output visible in your terminal. Useful for SSH sessions where you want to monitor the application while keeping the terminal usable.
 
+**Serial:**
 ```bash
 nohup python meshcore_gui.py /dev/ttyUSB0 --debug-on > ~/meshcore.log 2>&1 &
+tail -f ~/meshcore.log
+```
+
+**BLE:**
+```bash
+nohup python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --debug-on > ~/meshcore.log 2>&1 &
 tail -f ~/meshcore.log
 ```
 
@@ -309,8 +373,14 @@ The first command starts the application in the background and writes all output
 
 Runs entirely in the background. Your terminal is free and the application survives closing your SSH session. Ideal for headless devices where you start the application once and leave it running.
 
+**Serial:**
 ```bash
 nohup python meshcore_gui.py /dev/ttyUSB0 --debug-on > ~/meshcore.log 2>&1 &
+```
+
+**BLE:**
+```bash
+nohup python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --debug-on > ~/meshcore.log 2>&1 &
 ```
 
 To check if it is running:
@@ -359,7 +429,19 @@ WEB_PORT=8081
 DEBUG_ON=yes
 ```
 
+**BLE environment variables** (optional):
+
+```bash
+BLE_ADDRESS=AA:BB:CC:DD:EE:FF
+WEB_PORT=8081
+DEBUG_ON=yes
+```
+
+The BLE installer also installs the D-Bus policy file and configures the systemd service with the correct `DBUS_SYSTEM_BUS_ADDRESS` environment variable.
+
 #### 7.5.2. Manual Setup
+
+##### Serial
 
 **Step 1 — Create the service file:**
 
@@ -384,7 +466,39 @@ WantedBy=multi-user.target
 
 Replace `your-username`, `/dev/ttyUSB0` and port with your actual values.
 
-**Step 2 — Enable and start:**
+##### BLE
+
+**Step 1 — Ensure the D-Bus policy is installed** (see [5.1.1](#511-d-bus-policy-for-ble-linux-only)).
+
+**Step 2 — Create the service file:**
+
+```bash
+sudo nano /etc/systemd/system/meshcore-gui.service
+```
+
+```ini
+[Unit]
+Description=MeshCore GUI (BLE)
+After=bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=your-username
+WorkingDirectory=/home/your-username/meshcore-gui
+ExecStart=/home/your-username/meshcore-gui/venv/bin/python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --debug-on --port=8081 --ble-pin 123456
+Restart=on-failure
+RestartSec=30
+Environment=DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
+[Install]
+WantedBy=multi-user.target
+```
+
+Replace `your-username`, `AA:BB:CC:DD:EE:FF` and PIN with your actual values. The `DBUS_SYSTEM_BUS_ADDRESS` environment variable is required for the BLE PIN agent to communicate with BlueZ.
+
+##### Enable and start
+
+**For both serial and BLE:**
 
 ```bash
 sudo systemctl daemon-reload
@@ -703,14 +817,16 @@ The built-in bot automatically replies to messages containing recognised keyword
 3. **Archive route map visualization** — Route table names and IDs are now stored at receive time and display correctly regardless of current contacts. However, the route *map* still depends on GPS coordinates from contacts currently in memory; archived messages without recent contact data may show incomplete map markers
 <!-- CHANGED: Partially resolved in v1.7.1 — route table self-contained, map still depends on live GPS -->
 4. **Room Server message latency** — Room Server messages travel over LoRa RF and arrive asynchronously (10–75 seconds per message). With many logged-in clients, receiving all historical messages can take 10+ minutes due to the round-robin push protocol
+5. **BLE Linux only** — BLE mode requires Linux with BlueZ and D-Bus. macOS and Windows are not supported for BLE connections because the PIN agent relies on the D-Bus system bus
+6. **BlueZ 5.66+ instability** — Recent BlueZ versions (shipped with Ubuntu 24.04, Debian Bookworm, Raspberry Pi OS Bookworm) can cause BLE connection instability, pairing failures and unexpected disconnects. USB serial is not affected and is recommended as the most reliable transport
 
 ## 12. Troubleshooting
 
 ### 12.1. Linux
 
-For Linux serial troubleshooting, start by checking device permissions and that the correct serial port is selected.
+For Linux troubleshooting, start by checking device permissions and that the correct device argument is used.
 
-#### 12.1.1. Quick Fixes
+#### 12.1.1. Serial Quick Fixes
 
 ##### GUI remains empty / serial connection fails
 
@@ -736,6 +852,96 @@ For Linux serial troubleshooting, start by checking device permissions and that 
    ```bash
    python meshcore_gui.py /dev/ttyUSB0
    ```
+
+#### 12.1.2. BLE Quick Fixes
+
+##### GUI remains empty / BLE connection fails
+
+1. Verify Bluetooth is running:
+   ```bash
+   sudo systemctl status bluetooth
+   ```
+   If not running: `sudo systemctl start bluetooth`
+
+2. Check that the device is visible:
+   ```bash
+   bluetoothctl scan on
+   ```
+   Look for your device's MAC address. Press `Ctrl+C` to stop scanning.
+
+3. Verify the D-Bus policy is installed:
+   ```bash
+   ls -l /etc/dbus-1/system.d/meshcore-ble.conf
+   ```
+   If missing, see [5.1.1. D-Bus Policy for BLE](#511-d-bus-policy-for-ble-linux-only).
+
+4. Remove stale BLE bond (if the device was previously paired):
+   ```bash
+   bluetoothctl remove AA:BB:CC:DD:EE:FF
+   ```
+
+5. Kill any existing GUI instance:
+   ```bash
+   pkill -9 -f meshcore_gui
+   sleep 3
+   ```
+
+6. Restart the GUI:
+   ```bash
+   python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --debug-on
+   ```
+   Check the debug output for D-Bus or pairing errors.
+
+##### BLE PIN agent errors
+
+If you see `org.freedesktop.DBus.Error.AccessDenied` in the logs, the D-Bus policy is missing or incorrect. Reinstall it per [5.1.1](#511-d-bus-policy-for-ble-linux-only) and reload D-Bus:
+
+```bash
+sudo systemctl reload dbus
+```
+
+##### BLE reconnect issues
+
+If the connection drops and does not recover, the BLE bond may be stale. The application includes automatic bond cleanup and reconnect logic, but in some cases a manual bond removal is needed:
+
+```bash
+bluetoothctl remove AA:BB:CC:DD:EE:FF
+sudo systemctl restart meshcore-gui
+```
+
+##### BlueZ 5.66+ driver instability
+
+If BLE connections are consistently unreliable (frequent disconnects, pairing loops, authentication errors), the issue is likely caused by changes in BlueZ 5.66+. Check your BlueZ version:
+
+```bash
+bluetoothctl --version
+```
+
+If the version is 5.66 or higher, you have several options:
+
+1. **Switch to USB serial** (recommended) — the most reliable workaround. Connect your device via USB and use serial mode instead:
+   ```bash
+   python meshcore_gui.py /dev/ttyACM0
+   ```
+
+2. **Downgrade BlueZ** — on Debian/Ubuntu, you can pin an older version:
+   ```bash
+   sudo apt install bluez=5.65-0ubuntu1
+   sudo apt-mark hold bluez
+   ```
+   Note: exact package versions vary by distribution.
+
+3. **Disable LE Privacy and Secure Connections** — in some cases, adding these options to `/etc/bluetooth/main.conf` can help:
+   ```ini
+   [General]
+   Privacy = off
+
+   [LE]
+   MinConnectionInterval=6
+   MaxConnectionInterval=9
+   ConnectionLatency=0
+   ```
+   Restart Bluetooth after editing: `sudo systemctl restart bluetooth`
 
 ### 12.2. macOS
 
@@ -838,7 +1044,7 @@ meshcore-gui/
 │       ├── room_password_store.py   # Persistent Room Server password storage per device
 │       └── route_builder.py         # Route data construction
 ├── docs/
-│   ├── TROUBLESHOOTING.md           # BLE troubleshooting guide (legacy)
+│   ├── TROUBLESHOOTING.md           # BLE troubleshooting guide (detailed)
 │   ├── MeshCore_GUI_Design.docx     # Design document
 │   ├── ble_capture_workflow_t_1000_e_explanation.md
 │   └── ble_capture_workflow_t_1000_e_uitleg.md

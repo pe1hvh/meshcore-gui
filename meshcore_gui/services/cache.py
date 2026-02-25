@@ -2,14 +2,14 @@
 Local JSON cache for device info, channels and contacts.
 
 Loads instantly on startup so the GUI is immediately populated with
-the last known state.  Background BLE refreshes update the cache
+the last known state.  Background refreshes update the cache
 incrementally.
 
 Cache location
 ~~~~~~~~~~~~~~
 ``~/.meshcore-gui/cache/<ADDRESS>.json``
 
-One file per BLE device address, so multiple devices are supported
+One file per device identifier, so multiple devices are supported
 without conflict.
 
 Merge strategy (contacts)
@@ -32,16 +32,16 @@ CACHE_DIR = Path.home() / ".meshcore-gui" / "cache"
 
 
 class DeviceCache:
-    """Read/write JSON cache for a single BLE device.
+    """Read/write JSON cache for a single device.
 
     Args:
-        ble_address: BLE address string (used to derive filename).
+        device_id: Device identifier string (used to derive filename).
     """
 
-    def __init__(self, ble_address: str) -> None:
-        self._address = ble_address
+    def __init__(self, device_id: str) -> None:
+        self._address = device_id
         safe_name = (
-            ble_address
+            device_id
             .replace("literal:", "")
             .replace(":", "_")
             .replace("/", "_")
@@ -170,7 +170,7 @@ class DeviceCache:
         - Contacts only in cache → kept (node may be offline)
 
         Args:
-            fresh: Contacts dict from ``get_contacts()`` BLE response.
+            fresh: Contacts dict from ``get_contacts()`` device response.
 
         Returns:
             The merged contacts dict (superset of cached + fresh).

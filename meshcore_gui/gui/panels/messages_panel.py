@@ -15,7 +15,7 @@ class MessagesPanel:
     and send button appear below the message list.
 
     Args:
-        put_command: Callable to enqueue a command dict for the BLE worker.
+        put_command: Callable to enqueue a command dict for the worker.
     """
 
     def __init__(self, put_command: Callable[[Dict], None]) -> None:
@@ -245,6 +245,8 @@ class MessagesPanel:
                 ui.label(line).classes(
                     'text-xs leading-tight cursor-pointer '
                     'hover:bg-blue-50 rounded px-1'
-                ).on('click', lambda e, i=orig_idx: ui.navigate.to(
-                    f'/route/{i}', new_tab=True
-                ))
+                ).on('click', lambda e, i=orig_idx: self._open_route(i))
+
+    @staticmethod
+    def _open_route(msg_index: int) -> None:
+        ui.navigate.to(f'/route/{msg_index}')

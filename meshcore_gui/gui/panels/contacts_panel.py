@@ -13,7 +13,7 @@ class ContactsPanel:
     """Displays contacts in the left column. Click opens a DM dialog.
 
     Args:
-        put_command: Callable to enqueue a command dict for the BLE worker.
+        put_command: Callable to enqueue a command dict for the worker.
         pin_store: PinStore for persistent pin state.
     """
 
@@ -150,7 +150,7 @@ class ContactsPanel:
     def _on_auto_add_change(self, e) -> None:
         """Handle auto-add checkbox toggle.
 
-        Optimistically updates SharedData and sends the BLE command.
+        Optimistically updates SharedData and sends the command.
         On failure, the command handler rolls back SharedData and the
         next GUI update cycle will revert the checkbox.
         """

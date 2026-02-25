@@ -28,20 +28,20 @@ from meshcore_gui.core.models import Message, RxLogEntry
 
 @runtime_checkable
 class CommandSink(Protocol):
-    """Enqueue commands for the BLE worker."""
+    """Enqueue commands for the worker."""
 
     def put_command(self, cmd: Dict) -> None: ...
 
 
 # ----------------------------------------------------------------------
-# Writer — used by BLEWorker
+# Writer — used by the worker
 # ----------------------------------------------------------------------
 
 @runtime_checkable
 class SharedDataWriter(Protocol):
-    """Write-side interface used by BLEWorker.
+    """Write-side interface used by the worker.
 
-    BLEWorker pushes data into the shared store: device info,
+    The worker pushes data into the shared store: device info,
     contacts, channels, messages, RX log entries and status updates.
     It also reads commands enqueued by the GUI.
     """
@@ -77,7 +77,7 @@ class SharedDataReader(Protocol):
     """Read-side interface used by GUI pages.
 
     GUI pages read snapshots of the shared data and manage
-    update flags.  They also enqueue commands for the BLE worker.
+    update flags.  They also enqueue commands for the worker.
     """
 
     def get_snapshot(self) -> Dict: ...

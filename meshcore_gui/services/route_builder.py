@@ -23,7 +23,7 @@ class RouteBuilder:
     """
     Builds route data for a message from available contact information.
 
-    Uses only data already in memory — no extra BLE commands are sent.
+    Uses only data already in memory — no extra commands are sent.
 
     Args:
         shared: ContactLookup for resolving pubkey prefixes to contacts

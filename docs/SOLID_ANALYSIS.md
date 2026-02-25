@@ -20,7 +20,7 @@
 ```
 config        protocols
   ↑               ↑
-shared_data    ble_worker
+shared_data    worker
   ↑            main_page  →  widgets/*
   ↑            route_builder  ←  route_page
   ↑
@@ -42,7 +42,7 @@ No circular dependencies. `config` and `protocols` are leaf nodes; everything po
 | `config.py` | *(no class)* | Constants and debug helper | ✅ Single purpose |
 | `protocols.py` | *(Protocol classes)* | Interface contracts | ✅ Single purpose |
 | `shared_data.py` | SharedData | Thread-safe data store | ✅ See note |
-| `ble_worker.py` | BLEWorker | BLE communication thread | ✅ Single purpose |
+| `ble/worker.py` | SerialWorker | Serial communication thread | ✅ Single purpose |
 | `main_page.py` | DashboardPage | Dashboard layout orchestrator | ✅ See note |
 | `route_builder.py` | RouteBuilder | Route data construction (pure logic) | ✅ Single purpose |
 | `route_page.py` | RoutePage | Route page rendering | ✅ Single purpose |
@@ -68,12 +68,12 @@ No circular dependencies. `config` and `protocols` are leaf nodes; everything po
 | Scenario | How to extend | Existing code modified? |
 |----------|--------------|------------------------|
 | Add new page | New module + `@ui.page` in entry point | Only entry point (1 line) |
-| Add new BLE command | `_handle_command()` case | Only `ble_worker.py` |
+| Add new command | `_handle_command()` case | Only `ble/worker.py` |
 | Add new contact type | `TYPE_ICONS/NAMES/LABELS` in config | Only `config.py` |
 | Add new dashboard widget | New widget class + compose in DashboardPage | Only `main_page.py` |
 | Add new route info | Extend RouteBuilder.build() | Only `route_builder.py` |
 
-**Where not ideal:** `_handle_command()` in BLEWorker is an if/elif chain. In a larger project, a Command pattern or dict-dispatch would be more appropriate. For 4 commands this is pragmatically correct.
+**Where not ideal:** `_handle_command()` in SerialWorker is an if/elif chain. In a larger project, a Command pattern or dict-dispatch would be more appropriate. For 4 commands this is pragmatically correct.
 
 **Conclusion OCP:** Good. Extensions touch only one module.
 
@@ -97,7 +97,7 @@ There is **no inheritance** in this project. All classes are concrete and standa
 
 | Client | Protocol | Methods visible | SharedData methods not visible |
 |--------|----------|----------------|-------------------------------|
-| BLEWorker | SharedDataWriter | 10 | 5 (snapshot, flags, GUI commands) |
+| SerialWorker | SharedDataWriter | 10 | 5 (snapshot, flags, GUI commands) |
 | DashboardPage | SharedDataReader | 4 | 11 (all write methods) |
 | RouteBuilder | ContactLookup | 1 | 14 (everything else) |
 | RoutePage | SharedDataReadAndLookup | 5 | 10 (all write methods) |
@@ -115,7 +115,7 @@ Each consumer sees **only the methods it needs**. The protocols enforce this at 
 
 | Dependency | Before (protocols) | After (protocols) |
 |-----------|---------------|---------------|
-| BLEWorker → SharedData | Concrete ⚠️ | Protocol (SharedDataWriter) ✅ |
+| SerialWorker → SharedData | Concrete ⚠️ | Protocol (SharedDataWriter) ✅ |
 | DashboardPage → SharedData | Concrete ⚠️ | Protocol (SharedDataReader) ✅ |
 | RouteBuilder → SharedData | Concrete ⚠️ | Protocol (ContactLookup) ✅ |
 | RoutePage → SharedData | Concrete ⚠️ | Protocol (SharedDataReadAndLookup) ✅ |
@@ -146,7 +146,7 @@ Protocol was chosen because SharedData does not need to inherit from an abstract
 ### Interface map
 
 ```
-SharedDataWriter (BLEWorker)
+SharedDataWriter (SerialWorker)
 ├── update_from_appstart()
 ├── update_from_device_query()
 ├── set_status()
@@ -192,7 +192,7 @@ SharedDataReadAndLookup (RoutePage)
 | # | Change | Files affected |
 |---|--------|---------------|
 | 1 | Added `protocols.py` with 4 Protocol interfaces | New file |
-| 2 | BLEWorker depends on `SharedDataWriter` | `ble_worker.py` |
+| 2 | SerialWorker depends on `SharedDataWriter` | `ble/worker.py` |
 | 3 | DashboardPage depends on `SharedDataReader` | `main_page.py` |
 | 4 | RouteBuilder depends on `ContactLookup` | `route_builder.py` |
 | 5 | RoutePage depends on `SharedDataReadAndLookup` | `route_page.py` |

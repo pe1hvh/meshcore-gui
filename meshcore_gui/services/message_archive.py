@@ -43,16 +43,16 @@ class MessageArchive:
     """Persistent storage for messages and RX log entries.
     
     Args:
-        ble_address: BLE address string (used to derive filenames).
+        device_id: Device identifier string (used to derive filenames).
     """
 
-    def __init__(self, ble_address: str) -> None:
-        self._address = ble_address
+    def __init__(self, device_id: str) -> None:
+        self._address = device_id
         self._lock = threading.Lock()
         
         # Sanitize address for filename
         safe_name = (
-            ble_address
+            device_id
             .replace("literal:", "")
             .replace(":", "_")
             .replace("/", "_")

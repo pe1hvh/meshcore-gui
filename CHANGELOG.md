@@ -7,143 +7,20 @@ All notable changes to MeshCore GUI are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
 ---
-## v1.9.13 — External Bond Manager Support (2026-02-20)
 
-### New Features
+## [1.10.0] - 2026-02-20 — Serial Connection Default
 
-- **External bond manager support** — `ble_connector.py` provides optional
-  integration with an external BLE bond manager. If
-  [`meshcore-ble-connect`](https://github.com/PE1HVH/meshcore-ble-connect)
-  is installed, the BLEWorker uses it automatically before every connect
-  and reconnect attempt. If not installed, the built-in D-Bus PIN agent
-  handles pairing as before. The integration is transparent to the user.
-
-- **`--pin` CLI parameter** — Added `--pin=PIN` as a short alias for
-  `--ble-pin=PIN`.
-
-- **`MESHCORE_BLE_PIN` environment variable** — `BLE_PIN` in config.py now
-  reads from the `MESHCORE_BLE_PIN` environment variable when present.
-  Useful for systemd deployments.
+### Added
+- ✅ **Serial CLI flags** — `--baud=BAUD` and `--serial-cx-dly=SECONDS` for serial configuration at startup.
 
 ### Changed
+- 🔄 **Connection layer** — Switched from BLE to serial (`MeshCore.create_serial`) with serial reconnect handling.
+- 🔄 `config.py`: Added `SERIAL_BAUDRATE`, `SERIAL_CX_DELAY`, `DEFAULT_TIMEOUT`, `MESHCORE_LIB_DEBUG`; removed BLE PIN settings; version bumped to `1.10.0`.
+- 🔄 `meshcore_gui.py` / `meshcore_gui/__main__.py`: Updated usage, banners and defaults for serial ports.
+- 🔄 Docs: Updated README and core docs for serial usage; BLE documents marked as legacy.
 
-- **`worker.py`** — Refactored `_async_main()`: calls `ensure_bond()` before
-  each connect/reconnect attempt when external bond manager is available.
-  Falls back to existing `BleAgentManager` + `_ensure_paired()` flow
-  otherwise. No functional change when external tool is absent.
-
-- **`config.py`** — Added `BLE_CONNECT_TIMEOUT = 60`, `os` import, and
-  `MESHCORE_BLE_PIN` env var support.
-
-- **`__main__.py`** — Added `--pin` parsing, updated help text.
-
-### Changed Files
-
-| File | Change |
-|------|--------|
-| `meshcore_gui/config.py` | Version bump to 1.9.13, `BLE_CONNECT_TIMEOUT`, env var support |
-| `meshcore_gui/__main__.py` | `--pin` alias, startup banner |
-| `meshcore_gui/ble/ble_connector.py` | **New** — external bond manager integration |
-| `meshcore_gui/ble/worker.py` | `ensure_bond()` pre-check, graceful fallback |
-| `meshcore_gui/ble/__init__.py` | Updated docstring |
-| `docs/INSTALLATIE.md` | Updated for v1.9.13 |
-| `README.md` | Optional dependency note, `--pin` in CLI options |
-| `CHANGELOG.md` | This entry |
-
----
-## v1.9.12 — Not Paired Fix + BlueZ ≥ 5.78 Compatibility (2026-02-20)
-
-### Bug Fixes
-
-- **BlueZ ≥ 5.78 BLE pairing fix** — Added pre-pair step using `bleak`
-  before `meshcore_py` connects. BlueZ 5.78+ no longer auto-initiates
-  pairing when writing to encrypted NUS characteristics, causing immediate
-  disconnects (`ConnectionAttemptFailed` / `AuthenticationCanceled`).
-  The new `_ensure_paired()` method in `worker.py` establishes the bond
-  explicitly, with the D-Bus PIN agent providing credentials automatically.
-  See also: [meshcore_py issue #33](https://github.com/meshcore-dev/meshcore_py/issues/33).
-
-- **Conditional bond removal** — `remove_bond()` is now only called on
-  BlueZ < 5.78 where it's safe (automatic re-pairing on write). On
-  BlueZ ≥ 5.78, bond removal is skipped to preserve the required bond.
-  Applies to all 4 call sites: startup, retry, reconnect failure
-  (`worker.py`) and reconnect loop (`ble_reconnect.py`).
-
-- **PIN agent failure detection** — Added `is_registered` check after
-  `_agent.start()` in `worker.py`. When the D-Bus PIN agent fails to
-  register on Linux, the application now shows a clear error message
-  in the browser UI ("❌ BLE PIN agent failed — see terminal for fix
-  instructions") and prints step-by-step repair instructions to the
-  terminal and log file. Previously, the agent failed silently and
-  the application entered an endless "Not Paired" retry loop with no
-  indication of what was wrong.
-
-- **Platform-scoped warning** — The PIN agent warning only triggers on
-  Linux (`sys.platform == "linux"`), avoiding false alarms on macOS
-  and Windows where D-Bus is not used.
-
-### New Features
-
-- **BlueZ version detection** — Automatic detection via `bluetoothd --version`
-  at startup. Systems with BlueZ ≥ 5.78 use pre-pair mode; older systems
-  retain the legacy remove-bond-and-reconnect flow. Displayed in startup
-  banner as `BlueZ: 5.82 (pre-pair)` or `BlueZ: 5.72 (legacy)`.
-
-### System Requirements (BlueZ ≥ 5.78)
-
-- `Pairable` is enabled automatically by the application via D-Bus at startup
-  (BlueZ 5.82 defaults to `Pairable: no`; the `Pairable` setting in
-  `/etc/bluetooth/main.conf` is ignored by modern BlueZ)
-- D-Bus policy file (`/etc/dbus-1/system.d/meshcore-ble.conf`) unchanged
-
-### Diagnostics
-
-- **`debug_print` added to full connection lifecycle** — All critical
-  points in the BLE connection flow now log to the rotating log file
-  (when `--debug-on` is active), so diagnostics survive terminal
-  scroll and are available for post-mortem analysis:
-  1. PIN agent registration result
-  2. Cache load status
-  3. BLE connect attempt and result
-  4. Connection errors with pairing-failure hint ("Not Paired",
-     "Authentication Failed" → extra diagnostic line)
-  5. Initial connect retry
-  6. Disconnect detection
-  7. Reconnect start, success, and failure
-
-### Documentation
-
-- **§5.1 System Dependencies** — Added `sudo usermod -aG bluetooth $USER`
-  to the Linux (Ubuntu/Debian) section. Previously this was only
-  documented for Raspberry Pi. Also added `python3` to the apt install
-  line for minimal installations.
-
-- **§5.5 BLE Pairing Setup** — Renamed from "BLE PIN Pairing (Linux
-  only — automatic)" to "BLE Pairing Setup (Linux only — required)".
-  Restructured to lead with the action (`install_ble_stable.sh` or
-  manual D-Bus policy creation) instead of burying it below text that
-  says "no external tools required". Added explicit warning about
-  "Not Paired" errors if this step is skipped.
-
-- **§11 Known Limitations #2** — Updated to reflect that the meshcore
-  SDK race condition fix (subscribe-before-send, PR #52) is now merged
-  upstream. Removed reference to the forked repository.
-
-### Internationalization
-
-- **All BLE module messages translated to English** — `ble_agent.py`,
-  `ble_reconnect.py`, and `worker.py` now use English for all `print()`,
-  `logger.*()`, and `debug_print()` output. Docstrings also translated.
-
-### Changed Files
-
-| File | Change |
-|------|--------|
-| `meshcore_gui/config.py` | Version bump to 1.9.12 |
-| `meshcore_gui/ble/worker.py` | `import sys`, `is_registered` check, `debug_print` at 10 connection points, Dutch→English |
-| `meshcore_gui/ble/ble_agent.py` | Dutch→English (prints, logs, docstrings) |
-| `meshcore_gui/ble/ble_reconnect.py` | Dutch→English (prints, logs, docstrings) |
-| `README.md` | §5.1 bluetooth group + python3, §5.5 rewrite, §11 update, TOC |
+### Impact
+- **Breaking change:** BLE is no longer used; devices must run Serial Companion firmware and be connected via USB serial.
 
 ---
 

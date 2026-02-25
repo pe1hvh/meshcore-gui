@@ -489,3 +489,6 @@ meshcore-gui
 ```
 
 Alle BLE-gerelateerde functionaliteit draait op precies **vier Python packages**: `bleak`, `dbus_fast`, `meshcore`, en `meshcoredecoder`. Er zijn geen system-level dependencies meer nodig buiten `bluez` zelf (geen `bluez-tools`, geen `bt-agent`).
+# Legacy BLE Document
+
+> **Note:** This document describes the BLE architecture and is retained for historical reference. The current GUI uses USB serial.

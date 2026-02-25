@@ -1,8 +1,8 @@
 """
-MeshCore GUI — Threaded BLE Edition.
+MeshCore GUI — Dual Transport Edition (Serial + BLE).
 
 A graphical user interface for MeshCore mesh network devices,
-communicating via Bluetooth Low Energy (BLE).
+communicating via USB serial or Bluetooth Low Energy (BLE).
 """
 
 __version__ = "5.0"

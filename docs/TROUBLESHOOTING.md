@@ -1,4 +1,6 @@
-# MeshCore GUI - BLE Troubleshooting Guide
+# MeshCore GUI - Legacy BLE Troubleshooting Guide
+
+> **Note:** This guide applies to BLE connections only and is kept for historical reference. The current GUI uses USB serial; for serial issues, verify the correct port (e.g. `/dev/ttyUSB0`) and user permissions (e.g. `dialout` on Linux).
 
 ## Problem 1: EOFError during start_notify
 

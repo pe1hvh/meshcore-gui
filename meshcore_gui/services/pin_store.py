@@ -1,7 +1,7 @@
 """
 Persistent pin store for MeshCore GUI.
 
-Stores a set of pinned contact public keys per BLE device.
+Stores a set of pinned contact public keys per device.
 Pin status is purely app-side and is not stored on the device.
 
 Storage location
@@ -27,14 +27,14 @@ class PinStore:
     """Persistent storage for pinned contact public keys.
 
     Args:
-        ble_address: BLE address string (used to derive filename).
+        device_id: Device identifier string (used to derive filename).
     """
 
-    def __init__(self, ble_address: str) -> None:
+    def __init__(self, device_id: str) -> None:
         self._lock = threading.Lock()
 
         safe_name = (
-            ble_address
+            device_id
             .replace("literal:", "")
             .replace(":", "_")
             .replace("/", "_")

@@ -1,7 +1,7 @@
 """
 Keyword-triggered auto-reply bot for MeshCore GUI.
 
-Extracted from BLEWorker to satisfy the Single Responsibility Principle.
+Extracted from SerialWorker to satisfy the Single Responsibility Principle.
 The bot listens on a configured channel and replies to messages that
 contain recognised keywords.
 
@@ -71,7 +71,7 @@ class MeshBot:
     Args:
         config:        Bot configuration.
         command_sink:  Callable that enqueues a command dict for the
-                       BLE worker (typically ``shared.put_command``).
+                       worker (typically ``shared.put_command``).
         enabled_check: Callable that returns ``True`` when the bot is
                        enabled (typically ``shared.is_bot_enabled``).
     """

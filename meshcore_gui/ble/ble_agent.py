@@ -1,14 +1,14 @@
 """
-Built-in BlueZ D-Bus agent for MeshCore BLE PIN pairing.
+Ingebouwde BlueZ D-Bus agent voor MeshCore BLE PIN pairing.
 
-Replaces the external ``bt-agent.service`` (bluez-tools).
-Uses ``dbus_fast`` (async, already a dependency of bleak).
+Vervangt de externe ``bt-agent.service`` (bluez-tools).
+Gebruikt ``dbus_fast`` (async, al dependency van bleak).
 
-The agent registers with BlueZ as the default pairing agent and
-answers PIN/passkey requests automatically with the configured
-PIN (default ``123456`` for T1000e).
+De agent registreert zich bij BlueZ als default pairing agent en
+beantwoordt PIN/passkey-verzoeken automatisch met de geconfigureerde
+PIN (standaard ``123456`` voor T1000e).
 
-References
+Referentie
 ~~~~~~~~~~
 - BlueZ Agent1 API: https://github.com/bluez/bluez/blob/master/doc/agent-api.txt
 - mdphoto/meshecore-gui: https://github.com/mdphoto/meshecore-gui/blob/main/src/ble_agent.py
@@ -31,10 +31,11 @@ CAPABILITY = "KeyboardOnly"
 
 
 class BluezAgent(ServiceInterface):
-    """BlueZ pairing agent that handles PIN requests automatically.
+    """BlueZ pairing agent die automatisch PIN afhandelt.
 
-    Implements the ``org.bluez.Agent1`` interface.  All pairing-related
-    callbacks return the configured PIN or silently accept the request.
+    Implementeert de ``org.bluez.Agent1`` interface.  Alle pairing-
+    gerelateerde callbacks geven de geconfigureerde PIN terug of
+    accepteren het verzoek stilzwijgend.
     """
 
     def __init__(self, pin: str = "123456") -> None:
@@ -81,17 +82,17 @@ class BluezAgent(ServiceInterface):
 
 
 class BleAgentManager:
-    """Manages registration/deregistration of the BlueZ pairing agent.
+    """Beheert registratie/deregistratie van de BlueZ agent.
 
-    Usage::
+    Gebruik::
 
         agent = BleAgentManager(pin="123456")
-        await agent.start()   # Register BEFORE BLE connect
+        await agent.start()   # Registreer VOOR BLE connect
         ...
-        await agent.stop()    # Deregister on shutdown
+        await agent.stop()    # Deregistreer bij afsluiten
 
-    The manager connects to the system D-Bus, exports the agent on
-    ``AGENT_PATH`` and registers it as the default agent with BlueZ.
+    De manager verbindt met de system D-Bus, exporteert de agent op
+    ``AGENT_PATH`` en registreert deze als default agent bij BlueZ.
     """
 
     def __init__(self, pin: str = "123456") -> None:
@@ -102,11 +103,11 @@ class BleAgentManager:
 
     @property
     def is_registered(self) -> bool:
-        """True if the agent was successfully registered with BlueZ."""
+        """True als de agent succesvol geregistreerd is bij BlueZ."""
         return self._registered
 
     async def start(self) -> None:
-        """Register agent with BlueZ.  Call BEFORE BLE connect."""
+        """Registreer agent bij BlueZ.  Aanroepen VOOR BLE connect."""
         try:
             self.bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
             self.agent = BluezAgent(self.pin)
@@ -121,18 +122,18 @@ class BleAgentManager:
             await agent_manager.call_register_agent(AGENT_PATH, CAPABILITY)
             await agent_manager.call_request_default_agent(AGENT_PATH)
             self._registered = True
-            logger.info(f"BLE agent registered with PIN {self.pin}")
-            print(f"BLE: PIN agent registered (PIN {self.pin})")
+            logger.info(f"BLE agent geregistreerd met PIN {self.pin}")
+            print(f"BLE: PIN agent geregistreerd (PIN {self.pin})")
         except Exception as e:
-            logger.error(f"BLE agent registration failed: {e}")
-            print(f"BLE: ⚠️  PIN agent registration failed: {e}")
+            logger.error(f"BLE agent registratie mislukt: {e}")
+            print(f"BLE: ⚠️  PIN agent registratie mislukt: {e}")
             print(
-                "BLE: Tip — check D-Bus permissions or "
-                "install /etc/dbus-1/system.d/meshcore-ble.conf"
+                "BLE: Tip — controleer D-Bus permissies of "
+                "installeer /etc/dbus-1/system.d/meshcore-ble.conf"
             )
 
     async def stop(self) -> None:
-        """Deregister agent from BlueZ."""
+        """Deregistreer agent bij BlueZ."""
         if self.bus and self._registered:
             try:
                 introspection = await self.bus.introspect(
@@ -144,11 +145,11 @@ class BleAgentManager:
                 agent_manager = proxy.get_interface("org.bluez.AgentManager1")
                 await agent_manager.call_unregister_agent(AGENT_PATH)
             except Exception as e:
-                logger.warning(f"Agent deregistration failed: {e}")
+                logger.warning(f"Agent deregistratie mislukt: {e}")
             self._registered = False
 
         if self.bus:
             self.bus.disconnect()
             self.bus = None
-            logger.info("BLE agent stopped")
-            print("BLE: PIN agent stopped")
+            logger.info("BLE agent gestopt")
+            print("BLE: PIN agent gestopt")

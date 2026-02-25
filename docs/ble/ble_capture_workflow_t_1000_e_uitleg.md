@@ -1,5 +1,7 @@
 # BLE Capture Workflow T1000-e — Uitleg & Achtergrond
 
+> **Note:** Dit document is BLE-specifiek en wordt bewaard als referentie. De huidige GUI gebruikt USB-serieel.
+
 > **Bron:** `ble_capture_workflow_t_1000_e.md`
 >
 > Dit document is een **verdiepingsdocument** bij het originele technische werkdocument. Het biedt:

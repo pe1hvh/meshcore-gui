@@ -17,7 +17,7 @@ class RoomServerPanel:
     a type-3 contact).
 
     Args:
-        put_command:         Callable to enqueue a command dict for the BLE worker.
+        put_command:         Callable to enqueue a command dict for the worker.
         room_password_store: Persistent store for room passwords.
     """
 
@@ -108,7 +108,7 @@ class RoomServerPanel:
         if not self._container:
             return
 
-        # Process room login state changes from the BLE worker
+        # Process room login state changes from the worker
         login_states: Dict = data.get('room_login_states', {})
         self._apply_login_states(login_states)
 
@@ -123,14 +123,14 @@ class RoomServerPanel:
             )
 
     # ------------------------------------------------------------------
-    # Internal — login state feedback from BLE worker
+    # Internal — login state feedback from worker
     # ------------------------------------------------------------------
 
     def _apply_login_states(self, login_states: Dict) -> None:
         """Apply server-confirmed login states to room cards.
 
         Called every update tick.  Matches login_states (keyed by
-        pubkey prefix from the BLE packet) against known room cards
+        pubkey prefix from the device packet) against known room cards
         (keyed by full pubkey) using prefix matching.
 
         Args:
@@ -299,7 +299,7 @@ class RoomServerPanel:
         """Send login command to a Room Server.
 
         Sets the UI to 'pending' state.  The actual logged-in state
-        is updated later in :meth:`update` when the BLE worker reports
+        is updated later in :meth:`update` when the worker reports
         LOGIN_SUCCESS via ``room_login_states`` in SharedData.
         """
         password = card_state['password'].value or ''
@@ -308,7 +308,7 @@ class RoomServerPanel:
         # Persist password update
         self._store.update_password(pubkey, password)
 
-        # Send login command via BLE
+        # Send login command via worker
         self._put_command({
             'action': 'login_room',
             'pubkey': pubkey,
@@ -325,7 +325,7 @@ class RoomServerPanel:
     def _logout_room(self, card_state: Dict, pubkey: str) -> None:
         """Logout from a Room Server.
 
-        Sends a logout command via BLE so the companion radio stops
+        Sends a logout command via worker so the companion radio stops
         keep-alive pings and the room server deregisters the client.
         This ensures a clean ``sync_since`` reset on re-login.
         """

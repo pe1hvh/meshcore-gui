@@ -1,8 +1,8 @@
 """
 Persistent Room Server password store for MeshCore GUI.
 
-Stores passwords and configuration for Room Server contacts per BLE
-device.  Passwords are stored outside the repository under
+Stores passwords and configuration for Room Server contacts per device.
+Passwords are stored outside the repository under
 ``~/.meshcore-gui/room_passwords/<ADDRESS>.json``.
 
 Thread safety
@@ -40,14 +40,14 @@ class RoomPasswordStore:
     """Persistent storage for Room Server passwords.
 
     Args:
-        ble_address: BLE address string (used to derive filename).
+        device_id: Device identifier string (used to derive filename).
     """
 
-    def __init__(self, ble_address: str) -> None:
+    def __init__(self, device_id: str) -> None:
         self._lock = threading.Lock()
 
         safe_name = (
-            ble_address
+            device_id
             .replace("literal:", "")
             .replace(":", "_")
             .replace("/", "_")

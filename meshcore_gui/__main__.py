@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
 """
-MeshCore GUI — Threaded BLE Edition
-====================================
+MeshCore GUI — Dual Transport Edition (Serial + BLE)
+=====================================================
 
-Entry point.  Parses arguments, wires up the components, registers
-NiceGUI pages and starts the server.
+Entry point.  Parses arguments, auto-detects the transport mode,
+wires up the components, registers NiceGUI pages and starts the server.
 
-Usage:
-    python meshcore_gui.py <BLE_ADDRESS>
-    python meshcore_gui.py <BLE_ADDRESS> --debug-on
-    python meshcore_gui.py <BLE_ADDRESS> --port=9090
-    python meshcore_gui.py <BLE_ADDRESS> --ble-pin=000000
-    python meshcore_gui.py <BLE_ADDRESS> --pin=000000
-    python meshcore_gui.py <BLE_ADDRESS> --ssl
-    python -m meshcore_gui <BLE_ADDRESS>
+Usage — Serial:
+    python meshcore_gui.py /dev/ttyACM0
+    python meshcore_gui.py /dev/ttyACM0 --debug-on
+    python meshcore_gui.py /dev/ttyACM0 --port=9090
+    python meshcore_gui.py /dev/ttyACM0 --baud=115200
+    python meshcore_gui.py /dev/ttyACM0 --serial-cx-dly=0.1
+    python meshcore_gui.py /dev/ttyACM0 --ssl
+
+Usage — BLE:
+    python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF
+    python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --ble-pin 654321
+    python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --debug-on
+
+    python -m meshcore_gui <DEVICE>
 
                    Author: PE1HVH
                   Version: 5.0
@@ -35,7 +41,7 @@ except ImportError:
     print("Install with: pip install meshcore")
     sys.exit(1)
 
-from meshcore_gui.ble.worker import BLEWorker
+from meshcore_gui.ble.worker import create_worker
 from meshcore_gui.core.shared_data import SharedData
 from meshcore_gui.gui.dashboard import DashboardPage
 from meshcore_gui.gui.route_page import RoutePage
@@ -60,7 +66,7 @@ def _page_dashboard():
 
 @ui.page('/route/{msg_key}')
 def _page_route(msg_key: str):
-    """NiceGUI page handler — route visualization (new tab)."""
+    """NiceGUI page handler — route visualization."""
     if _route_page:
         _route_page.render(msg_key)
 
@@ -72,63 +78,122 @@ def _page_archive():
         _archive_page.render()
 
 
-def main():
-    """
-    Main entry point.
+def _print_usage():
+    """Show usage information for both serial and BLE modes."""
+    print("MeshCore GUI - Dual Transport Edition (Serial + BLE)")
+    print("=" * 55)
+    print()
+    print("Usage: python meshcore_gui.py <DEVICE> [OPTIONS]")
+    print()
+    print("The transport mode is auto-detected from the device argument:")
+    print("  /dev/ttyACM0                  → Serial (USB)")
+    print("  literal:AA:BB:CC:DD:EE:FF     → Bluetooth LE")
+    print()
+    print("Serial examples:")
+    print("  python meshcore_gui.py /dev/ttyACM0")
+    print("  python meshcore_gui.py /dev/ttyACM0 --debug-on")
+    print("  python meshcore_gui.py /dev/ttyACM0 --port=9090")
+    print("  python meshcore_gui.py /dev/ttyACM0 --baud=57600")
+    print("  python meshcore_gui.py /dev/ttyACM0 --serial-cx-dly=0.1")
+    print("  python meshcore_gui.py /dev/ttyACM0 --ssl")
+    print()
+    print("BLE examples:")
+    print("  python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF")
+    print("  python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --debug-on")
+    print("  python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --ble-pin 654321")
+    print("  python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --ble-pin=654321")
+    print()
+    print("Common options:")
+    print("  --debug-on        Enable verbose debug logging")
+    print("  --port=PORT       Web server port (default: 8081)")
+    print("  --ssl             Enable HTTPS with auto-generated certificate")
+    print()
+    print("Serial options:")
+    print("  --baud=BAUD       Serial baudrate (default: 115200)")
+    print("  --serial-cx-dly=S Serial connection delay (default: 0.1)")
+    print()
+    print("BLE options:")
+    print("  --ble-pin PIN     BLE pairing PIN (default: 123456)")
+    print()
+    print("Tips:")
+    print("  Serial: ls -l /dev/serial/by-id")
+    print("  BLE:    bluetoothctl scan on")
 
-    Parses CLI arguments, initialises all components and starts the
-    NiceGUI server.
+
+def _parse_flags(argv):
+    """Parse CLI arguments into positional args and a flag dict.
+
+    Handles ``--flag value``, ``--flag=value``, and boolean ``--flag``.
+    """
+    args = []
+    flags = {}
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if '=' in a and a.startswith('--'):
+            key, value = a.split('=', 1)
+            flags[key] = value
+        elif a == '--ble-pin':
+            if i + 1 < len(argv) and not argv[i + 1].startswith('--'):
+                flags['--ble-pin'] = argv[i + 1]
+                i += 1
+            else:
+                flags['--ble-pin'] = True
+        elif a.startswith('--'):
+            flags[a] = True
+        else:
+            args.append(a)
+        i += 1
+    return args, flags
+
+
+def main():
+    """Main entry point.
+
+    Parses CLI arguments, auto-detects the transport, initialises all
+    components and starts the NiceGUI server.
     """
     global _shared, _dashboard, _route_page, _archive_page
 
-    # Parse arguments
-    args = [a for a in sys.argv[1:] if not a.startswith('--')]
-    flags = [a for a in sys.argv[1:] if a.startswith('--')]
+    args, flags = _parse_flags(sys.argv[1:])
 
     if not args:
-        print("MeshCore GUI - Threaded BLE Edition")
-        print("=" * 40)
-        print("Usage: python meshcore_gui.py <BLE_ADDRESS> [--debug-on] [--port=PORT] [--ble-pin=PIN] [--pin=PIN] [--ssl]")
-        print("Example: python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF")
-        print("         python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --debug-on")
-        print("         python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --port=9090")
-        print("         python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --ble-pin=000000")
-        print("         python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --pin=000000")
-        print("         python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --ssl")
-        print()
-        print("Options:")
-        print("  --debug-on        Enable verbose debug logging")
-        print("  --port=PORT       Web server port (default: 8081)")
-        print("  --ble-pin=PIN     BLE pairing PIN (default: 123456)")
-        print("  --pin=PIN         Alias for --ble-pin")
-        print("  --ssl             Enable HTTPS with auto-generated self-signed certificate")
-        print()
-        print("Tip: Use 'bluetoothctl scan on' to find devices")
+        _print_usage()
         sys.exit(1)
 
-    ble_address = args[0]
-    config.set_log_file_for_device(ble_address)
+    device_id = args[0]
+    is_ble = config.is_ble_address(device_id)
+    config.TRANSPORT = "ble" if is_ble else "serial"
+    config.set_log_file_for_device(device_id)
 
-    # Apply --debug-on flag
+    # ── Common flags ──
     if '--debug-on' in flags:
         config.DEBUG = True
 
-    # Apply --port flag
-    port = 8081
-    for flag in flags:
-        if flag.startswith('--port='):
+    port = int(flags.get('--port', 8081))
+
+    # ── Serial-specific flags ──
+    if not is_ble:
+        if '--baud' in flags:
             try:
-                port = int(flag.split('=', 1)[1])
+                config.SERIAL_BAUDRATE = int(flags['--baud'])
             except ValueError:
-                print(f"ERROR: Invalid port number: {flag}")
+                print(f"ERROR: Invalid baudrate: {flags['--baud']}")
+                sys.exit(1)
+        if '--serial-cx-dly' in flags:
+            try:
+                config.SERIAL_CX_DELAY = float(flags['--serial-cx-dly'])
+            except ValueError:
+                print(f"ERROR: Invalid serial cx delay: {flags['--serial-cx-dly']}")
                 sys.exit(1)
 
-    # Apply --ble-pin / --pin flag (--pin is a short alias)
-    for flag in flags:
-        if flag.startswith('--ble-pin=') or flag.startswith('--pin='):
-            config.BLE_PIN = flag.split('=', 1)[1]
+    # ── BLE-specific flags ──
+    if is_ble:
+        ble_pin = flags.get('--ble-pin')
+        if ble_pin and ble_pin is not True:
+            config.BLE_PIN = str(ble_pin)
 
-    # Apply --ssl flag (auto-generate self-signed certificate if needed)
+    # ── SSL ──
     ssl_enabled = '--ssl' in flags
     ssl_keyfile = None
     ssl_certfile = None
@@ -143,7 +208,6 @@ def main():
         ssl_certfile = str(ssl_dir / 'cert.pem')
 
         if not (ssl_dir / 'cert.pem').exists():
-            # Detect local IP for SAN (Subject Alternative Name)
             local_ip = '127.0.0.1'
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -152,7 +216,6 @@ def main():
                 s.close()
             except Exception:
                 pass
-
             san = f"DNS:localhost,IP:127.0.0.1,IP:{local_ip}"
             print(f"Generating self-signed SSL certificate (SAN: {san}) ...")
             subprocess.run([
@@ -169,42 +232,47 @@ def main():
         else:
             print(f"Using existing certificate from {ssl_dir}/")
 
-    # Startup banner
-    from meshcore_gui.ble.ble_connector import is_ble_connect_available
-    ble_connect_status = "installed" if is_ble_connect_available() else "not found (legacy agent)"
-
-    print("=" * 50)
-    print("MeshCore GUI - Threaded BLE Edition")
-    print("=" * 50)
-    print(f"Device:     {ble_address}")
+    # ── Startup banner ──
+    transport_label = "BLE Edition" if is_ble else "Serial Edition"
+    print("=" * 55)
+    print(f"MeshCore GUI - {transport_label}")
+    print("=" * 55)
+    print(f"Device:     {device_id}")
+    print(f"Transport:  {'Bluetooth LE' if is_ble else 'USB Serial'}")
+    if is_ble:
+        print(f"BLE PIN:    {config.BLE_PIN}")
+    else:
+        print(f"Baudrate:   {config.SERIAL_BAUDRATE}")
+        print(f"CX delay:   {config.SERIAL_CX_DELAY}")
     print(f"Port:       {port}")
-    print(f"BLE PIN:    {config.BLE_PIN}")
-    print(f"BLE bond:   meshcore-ble-connect {ble_connect_status}")
     print(f"SSL:        {'ON (https)' if ssl_enabled else 'OFF (http)'}")
     print(f"Debug mode: {'ON' if config.DEBUG else 'OFF'}")
-    print(f"BlueZ:      {config.BLUEZ_VERSION[0]}.{config.BLUEZ_VERSION[1]} "
-          f"({'pre-pair' if config.NEEDS_PREPAIR else 'legacy'})")
-    print("=" * 50)
+    print("=" * 55)
 
-    # Assemble components
-    _shared = SharedData(ble_address)
-    _pin_store = PinStore(ble_address)
-    _room_password_store = RoomPasswordStore(ble_address)
+    # ── Assemble components ──
+    _shared = SharedData(device_id)
+    _pin_store = PinStore(device_id)
+    _room_password_store = RoomPasswordStore(device_id)
     _dashboard = DashboardPage(_shared, _pin_store, _room_password_store)
     _route_page = RoutePage(_shared)
     _archive_page = ArchivePage(_shared)
 
-    # Start BLE worker in background thread
-    worker = BLEWorker(ble_address, _shared)
+    # ── Start worker ──
+    worker = create_worker(
+        device_id,
+        _shared,
+        baudrate=config.SERIAL_BAUDRATE,
+        cx_dly=config.SERIAL_CX_DELAY,
+    )
     worker.start()
 
-    # Serve static PWA assets (manifest, icons)
+    # ── Serve static PWA assets ──
     from pathlib import Path
     static_dir = Path(__file__).parent / 'static'
     if static_dir.is_dir():
         app.add_static_files('/static', str(static_dir))
 
-    # Start NiceGUI server (blocks)
+    # ── Start NiceGUI server (blocks) ──
     run_kwargs = dict(
         show=False, host='0.0.0.0', title='DOMCA MeshCore',
         port=port, reload=False, storage_secret='meshcore-gui-secret',

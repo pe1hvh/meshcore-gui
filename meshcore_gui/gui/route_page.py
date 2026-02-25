@@ -1,9 +1,8 @@
 """
 Route visualization page for MeshCore GUI.
 
-Standalone NiceGUI page that opens in a new browser tab when a user
-clicks on a message.  Shows a Leaflet map with the message route,
-a hop count summary, and a details table.
+Standalone NiceGUI page that shows a Leaflet map with the message
+route, a hop count summary, and a details table.
 
 v4.1 changes
 ~~~~~~~~~~~~~
@@ -76,6 +75,9 @@ class RoutePage:
 
         if msg is None:
             ui.label('❌ Message not found').classes('text-xl p-8')
+            ui.button('Back to Dashboard', on_click=lambda: ui.navigate.to('/')).classes(
+                'mt-4'
+            )
             return
         route = self._builder.build(msg, data)
 
@@ -86,14 +88,19 @@ class RoutePage:
         ui.dark_mode(True)
 
         with ui.header().classes('items-center px-4 py-2 shadow-md'):
+            ui.button(
+                icon='arrow_back',
+                on_click=lambda: ui.navigate.to('/'),
+            ).props('flat round dense color=white').tooltip('Back to Dashboard')
+            ui.button(
+                icon='history',
+                on_click=lambda: ui.navigate.to('/archive'),
+            ).props('flat round dense color=white').tooltip('Back to Archive')
             ui.label('🗺️ MeshCore Route').classes(
                 'text-lg font-bold domca-header-text'
             ).style("font-family: 'JetBrains Mono', monospace")
             ui.space()
-            ui.button(
-                icon='close',
-                on_click=lambda: ui.run_javascript('window.close()'),
-            ).props('flat round dense color=white').tooltip('Close')
+            ui.label('Route Detail').classes('text-sm opacity-70 domca-header-text')
 
         with ui.column().classes('domca-panel gap-4').style('padding-top: 1rem'):
             self._render_message_info(msg)
@@ -407,4 +414,3 @@ class RoutePage:
                     return (key, contact)
 
         return None
-

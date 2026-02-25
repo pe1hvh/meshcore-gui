@@ -1,7 +1,7 @@
 """
 Message deduplication for MeshCore GUI.
 
-Extracted from BLEWorker to satisfy the Single Responsibility Principle.
+Extracted from SerialWorker to satisfy the Single Responsibility Principle.
 Provides bounded-size deduplication via message hash and content keys.
 
 Two strategies are used because the two event sources carry different

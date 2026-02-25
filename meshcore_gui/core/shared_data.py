@@ -1,7 +1,7 @@
 """
 Thread-safe shared data container for MeshCore GUI.
 
-SharedData is the central data store shared between the BLE worker thread
+SharedData is the central data store shared between the worker thread
 and the GUI main thread.  All access goes through methods that acquire a
 threading.Lock so both threads can safely read and write.
 
@@ -26,12 +26,12 @@ from meshcore_gui.services.message_archive import MessageArchive
 
 class SharedData:
     """
-    Thread-safe container for shared data between BLE worker and GUI.
+    Thread-safe container for shared data between worker and GUI.
 
     Implements all four Protocol interfaces defined in ``protocols.py``.
     """
 
-    def __init__(self, ble_address: Optional[str] = None) -> None:
+    def __init__(self, device_id: Optional[str] = None) -> None:
         self.lock = threading.Lock()
 
         # Device info (typed)
@@ -49,10 +49,10 @@ class SharedData:
 
         # Dedup guard: fingerprints of messages already in self.messages.
         # Acts as last-line-of-defence against duplicate inserts regardless
-        # of the source (archive reload, BLE event, reconnect).
+        # of the source (archive reload, device event, reconnect).
         self._message_fingerprints: set = set()
 
-        # Command queue (GUI → BLE)
+        # Command queue (GUI → worker)
         self.cmd_queue: queue.Queue = queue.Queue()
 
         # Update flags — initially True so first GUI render shows data
@@ -83,9 +83,9 @@ class SharedData:
 
         # Message archive (persistent storage)
         self.archive: Optional[MessageArchive] = None
-        if ble_address:
-            self.archive = MessageArchive(ble_address)
-            debug_print(f"MessageArchive initialized for {ble_address}")
+        if device_id:
+            self.archive = MessageArchive(device_id)
+            debug_print(f"MessageArchive initialized for {device_id}")
 
     # ------------------------------------------------------------------
     # Device info updates
@@ -228,7 +228,7 @@ class SharedData:
     def load_room_history(self, pubkey: str, limit: int = 50) -> None:
         """Load archived room messages into the in-memory cache.
 
-        Called by the BLE command handler at room login and when a room
+        Called by the command handler at room login and when a room
         card is first created.  Safe to call multiple times — subsequent
         calls refresh the cache from the archive.
 
@@ -313,7 +313,7 @@ class SharedData:
 
         Skips the message if an identical fingerprint is already present,
         preventing duplicates regardless of the insertion source (archive
-        reload, BLE event, reconnect).
+        reload, device event, reconnect).
 
         Also resolves channel_name and path_names from the current
         contacts/channels list if not already set, and appends to the
@@ -322,8 +322,13 @@ class SharedData:
         """
         with self.lock:
             # Dedup guard: skip if fingerprint already tracked
-            fp = self._message_fingerprint(msg)
-            if fp in self._message_fingerprints:
+            fps = {self._message_fingerprint(msg)}
+            # Also mark outgoing messages under device name to suppress echo
+            if msg.direction == 'out' and msg.sender == 'Me':
+                device_name = self.device.name
+                if device_name:
+                    fps.add(f"c:{msg.channel}:{device_name}:{msg.text}")
+            if any(fp in self._message_fingerprints for fp in fps):
                 debug_print(
                     f"Message skipped (duplicate fingerprint): "
                     f"{msg.sender}: {msg.text[:30]}"
@@ -339,13 +344,21 @@ class SharedData:
                 msg.path_names = self._resolve_path_names(msg.path_hashes)
 
             self.messages.append(msg)
-            self._message_fingerprints.add(fp)
+            for fp in fps:
+                self._message_fingerprints.add(fp)
 
             if len(self.messages) > 100:
                 removed = self.messages.pop(0)
                 # Evict fingerprint of removed message
-                removed_fp = self._message_fingerprint(removed)
-                self._message_fingerprints.discard(removed_fp)
+                removed_fps = {self._message_fingerprint(removed)}
+                if removed.direction == 'out' and removed.sender == 'Me':
+                    device_name = self.device.name
+                    if device_name:
+                        removed_fps.add(
+                            f"c:{removed.channel}:{device_name}:{removed.text}"
+                        )
+                for fp in removed_fps:
+                    self._message_fingerprints.discard(fp)
 
             debug_print(
                 f"Message added: {msg.sender}: {msg.text[:30]}"
@@ -422,7 +435,7 @@ class SharedData:
 
         Intended for startup: populates ``self.messages`` from the
         persistent archive so the main page shows historical messages
-        immediately, before any live BLE traffic arrives.
+        immediately, before any live device traffic arrives.
 
         Safe to call multiple times (idempotent): clears the existing
         message list and fingerprint set before loading, so reconnect
@@ -490,7 +503,7 @@ class SharedData:
 
         Combines ``get_snapshot()`` and ``clear_update_flags()`` in a
         single lock acquisition.  This eliminates the race condition
-        where the BLE worker sets a flag between the two separate calls,
+        where the worker sets a flag between the two separate calls,
         causing the GUI to miss an update (e.g. newly discovered
         channels never appearing in the menu).
 

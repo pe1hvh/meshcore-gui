@@ -263,9 +263,7 @@ class ArchivePage:
                         ui.label(line).classes(
                             'text-xs leading-tight cursor-pointer '
                             'hover:bg-blue-50 rounded px-1'
-                        ).on('click', lambda e, h=msg_hash: ui.navigate.to(
-                            f'/route/{h}', new_tab=True,
-                        ) if h else None)
+                        ).on('click', lambda e, h=msg_hash: self._open_route(h))
         
         # Pagination footer
         if total_pages > 1:
@@ -289,3 +287,10 @@ class ArchivePage:
         def archive_page():
             page = ArchivePage(shared)
             page.render()
+
+    @staticmethod
+    def _open_route(msg_hash: str) -> None:
+        if msg_hash:
+            ui.navigate.to(f'/route/{msg_hash}')
+        else:
+            ui.notify('Route data not available for this message', type='warning')

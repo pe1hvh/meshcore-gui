@@ -10,7 +10,7 @@ class FilterPanel:
 
     Args:
         set_bot_enabled: Callable to toggle the bot in SharedData.
-        put_command:     Callable to enqueue a BLE command.
+        put_command:     Callable to enqueue a command.
     """
 
     def __init__(
@@ -24,6 +24,7 @@ class FilterPanel:
         self._bot_checkbox = None
         self._channel_filters: Dict = {}
         self._last_channels: List[Dict] = []
+        self._suppress_bot_event = False
 
     @property
     def channel_filters(self) -> Dict:
@@ -43,6 +44,8 @@ class FilterPanel:
 
     def _on_bot_toggle(self, value: bool) -> None:
         """Handle BOT checkbox toggle: update flag and queue name change."""
+        if self._suppress_bot_event:
+            return
         self._set_bot_enabled(value)
         self._put_command({
             'action': 'set_device_name',
@@ -63,6 +66,10 @@ class FilterPanel:
                 value=data.get('bot_enabled', False),
                 on_change=lambda e: self._on_bot_toggle(e.value),
             )
+            self._bot_checkbox.tooltip('Enabling BOT changes the device name')
+            ui.label('⚠️ BOT changes device name').classes(
+                'text-xs text-amber-500'
+            )
             ui.label('│').classes('text-gray-300')
 
             cb_dm = ui.checkbox('DM', value=True)
@@ -73,3 +80,9 @@ class FilterPanel:
                 self._channel_filters[ch['idx']] = cb
 
         self._last_channels = data['channels']
+        if self._bot_checkbox is not None:
+            desired = data.get('bot_enabled', False)
+            if self._bot_checkbox.value != desired:
+                self._suppress_bot_event = True
+                self._bot_checkbox.value = desired
+                self._suppress_bot_event = False

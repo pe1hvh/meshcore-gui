@@ -1,5 +1,7 @@
 # BLE Capture Workflow T1000-e — Explanation & Background
 
+> **Note:** This document is BLE-specific and kept for historical reference. The current GUI uses USB serial.
+
 > **Source:** `ble_capture_workflow_t_1000_e.md`
 >
 > This document is a **companion guide** to the original technical working document. It provides:

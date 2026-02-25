@@ -1,7 +1,7 @@
 """
-BLE command handlers for MeshCore GUI.
+Device command handlers for MeshCore GUI.
 
-Extracted from ``BLEWorker`` so that each command is an isolated unit
+Extracted from ``SerialWorker`` so that each command is an isolated unit
 of work.  New commands can be registered without modifying existing
 code (Open/Closed Principle).
 """
@@ -106,14 +106,20 @@ class CommandHandler:
         debug_print("Refresh requested")
         # Delegate to the worker's _load_data via a callback
         if self._load_data_callback:
-            await self._load_data_callback()
+            try:
+                self._shared.set_status("🔄 Refreshing...")
+                await self._load_data_callback()
+                self._shared.set_status("✅ Refreshed")
+            except Exception as exc:
+                self._shared.set_status(f"⚠️ Refresh error: {exc}")
+                debug_print(f"Refresh failed: {exc}")
 
     async def _cmd_purge_unpinned(self, cmd: Dict) -> None:
         """Remove unpinned contacts from the MeshCore device.
 
         Iterates the list of public keys, calls ``remove_contact``
         for each one with a short delay between calls to avoid
-        overwhelming the BLE link.  After completion, triggers a
+        overwhelming the link.  After completion, triggers a
         full refresh so the GUI reflects the new state.
 
         If ``delete_from_history`` is True, also removes the
@@ -170,7 +176,7 @@ class CommandHandler:
                 f"🗑️ Removing... {i}/{total}"
             )
 
-            # Brief pause between BLE calls to avoid congestion
+            # Brief pause between calls to avoid congestion
             if i < total:
                 await asyncio.sleep(0.5)
 
@@ -211,7 +217,7 @@ class CommandHandler:
 
         Note: some firmware/SDK versions raise ``KeyError`` (e.g.
         ``'telemetry_mode_base'``) when parsing the device response.
-        The BLE command itself was already sent successfully in that
+        The command itself was already sent successfully in that
         case, so we treat ``KeyError`` as *probable success* and keep
         the requested state instead of rolling back.
 
@@ -245,7 +251,7 @@ class CommandHandler:
                 debug_print(f"set_auto_add: success → {state}")
         except KeyError as exc:
             # SDK response-parsing error (e.g. missing 'telemetry_mode_base').
-            # The BLE command was already transmitted; the device has likely
+            # The command was already transmitted; the device has likely
             # accepted the new setting.  Keep the requested state.
             self._shared.set_auto_add_enabled(enabled)
             self._shared.set_status(f"✅ Auto-add contacts: {state}")
@@ -262,11 +268,12 @@ class CommandHandler:
             debug_print(f"set_auto_add exception: {exc}")
 
     async def _cmd_set_device_name(self, cmd: Dict) -> None:
-        """Set or restore the device name when BOT is toggled.
+        """Set or restore the device name.
 
-        Uses the fixed names from config.py:
-            - BOT enabled  → ``BOT_DEVICE_NAME``  (e.g. "NL-OV-ZWL-STDSHGN-WKC Bot")
-            - BOT disabled → ``DEVICE_NAME``       (e.g. "PE1HVH T1000e")
+        Uses the fixed names from config.py unless an explicit name is provided:
+            - Explicit name → set to that value
+            - BOT enabled   → ``BOT_DEVICE_NAME``  (e.g. "NL-OV-ZWL-STDSHGN-WKC Bot")
+            - BOT disabled  → ``DEVICE_NAME``       (e.g. "PE1HVH T1000e")
 
         This avoids the previous bug where the dynamically read device
         name could already be the bot name (e.g. after a restart while
@@ -281,22 +288,30 @@ class CommandHandler:
             {
                 'action': 'set_device_name',
                 'bot_enabled': True/False,
+                'name': 'optional explicit name',
             }
         """
-        bot_enabled: bool = cmd.get('bot_enabled', False)
-        target_name = BOT_DEVICE_NAME if bot_enabled else DEVICE_NAME
+        explicit_name = cmd.get('name')
+        has_explicit_name = explicit_name is not None and str(explicit_name).strip() != ""
+        if has_explicit_name:
+            target_name = str(explicit_name).strip()
+            bot_enabled = self._shared.is_bot_enabled()
+        else:
+            bot_enabled = bool(cmd.get('bot_enabled', False))
+            target_name = BOT_DEVICE_NAME if bot_enabled else DEVICE_NAME
 
         try:
             r = await self._mc.commands.set_name(target_name)
             if r.type == EventType.ERROR:
-                # Rollback: revert bot flag to previous state
-                self._shared.set_bot_enabled(not bot_enabled)
+                # Rollback only when driven by BOT toggle
+                if not has_explicit_name:
+                    self._shared.set_bot_enabled(not bot_enabled)
                 self._shared.set_status(
                     f"⚠️ Failed to set device name to '{target_name}'"
                 )
                 debug_print(
                     f"set_device_name: ERROR response for '{target_name}', "
-                    f"rolled back bot_enabled to {not bot_enabled}"
+                    f"{'rolled back bot_enabled to ' + str(not bot_enabled) if not has_explicit_name else 'no bot rollback'}"
                 )
                 return
 
@@ -308,8 +323,9 @@ class CommandHandler:
             debug_print("set_device_name: advert sent")
 
         except Exception as exc:
-            # Rollback on exception
-            self._shared.set_bot_enabled(not bot_enabled)
+            # Rollback on exception (BOT toggle only)
+            if not has_explicit_name:
+                self._shared.set_bot_enabled(not bot_enabled)
             self._shared.set_status(f"⚠️ Device name error: {exc}")
             debug_print(f"set_device_name exception: {exc}")
 
@@ -536,7 +552,7 @@ class CommandHandler:
             debug_print(f"send_room_msg exception: {exc}")
 
     # ------------------------------------------------------------------
-    # Callback for refresh (set by BLEWorker after construction)
+    # Callback for refresh (set by SerialWorker after construction)
     # ------------------------------------------------------------------
 
     _load_data_callback = None

@@ -9,7 +9,7 @@ class InputPanel:
     """Message composition panel in the centre column.
 
     Args:
-        put_command: Callable to enqueue a command dict for the BLE worker.
+        put_command: Callable to enqueue a command dict for the worker.
     """
 
     def __init__(self, put_command: Callable[[Dict], None]) -> None:

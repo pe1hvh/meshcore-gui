@@ -1,24 +1,21 @@
 #!/usr/bin/env bash
 # ============================================================================
-# MeshCore GUI — BLE Stability: Installation Script (Legacy)
+# MeshCore GUI — Serial Installer
 # ============================================================================
 #
-# Installs the BLE PIN agent, reconnect module, systemd service
-# and D-Bus policy.  Automatically detects the correct paths and user.
-#
-# NOTE: This script is BLE-specific and is not used for the current
-# serial-based GUI.
+# Installs a systemd service for the serial-based MeshCore GUI.
+# Automatically detects paths and the current user.
 #
 # Usage:
 #   cd ~/meshcore-gui        # (or wherever your project is located)
-#   bash install_ble_stable.sh
+#   bash install_serial.sh
 #
 # Optional:
-#   bash install_ble_stable.sh --uninstall   # Remove everything
+#   bash install_serial.sh --uninstall   # Remove the service
 #
 # Requirements:
 #   - meshcore-gui project with venv/ directory
-#   - sudo access (for systemd and D-Bus config)
+#   - sudo access (for systemd)
 #
 # ============================================================================
 
@@ -38,18 +35,13 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
 # ── Uninstall mode ──
 if [[ "${1:-}" == "--uninstall" ]]; then
-    info "Removing meshcore-gui service and configuration..."
+    info "Removing meshcore-gui service..."
     sudo systemctl stop meshcore-gui 2>/dev/null || true
     sudo systemctl disable meshcore-gui 2>/dev/null || true
     sudo rm -f /etc/systemd/system/meshcore-gui.service
-    sudo rm -f /etc/dbus-1/system.d/meshcore-ble.conf
     sudo systemctl daemon-reload
     sudo systemctl reset-failed 2>/dev/null || true
-    ok "Service and configuration removed"
-    info "Python files in your project have NOT been removed."
-    info "Remove manually if desired:"
-    info "  rm meshcore_gui/ble/ble_agent.py"
-    info "  rm meshcore_gui/ble/ble_reconnect.py"
+    ok "Service removed"
     exit 0
 fi
 
@@ -73,7 +65,7 @@ if [[ ! -x "${VENV_PYTHON}" ]]; then
        Create it first:
          python3 -m venv venv
          source venv/bin/activate
-         pip install meshcore nicegui bleak meshcoredecoder"
+         pip install meshcore nicegui meshcoredecoder"
 fi
 
 # Determine the entry point
@@ -85,35 +77,67 @@ else
     error "Cannot determine entry point."
 fi
 
-# Check BLE address argument
-BLE_ADDRESS="${BLE_ADDRESS:-}"
-if [[ -z "${BLE_ADDRESS}" ]]; then
+# Serial port (env or prompt)
+SERIAL_PORT="${SERIAL_PORT:-}"
+if [[ -z "${SERIAL_PORT}" ]]; then
     echo ""
-    echo -e "${YELLOW}BLE MAC address not specified.${NC}"
+    echo -e "${YELLOW}Serial device not specified.${NC}"
     echo "You can specify it in two ways:"
     echo ""
     echo "  1. As an environment variable:"
-    echo "     BLE_ADDRESS=FF:05:D6:71:83:8D bash install_ble_stable.sh"
+    echo "     SERIAL_PORT=/dev/ttyACM0 bash install_serial.sh"
     echo ""
     echo "  2. Enter manually:"
-    read -rp "     BLE MAC address (e.g. FF:05:D6:71:83:8D): " BLE_ADDRESS
+    read -rp "     Serial device (e.g. /dev/ttyACM0 or /dev/ttyUSB0): " SERIAL_PORT
     echo ""
 fi
 
-if [[ -z "${BLE_ADDRESS}" ]]; then
-    error "No BLE MAC address specified. Aborted."
+if [[ -z "${SERIAL_PORT}" ]]; then
+    error "No serial device specified. Aborted."
+fi
+
+# Optional settings
+BAUD="${BAUD:-115200}"
+SERIAL_CX_DLY="${SERIAL_CX_DLY:-0.1}"
+WEB_PORT="${WEB_PORT:-8081}"
+DEBUG_ON="${DEBUG_ON:-}"
+
+if [[ -z "${DEBUG_ON}" ]]; then
+    read -rp "Enable debug logging? [y/N] " dbg
+    if [[ "${dbg}" == "y" || "${dbg}" == "Y" ]]; then
+        DEBUG_ON="yes"
+    else
+        DEBUG_ON="no"
+    fi
+fi
+
+DEBUG_FLAG=""
+if [[ "${DEBUG_ON}" == "yes" ]]; then
+    DEBUG_FLAG="--debug-on"
+fi
+
+# Warn about dialout group (Linux)
+if ! id -nG "${CURRENT_USER}" | grep -qw "dialout"; then
+    warn "User '${CURRENT_USER}' is not in the 'dialout' group."
+    warn "Serial access may fail. Fix with:"
+    warn "  sudo usermod -aG dialout ${CURRENT_USER}"
+    warn "  (then log out/in)"
 fi
 
 # Summary
 echo ""
 echo "═══════════════════════════════════════════════════"
-echo " MeshCore GUI — BLE Stability Installer"
+echo " MeshCore GUI — Serial Installer"
 echo "═══════════════════════════════════════════════════"
 echo " Project dir:  ${PROJECT_DIR}"
 echo " User:         ${CURRENT_USER}"
 echo " Python:       ${VENV_PYTHON}"
 echo " Entry point:  ${ENTRY_POINT}"
-echo " BLE address:  ${BLE_ADDRESS}"
+echo " Serial port:  ${SERIAL_PORT}"
+echo " Baudrate:     ${BAUD}"
+echo " CX delay:     ${SERIAL_CX_DLY}"
+echo " Web port:     ${WEB_PORT}"
+echo " Debug:        ${DEBUG_ON}"
 echo "═══════════════════════════════════════════════════"
 echo ""
 read -rp "Continue? [y/N] " confirm
@@ -123,68 +147,26 @@ if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then
 fi
 
 # ── Step 1: Upgrade meshcore library ──
-info "Step 1/6: Upgrading meshcore library..."
+info "Step 1/3: Upgrading meshcore library..."
 "${PROJECT_DIR}/venv/bin/pip" install --upgrade meshcore --quiet 2>/dev/null || \
     "${PROJECT_DIR}/venv/bin/pip" install --upgrade meshcore
 MESHCORE_VERSION=$("${PROJECT_DIR}/venv/bin/pip" show meshcore 2>/dev/null | grep "^Version:" | awk '{print $2}')
 ok "meshcore version: ${MESHCORE_VERSION:-unknown}"
 
-# ── Step 2: Check that dbus_fast is available ──
-info "Step 2/6: Checking dbus_fast dependency..."
-if "${VENV_PYTHON}" -c "import dbus_fast" 2>/dev/null; then
-    ok "dbus_fast available (included with bleak)"
-else
-    warn "dbus_fast not found, installing..."
-    "${PROJECT_DIR}/venv/bin/pip" install dbus-fast --quiet
-    ok "dbus_fast installed"
-fi
-
-# ── Step 3: Copy Python files ──
-info "Step 3/6: Installing Python files..."
-
-# Detect if ble_agent.py and ble_reconnect.py already exist
-BLE_DIR="${PROJECT_DIR}/meshcore_gui/ble"
-if [[ ! -d "${BLE_DIR}" ]]; then
-    error "Directory ${BLE_DIR} not found."
-fi
-
-# Check if the files are already in place
-AGENT_OK=false
-RECONNECT_OK=false
-[[ -f "${BLE_DIR}/ble_agent.py" ]] && AGENT_OK=true
-[[ -f "${BLE_DIR}/ble_reconnect.py" ]] && RECONNECT_OK=true
-
-if $AGENT_OK && $RECONNECT_OK; then
-    ok "ble_agent.py and ble_reconnect.py are already installed"
-else
-    # Check if they are in the same directory as this script
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    
-    if [[ -f "${SCRIPT_DIR}/meshcore_gui/ble/ble_agent.py" ]]; then
-        cp "${SCRIPT_DIR}/meshcore_gui/ble/ble_agent.py" "${BLE_DIR}/"
-        cp "${SCRIPT_DIR}/meshcore_gui/ble/ble_reconnect.py" "${BLE_DIR}/"
-        ok "Files copied from ${SCRIPT_DIR}"
-    else
-        if ! $AGENT_OK; then
-            error "ble_agent.py not found in ${BLE_DIR}/
-       Copy this file manually to ${BLE_DIR}/"
-        fi
-        if ! $RECONNECT_OK; then
-            error "ble_reconnect.py not found in ${BLE_DIR}/
-       Copy this file manually to ${BLE_DIR}/"
-        fi
-    fi
-fi
-
-# Verify Python syntax
-info "Verifying Python syntax..."
+# ── Step 2: Verify Python syntax ──
+info "Step 2/3: Verifying Python syntax..."
 "${VENV_PYTHON}" -c "
 import ast, sys
+files = [
+    '${PROJECT_DIR}/meshcore_gui.py',
+    '${PROJECT_DIR}/meshcore_gui/ble/worker.py',
+    '${PROJECT_DIR}/meshcore_gui/ble/commands.py',
+]
 errors = []
-for f in ['${BLE_DIR}/ble_agent.py', '${BLE_DIR}/ble_reconnect.py', '${BLE_DIR}/worker.py']:
+for f in files:
     try:
         ast.parse(open(f).read())
-    except SyntaxError as e:
+    except Exception as e:
         errors.append(f'{f}: {e}')
 if errors:
     print('SYNTAX ERRORS:')
@@ -193,64 +175,23 @@ if errors:
     sys.exit(1)
 print('OK')
 " || error "Syntax errors found in Python files"
-ok "All Python files are syntactically correct"
+ok "Python files are syntactically correct"
 
-# ── Step 4: Remove old bt-agent service ──
-info "Step 4/6: Cleaning up old services..."
-if systemctl is-active --quiet bt-agent 2>/dev/null; then
-    sudo systemctl stop bt-agent
-    sudo systemctl disable bt-agent
-    ok "bt-agent.service stopped and disabled"
-elif systemctl list-unit-files | grep -q bt-agent 2>/dev/null; then
-    sudo systemctl disable bt-agent 2>/dev/null || true
-    ok "bt-agent.service disabled"
-else
-    ok "bt-agent.service was already absent"
-fi
-
-# Stop existing meshcore-gui service if running
-if systemctl is-active --quiet meshcore-gui 2>/dev/null; then
-    sudo systemctl stop meshcore-gui
-    ok "Existing meshcore-gui.service stopped"
-fi
-
-# ── Step 5: Install D-Bus policy ──
-info "Step 5/6: Installing D-Bus policy..."
-DBUS_CONF="/etc/dbus-1/system.d/meshcore-ble.conf"
-
-sudo tee "${DBUS_CONF}" > /dev/null << DBUS_EOF
-<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
-  "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
-<busconfig>
-  <!-- Allow user '${CURRENT_USER}' to interact with BlueZ for BLE pairing agent -->
-  <policy user="${CURRENT_USER}">
-    <allow send_destination="org.bluez"/>
-    <allow send_interface="org.bluez.Agent1"/>
-    <allow send_interface="org.bluez.AgentManager1"/>
-  </policy>
-</busconfig>
-DBUS_EOF
-
-ok "D-Bus policy installed for user '${CURRENT_USER}'"
-
-# ── Step 6: Install systemd service ──
-info "Step 6/6: Installing systemd service..."
+# ── Step 3: Install systemd service ──
+info "Step 3/3: Installing systemd service..."
 SERVICE_FILE="/etc/systemd/system/meshcore-gui.service"
 
 sudo tee "${SERVICE_FILE}" > /dev/null << SERVICE_EOF
 [Unit]
-Description=MeshCore GUI (BLE)
-After=bluetooth.target
-Wants=bluetooth.target
+Description=MeshCore GUI (Serial)
 
 [Service]
 Type=simple
 User=${CURRENT_USER}
 WorkingDirectory=${PROJECT_DIR}
-ExecStart=${VENV_PYTHON} ${ENTRY_POINT} ${BLE_ADDRESS} --debug-on
+ExecStart=${VENV_PYTHON} ${ENTRY_POINT} ${SERIAL_PORT} ${DEBUG_FLAG} --port=${WEB_PORT} --baud=${BAUD} --serial-cx-dly=${SERIAL_CX_DLY}
 Restart=on-failure
 RestartSec=30
-Environment=DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
 
 [Install]
 WantedBy=multi-user.target
@@ -274,7 +215,7 @@ echo "   sudo systemctl status meshcore-gui     # Status"
 echo "   journalctl -u meshcore-gui -f          # Live logs"
 echo ""
 echo " Uninstall:"
-echo "   bash install_ble_stable.sh --uninstall"
+echo "   bash install_serial.sh --uninstall"
 echo ""
 echo "═══════════════════════════════════════════════════"
 

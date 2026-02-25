@@ -14,7 +14,6 @@ Debug output is written to both stdout and a rotating log file at
 
 import json
 import logging
-import os
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -26,7 +25,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.9.13"
+VERSION: str = "1.11.0"
 
 
 # ==============================================================================
@@ -80,17 +79,23 @@ LOG_DIR: Path = DATA_DIR / "logs"
 LOG_FILE: Path = LOG_DIR / "meshcore_gui.log"
 
 
-def set_log_file_for_device(ble_address: str) -> None:
-    """Set the log file name based on the BLE device address.
+def set_log_file_for_device(device_id: str) -> None:
+    """Set the log file name based on the device identifier.
 
     Transforms ``F0:9E:9E:75:A3:01`` into
-    ``~/.meshcore-gui/logs/F0_9E_9E_75_A3_01_meshcore_gui.log``.
+    ``~/.meshcore-gui/logs/F0_9E_9E_75_A3_01_meshcore_gui.log`` and
+    ``/dev/ttyUSB0`` into ``~/.meshcore-gui/logs/_dev_ttyUSB0_meshcore_gui.log``.
 
     Must be called **before** the first ``debug_print()`` call so the
     lazy logger initialisation picks up the correct path.
     """
     global LOG_FILE
-    safe_name = ble_address.replace(":", "_")
+    safe_name = (
+        device_id
+        .replace("literal:", "")
+        .replace(":", "_")
+        .replace("/", "_")
+    )
     LOG_FILE = LOG_DIR / f"{safe_name}_meshcore_gui.log"
 
 # Maximum size per log file in bytes (5 MB).
@@ -151,12 +156,12 @@ def _init_meshcore_logger() -> None:
 
     The meshcore library uses ``logging.getLogger("meshcore")`` throughout,
     but never attaches a handler.  Without this function all library-level
-    debug output (raw BLE send/receive, event dispatching, command flow)
+    debug output (raw send/receive, event dispatching, command flow)
     is silently dropped because Python's root logger only forwards
     WARNING and above.
 
     Call once at startup (or lazily from ``debug_print``) so that
-    ``BLE_LIB_DEBUG=True`` actually produces visible output.
+    ``MESHCORE_LIB_DEBUG=True`` actually produces visible output.
     """
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -213,7 +218,7 @@ def debug_print(msg: str) -> None:
     # Rotating log file
     if _file_logger is None:
         _file_logger = _init_file_logger()
-        # Also wire up the meshcore library logger so BLE_LIB_DEBUG
+        # Also wire up the meshcore library logger so MESHCORE_LIB_DEBUG
         # output actually appears in the same log file + stdout.
         _init_meshcore_logger()
     _file_logger.debug(formatted)
@@ -245,7 +250,7 @@ def debug_data(label: str, obj: Any) -> None:
 
     Output::
 
-        DEBUG [ble.worker]: get_contacts result ↓
+        DEBUG [worker]: get_contacts result ↓
           {
             "name": "PE1HVH",
             "contacts": 629,
@@ -299,53 +304,59 @@ DEVICE_NAME: str = "PE1HVH T1000e"
 # CACHE / REFRESH
 # ==============================================================================
 
-# Default timeout (seconds) for BLE command responses.
+# Default timeout (seconds) for meshcore command responses.
 # Increase if you see frequent 'no_event_received' errors during startup.
-BLE_DEFAULT_TIMEOUT: float = 10.0
+DEFAULT_TIMEOUT: float = 10.0
 
-# Enable debug logging inside the meshcore BLE library itself.
-# When True, raw BLE send/receive data and event parsing are logged.
-BLE_LIB_DEBUG: bool = True
+# Enable debug logging inside the meshcore library itself.
+# When True, raw send/receive data and event parsing are logged.
+MESHCORE_LIB_DEBUG: bool = True
 
+# ==============================================================================
+# TRANSPORT MODE  (auto-detected from CLI argument)
+# ==============================================================================
+
+# "serial" or "ble" — set at startup by main() based on the device argument.
+TRANSPORT: str = "serial"
+
+
+def is_ble_address(device_id: str) -> bool:
+    """Detect whether *device_id* looks like a BLE MAC address.
+
+    Heuristic:
+    - Starts with ``literal:`` → BLE
+    - Matches ``XX:XX:XX:XX:XX:XX`` (6 colon-separated hex pairs) → BLE
+    - Everything else (``/dev/…``, ``COM…``) → Serial
+    """
+    if device_id.lower().startswith("literal:"):
+        return True
+    parts = device_id.split(":")
+    if len(parts) == 6 and all(len(p) == 2 for p in parts):
+        try:
+            for p in parts:
+                int(p, 16)
+            return True
+        except ValueError:
+            pass
+    return False
+TRANSPORT: str = "serial"
+
+# Serial connection defaults.
+SERIAL_BAUDRATE: int = 115200
+SERIAL_CX_DELAY: float = 0.1
+
+# BLE connection defaults.
 # BLE pairing PIN for the MeshCore device (T1000e default: 123456).
-# Used by meshcore-ble-connect (--pin parameter) and by the built-in
-# D-Bus agent (legacy fallback) to answer pairing requests.
-# Can be overridden via CLI: --ble-pin=PIN or --pin=PIN
-# Or via environment variable: MESHCORE_BLE_PIN (for systemd)
-BLE_PIN: str = os.environ.get("MESHCORE_BLE_PIN", "123456")
+# Used by the built-in D-Bus agent to answer pairing requests
+# automatically — eliminates the need for bt-agent.service.
+BLE_PIN: str = "123456"
 
-# Timeout in seconds for the meshcore-ble-connect subprocess.
-# Increase if pairing takes longer (e.g. on slow Bluetooth adapters).
-BLE_CONNECT_TIMEOUT: int = 60
-
-# Maximum number of reconnect attempts after a BLE disconnect.
+# Maximum number of reconnect attempts after a disconnect.
 RECONNECT_MAX_RETRIES: int = 5
 
 # Base delay in seconds between reconnect attempts (multiplied by
 # attempt number for linear backoff: 5s, 10s, 15s, 20s, 25s).
 RECONNECT_BASE_DELAY: float = 5.0
-
-# ── BlueZ version detection ──
-# BlueZ >= 5.78 no longer auto-initiates pairing when writing to an
-# encrypted characteristic.  Instead of triggering the D-Bus agent,
-# it disconnects the device.  NEEDS_PREPAIR enables the workaround:
-# pre-pair with bleak before meshcore_py connects.
-import subprocess as _subprocess
-
-def _get_bluez_version() -> tuple:
-    """Return BlueZ (major, minor) version tuple."""
-    try:
-        _result = _subprocess.run(
-            ["bluetoothd", "--version"],
-            capture_output=True, text=True, timeout=5,
-        )
-        _parts = _result.stdout.strip().split(".")
-        return (int(_parts[0]), int(_parts[1]))
-    except Exception:
-        return (5, 72)  # Safe default: assume old behavior
-
-BLUEZ_VERSION: tuple = _get_bluez_version()
-NEEDS_PREPAIR: bool = BLUEZ_VERSION >= (5, 78)
 
 # Interval in seconds between periodic contact refreshes from the device.
 # Contacts are merged (new/changed contacts update the cache; contacts
@@ -377,4 +388,3 @@ RXLOG_RETENTION_DAYS: int = 7
 # Retention period for contacts (in days).
 # Contacts not seen for longer than this are removed from cache.
 CONTACT_RETENTION_DAYS: int = 90
-

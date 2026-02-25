@@ -108,7 +108,7 @@ CONTACT_RETENTION_DAYS: int = 90
 
 ### Basic Usage
 
-The archive is automatically initialized when SharedData is created with a BLE address:
+The archive is automatically initialized when SharedData is created with a device identifier (serial port):
 
 ```python
 from meshcore_gui.core.shared_data import SharedData
@@ -197,7 +197,7 @@ With default retention (30 days messages, 7 days rxlog):
 
 ## Automatic Cleanup
 
-The BLE worker runs cleanup daily (every 86400 seconds):
+The worker runs cleanup daily (every 86400 seconds):
 
 1. **Message Cleanup**: Removes messages older than `MESSAGE_RETENTION_DAYS`
 2. **RxLog Cleanup**: Removes entries older than `RXLOG_RETENTION_DAYS`
@@ -273,7 +273,7 @@ python -m unittest discover tests
 No migration needed! The feature is fully backward compatible:
 
 1. Existing SharedData code works unchanged
-2. Archive is optional (requires BLE address)
+2. Archive is optional (requires device identifier)
 3. First run creates archive files automatically
 4. No data loss from existing cache
 
@@ -301,7 +301,7 @@ Archive files will be created automatically on first message/rxlog.
 **Problem:** No `~/.meshcore-gui/archive/` directory
 
 **Solution:**
-- Check that SharedData was initialized with BLE address
+- Check that SharedData was initialized with device identifier
 - Check disk permissions
 - Enable debug mode: `--debug-on`
 

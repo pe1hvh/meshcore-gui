@@ -1,83 +1,36 @@
 """
-BLE communication worker for MeshCore GUI.
+Communication worker for MeshCore GUI (Serial + BLE).
 
 Runs in a separate thread with its own asyncio event loop.  Connects
 to the MeshCore device, wires up collaborators, and runs the command
 processing loop.
 
-Responsibilities deliberately kept narrow (SRP):
-    - Thread lifecycle and asyncio loop
-    - BLE connection and initial data loading
-    - Wiring CommandHandler and EventHandler
-    - BLE bond management via meshcore-ble-connect
-    - Disconnect detection and automatic reconnect
+Transport selection
+~~~~~~~~~~~~~~~~~~~~
+The :func:`create_worker` factory returns the appropriate worker class
+based on the device identifier:
+
+- ``/dev/ttyACM0``  → :class:`SerialWorker`  (USB serial)
+- ``literal:AA:BB:CC:DD:EE:FF`` → :class:`BLEWorker`  (Bluetooth LE)
+
+Both workers share the same base class (:class:`_BaseWorker`) which
+implements the main loop, event wiring, data loading and caching.
 
 Command execution  → :mod:`meshcore_gui.ble.commands`
 Event handling     → :mod:`meshcore_gui.ble.events`
 Packet decoding    → :mod:`meshcore_gui.ble.packet_decoder`
-BLE bond manager   → :mod:`meshcore_gui.ble.ble_connector`
-PIN agent          → :mod:`meshcore_gui.ble.ble_agent` (legacy fallback)
-Reconnect logic    → :mod:`meshcore_gui.ble.ble_reconnect`
+PIN agent (BLE)    → :mod:`meshcore_gui.ble.ble_agent`
+Reconnect (BLE)    → :mod:`meshcore_gui.ble.ble_reconnect`
 Bot logic          → :mod:`meshcore_gui.services.bot`
 Deduplication      → :mod:`meshcore_gui.services.dedup`
 Cache              → :mod:`meshcore_gui.services.cache`
 
-v5.5 changes (subprocess-based BLE connection)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-- On BlueZ 5.82+, BleakClient.connect() cannot connect to bonded
-  MeshCore devices.  The new approach uses ``meshcore-ble-connect
-  --connect`` as a subprocess that holds the D-Bus connection open.
-  BleakClient then attaches to the already-connected device for GATT
-  service discovery only.
-- New method ``_connect_via_subprocess()`` manages the subprocess
-  lifecycle: start → wait for READY → BleakScanner cache warmup →
-  BleakClient.connect() → MeshCore.create_ble(client=...).
-- Subprocess is killed on disconnect, reconnect, or shutdown.
-- Fallback: if ``--connect`` mode fails, falls back to direct
-  ``MeshCore.create_ble(address)`` for older BlueZ versions.
-
-v5.4 changes (meshcore-ble-connect integration)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-- BLE bond management via ``meshcore-ble-connect`` subprocess: before
-  every bleak connect attempt, the external tool ensures the bond is
-  valid.  Replaces the built-in D-Bus agent + ``_ensure_paired()``
-  flow as the primary pairing mechanism.
-- Graceful degradation: if ``meshcore-ble-connect`` is not installed,
-  the legacy ``BleAgentManager`` + bleak pairing path is used.
-- Exit codes from ``meshcore-ble-connect`` are translated to clear
-  GUI status messages.
-- ``bt-agent.service`` is no longer needed.
-
-v5.3 changes (BlueZ >= 5.78 compatibility)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-- Pre-pair mode: BlueZ >= 5.78 no longer auto-initiates pairing on
-  encrypted writes. ``_ensure_paired()`` uses bleak to pair before
-  ``meshcore_py.create_ble()`` connects.
-- Conditional ``remove_bond``: only on BlueZ < 5.78 (where it is safe).
-- BlueZ version detection via ``config.NEEDS_PREPAIR``.
-
-v5.2 changes (BLE stability)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-- Built-in D-Bus PIN agent (legacy fallback for when
-  ``meshcore-ble-connect`` is not installed).
-- Automatic bond removal on startup (clean slate).
-- Disconnect detection in the main loop with auto-reconnect.
-- Bond cleanup before each reconnect attempt (fixes "PIN or Key
-  Missing" errors from stale BlueZ bonds).
-- Linear backoff reconnect (configurable via ``RECONNECT_*`` settings).
-
-v5.1 changes
-~~~~~~~~~~~~~
-- Cache-first startup: GUI is populated instantly from disk cache.
-- Background BLE refresh updates cache + SharedData incrementally.
-- Periodic contact refresh every ``CONTACT_REFRESH_SECONDS``.
-- Channel keys are cached to disk for instant packet decoding.
-- Background key retry: missing channel keys are retried every
-  ``KEY_RETRY_INTERVAL`` seconds until all keys are loaded.
+                   Author: PE1HVH
+  SPDX-License-Identifier: MIT
 """
 
+import abc
 import asyncio
-import sys
 import threading
 import time
 from typing import Dict, List, Optional, Set
@@ -86,12 +39,11 @@ from meshcore import MeshCore, EventType
 
 import meshcore_gui.config as _config
 from meshcore_gui.config import (
-    BLE_DEFAULT_TIMEOUT,
-    BLE_LIB_DEBUG,
+    DEFAULT_TIMEOUT,
+    MESHCORE_LIB_DEBUG,
     CHANNEL_CACHE_ENABLED,
     CONTACT_REFRESH_SECONDS,
     MAX_CHANNELS,
-    NEEDS_PREPAIR,
     RECONNECT_BASE_DELAY,
     RECONNECT_MAX_RETRIES,
     debug_data,
@@ -99,9 +51,6 @@ from meshcore_gui.config import (
     pp,
 )
 from meshcore_gui.core.protocols import SharedDataWriter
-from meshcore_gui.ble.ble_agent import BleAgentManager
-from meshcore_gui.ble.ble_connector import ensure_bond, is_ble_connect_available
-from meshcore_gui.ble.ble_reconnect import ensure_adapter_pairable, reconnect_loop, remove_bond
 from meshcore_gui.ble.commands import CommandHandler
 from meshcore_gui.ble.events import EventHandler
 from meshcore_gui.ble.packet_decoder import PacketDecoder
@@ -116,35 +65,55 @@ KEY_RETRY_INTERVAL: float = 30.0
 # Seconds between periodic cleanup of old archived data (24 hours).
 CLEANUP_INTERVAL: float = 86400.0
 
-# Timeout (seconds) waiting for READY from meshcore-ble-connect --connect.
-SUBPROCESS_READY_TIMEOUT: float = 60.0
+
+# ======================================================================
+# Factory
+# ======================================================================
+
+def create_worker(device_id: str, shared: SharedDataWriter, **kwargs):
+    """Return the appropriate worker for *device_id*.
+
+    Keyword arguments are forwarded to the worker constructor
+    (e.g. ``baudrate``, ``cx_dly`` for serial).
+    """
+    from meshcore_gui.config import is_ble_address
+
+    if is_ble_address(device_id):
+        return BLEWorker(device_id, shared)
+    return SerialWorker(
+        device_id,
+        shared,
+        baudrate=kwargs.get("baudrate", _config.SERIAL_BAUDRATE),
+        cx_dly=kwargs.get("cx_dly", _config.SERIAL_CX_DELAY),
+    )
 
 
-class BLEWorker:
-    """BLE communication worker that runs in a separate thread.
+# ======================================================================
+# Base worker (shared by BLE and Serial)
+# ======================================================================
 
-    Args:
-        address: BLE MAC address (e.g. ``"literal:AA:BB:CC:DD:EE:FF"``).
-        shared:  SharedDataWriter for thread-safe communication.
+class _BaseWorker(abc.ABC):
+    """Abstract base for transport-specific workers.
+
+    Subclasses must implement:
+
+    - :pyattr:`_log_prefix` — ``"BLE"`` or ``"SERIAL"``
+    - :meth:`_async_main` — transport-specific startup + main loop
+    - :meth:`_connect` — create the :class:`MeshCore` connection
+    - :meth:`_reconnect` — re-establish after a disconnect
+    - :pyattr:`_disconnect_keywords` — error substrings that signal
+      a broken connection
     """
 
-    def __init__(self, address: str, shared: SharedDataWriter) -> None:
-        self.address = address
+    def __init__(self, device_id: str, shared: SharedDataWriter) -> None:
+        self.device_id = device_id
         self.shared = shared
         self.mc: Optional[MeshCore] = None
         self.running = True
         self._disconnected = False
 
-        # BLE bond manager: prefer meshcore-ble-connect, fall back to
-        # built-in D-Bus agent if the tool is not installed.
-        self._use_ble_connect: bool = is_ble_connect_available()
-
-        # BLE PIN agent (legacy fallback when meshcore-ble-connect is
-        # not available)
-        self._agent = BleAgentManager(pin=_config.BLE_PIN)
-
         # Local cache (one file per device)
-        self._cache = DeviceCache(address)
+        self._cache = DeviceCache(device_id)
 
         # Collaborators (created eagerly, wired after connection)
         self._decoder = PacketDecoder()
@@ -158,747 +127,156 @@ class BLEWorker:
         # Channel indices that still need keys from device
         self._pending_keys: Set[int] = set()
 
-        # Pre-paired BleakClient (BlueZ >= 5.78 only)
-        self._prepair_client = None
-
         # Dynamically discovered channels from device
         self._channels: List[Dict] = []
 
-        # meshcore-ble-connect --connect subprocess (v5.5)
-        self._ble_connect_proc: Optional[asyncio.subprocess.Process] = None
+    # ── abstract properties / methods ─────────────────────────────
 
-    # ------------------------------------------------------------------
-    # Thread lifecycle
-    # ------------------------------------------------------------------
+    @property
+    @abc.abstractmethod
+    def _log_prefix(self) -> str:
+        """Short label for log messages, e.g. ``"BLE"`` or ``"SERIAL"``."""
+
+    @property
+    @abc.abstractmethod
+    def _disconnect_keywords(self) -> tuple:
+        """Lowercase substrings that indicate a transport disconnect."""
+
+    @abc.abstractmethod
+    async def _async_main(self) -> None:
+        """Transport-specific startup + main loop."""
+
+    @abc.abstractmethod
+    async def _connect(self) -> None:
+        """Create a fresh connection and wire collaborators."""
+
+    @abc.abstractmethod
+    async def _reconnect(self) -> Optional[MeshCore]:
+        """Attempt to re-establish the connection after a disconnect."""
+
+    # ── thread lifecycle ──────────────────────────────────────────
 
     def start(self) -> None:
         """Start the worker in a new daemon thread."""
         thread = threading.Thread(target=self._run, daemon=True)
         thread.start()
-        debug_print("BLE worker thread started")
+        debug_print(f"{self._log_prefix} worker thread started")
 
     def _run(self) -> None:
         asyncio.run(self._async_main())
 
-    async def _async_main(self) -> None:
-        # ── Step 1: BLE bond setup ──
-        # Primary: meshcore-ble-connect (handles all BlueZ versions)
-        # Fallback: built-in D-Bus PIN agent + bleak pairing
-        if self._use_ble_connect:
-            # meshcore-ble-connect handles bonding — verify bond now
-            print("BLE: Using meshcore-ble-connect for bond management")
-            success, rc, msg = await ensure_bond(
-                self.address, pin=_config.BLE_PIN,
-            )
-            if not success:
-                self.shared.set_status(msg)
-                print(f"BLE: Initial bond check failed: {msg}")
-                debug_print(f"Initial ensure_bond failed: rc={rc} msg={msg}")
-                # Non-fatal: we'll retry before each connect attempt
-        else:
-            # Legacy fallback: start built-in D-Bus PIN agent
-            await self._agent.start()
+    # ── shared main loop (called from subclass _async_main) ───────
 
-            if not self._agent.is_registered and sys.platform == "linux":
-                print(
-                    "BLE: ❌ PIN agent is NOT registered — BLE pairing "
-                    "will fail with 'Not Paired'."
-                )
-                print("BLE: ──────────────────────────────────────────")
-                print("BLE: Fix: install meshcore-ble-connect:")
-                print("BLE:   pip install meshcore-ble-connect")
-                print("BLE: Or install the D-Bus policy file:")
-                print("BLE:   bash install_ble_stable.sh")
-                print("BLE: ──────────────────────────────────────────")
-                debug_print(
-                    "PIN agent NOT registered — install "
-                    "meshcore-ble-connect or D-Bus policy file"
-                )
-                self.shared.set_status(
-                    "❌ BLE PIN agent failed — "
-                    "install meshcore-ble-connect or see terminal"
-                )
+    async def _main_loop(self) -> None:
+        """Command processing + periodic tasks.
 
-            # Legacy bond preparation
-            if NEEDS_PREPAIR:
-                self._prepair_client = await self._ensure_paired()
-                await asyncio.sleep(1)
-            else:
-                await remove_bond(self.address)
-                await asyncio.sleep(1)
-
-        # ── Step 2: Connect + main loop (with reconnect wrapper) ──
-        try:
-            while self.running:
-                self._disconnected = False
-
-                # Ensure bond before every connect attempt
-                if self._use_ble_connect:
-                    success, rc, msg = await ensure_bond(
-                        self.address, pin=_config.BLE_PIN,
-                    )
-                    if not success:
-                        self.shared.set_status(msg)
-                        print(f"BLE: Bond failed before connect: {msg}")
-                        debug_print(f"Pre-connect ensure_bond failed: rc={rc}")
-                        await asyncio.sleep(30)
-                        continue
-
-                await self._connect()
-
-                if not self.mc:
-                    # Initial connect failed — wait and retry
-                    print("BLE: Initial connection failed, retrying in 30s...")
-                    debug_print("Initial connection failed, retrying in 30s")
-                    self.shared.set_status("⚠️ Connection failed — retrying...")
-                    await asyncio.sleep(30)
-                    if not self._use_ble_connect:
-                        # Legacy: re-prepare bond
-                        if NEEDS_PREPAIR:
-                            self._prepair_client = await self._ensure_paired()
-                            await asyncio.sleep(1)
-                        else:
-                            await remove_bond(self.address)
-                            await asyncio.sleep(1)
-                    continue
-
-                # ── Main loop ──
-                last_contact_refresh = time.time()
-                last_key_retry = time.time()
-                last_cleanup = time.time()
-
-                while self.running and not self._disconnected:
-                    try:
-                        await self._cmd_handler.process_all()
-                    except Exception as e:
-                        error_str = str(e).lower()
-                        if any(
-                            kw in error_str
-                            for kw in (
-                                "not connected",
-                                "disconnected",
-                                "dbus",
-                                "pin or key missing",
-                                "connection reset",
-                                "broken pipe",
-                                "failed to discover",
-                                "service discovery",
-                            )
-                        ):
-                            print(f"BLE: ⚠️  Connection error detected: {e}")
-                            debug_print(f"Connection error detected: {e}")
-                            self._disconnected = True
-                            break
-                        debug_print(f"Command processing error: {e}")
-
-                    now = time.time()
-
-                    # Periodic contact refresh
-                    if now - last_contact_refresh > CONTACT_REFRESH_SECONDS:
-                        await self._refresh_contacts()
-                        last_contact_refresh = now
-
-                    # Background key retry for missing channels
-                    if (
-                        self._pending_keys
-                        and now - last_key_retry > KEY_RETRY_INTERVAL
-                    ):
-                        await self._retry_missing_keys()
-                        last_key_retry = now
-
-                    # Periodic cleanup of old data (daily)
-                    if now - last_cleanup > CLEANUP_INTERVAL:
-                        await self._cleanup_old_data()
-                        last_cleanup = now
-
-                    # Check if subprocess is still alive (--connect mode)
-                    if self._ble_connect_proc is not None:
-                        if self._ble_connect_proc.returncode is not None:
-                            print(
-                                "BLE: ⚠️  meshcore-ble-connect subprocess "
-                                f"exited with code {self._ble_connect_proc.returncode}"
-                            )
-                            debug_print(
-                                f"Connect subprocess died: rc={self._ble_connect_proc.returncode}"
-                            )
-                            self._ble_connect_proc = None
-                            self._disconnected = True
-                            break
-
-                    await asyncio.sleep(0.1)
-
-                # ── Disconnect detected — reconnect ──
-                if self._disconnected and self.running:
-                    # Kill connect subprocess if still running
-                    await self._kill_connect_subprocess()
-
-                    self.shared.set_connected(False)
-                    self.shared.set_status(
-                        "🔄 Connection lost — reconnecting..."
-                    )
-                    print("BLE: Connection lost, starting reconnect...")
-                    debug_print("Connection lost, starting reconnect")
-                    self.mc = None
-
-                    # Re-bond before reconnect (detects stale bonds)
-                    if self._use_ble_connect:
-                        success, rc, msg = await ensure_bond(
-                            self.address, pin=_config.BLE_PIN,
-                        )
-                        if not success:
-                            debug_print(
-                                f"Pre-reconnect ensure_bond failed: "
-                                f"rc={rc} — continuing with reconnect"
-                            )
-
-                    async def _create_fresh_connection() -> MeshCore:
-                        if self._use_ble_connect:
-                            # v5.5: use subprocess for connection
-                            return await self._connect_via_subprocess()
-                        elif NEEDS_PREPAIR:
-                            # Legacy: pre-pair with bleak
-                            client = await self._ensure_paired()
-                            if client and client.is_connected:
-                                return await MeshCore.create_ble(
-                                    client=client,
-                                    auto_reconnect=False,
-                                    default_timeout=BLE_DEFAULT_TIMEOUT,
-                                    debug=BLE_LIB_DEBUG,
-                                )
-                        return await MeshCore.create_ble(
-                            self.address,
-                            auto_reconnect=False,
-                            default_timeout=BLE_DEFAULT_TIMEOUT,
-                            debug=BLE_LIB_DEBUG,
-                        )
-
-                    new_mc = await reconnect_loop(
-                        _create_fresh_connection,
-                        self.address,
-                        max_retries=RECONNECT_MAX_RETRIES,
-                        base_delay=RECONNECT_BASE_DELAY,
-                    )
-
-                    if new_mc:
-                        self.mc = new_mc
-                        await asyncio.sleep(1)
-                        # Re-wire collaborators with new connection
-                        self._evt_handler = EventHandler(
-                            shared=self.shared,
-                            decoder=self._decoder,
-                            dedup=self._dedup,
-                            bot=self._bot,
-                        )
-                        self._cmd_handler = CommandHandler(
-                            mc=self.mc,
-                            shared=self.shared,
-                            cache=self._cache,
-                        )
-                        self._cmd_handler.set_load_data_callback(
-                            self._load_data
-                        )
-
-                        # Re-subscribe events
-                        self.mc.subscribe(
-                            EventType.CHANNEL_MSG_RECV,
-                            self._evt_handler.on_channel_msg,
-                        )
-                        self.mc.subscribe(
-                            EventType.CONTACT_MSG_RECV,
-                            self._evt_handler.on_contact_msg,
-                        )
-                        self.mc.subscribe(
-                            EventType.RX_LOG_DATA,
-                            self._evt_handler.on_rx_log,
-                        )
-                        self.mc.subscribe(
-                            EventType.LOGIN_SUCCESS,
-                            self._on_login_success,
-                        )
-
-                        # Reload data and resume
-                        await self._load_data()
-                        await self.mc.start_auto_message_fetching()
-                        self.shared.set_connected(True)
-                        self.shared.set_status("✅ Reconnected")
-                        print("BLE: ✅ Reconnected and operational")
-                        debug_print("Reconnected and operational")
-                    else:
-                        self.shared.set_status(
-                            "❌ Reconnect failed — restart required"
-                        )
-                        print(
-                            "BLE: ❌ Cannot reconnect — "
-                            "waiting 60s and trying again..."
-                        )
-                        debug_print(
-                            "Reconnect failed after all attempts, "
-                            "waiting 60s before next cycle"
-                        )
-                        await asyncio.sleep(60)
-                        if not self._use_ble_connect:
-                            # Legacy: re-prepare bond
-                            if NEEDS_PREPAIR:
-                                self._prepair_client = (
-                                    await self._ensure_paired()
-                                )
-                                await asyncio.sleep(1)
-                            else:
-                                await remove_bond(self.address)
-                                await asyncio.sleep(1)
-        finally:
-            # ── Cleanup: kill subprocess and stop PIN agent ──
-            await self._kill_connect_subprocess()
-            if not self._use_ble_connect:
-                await self._agent.stop()
-
-    # ------------------------------------------------------------------
-    # Pre-pairing (BlueZ >= 5.78) — legacy fallback
-    # ------------------------------------------------------------------
-
-    async def _ensure_paired(self) -> "BleakClient | None":
-        """Pre-pair with the device and return a connected client.
-
-        **Legacy fallback** — only used when ``meshcore-ble-connect``
-        is not installed.  When the external tool is available, bond
-        management is handled entirely by :func:`ensure_bond`.
-
-        Required for BlueZ >= 5.78 where on-demand pairing on
-        encrypted characteristic writes no longer works.  On older
-        BlueZ this is never called (legacy flow uses remove_bond +
-        automatic re-pairing).
-
-        The PIN agent must be started BEFORE calling this method.
-
-        After pairing, the client is disconnected and reconnected
-        so that GATT services are cleanly discovered with the
-        encrypted bond in place.
-
-        Returns:
-            A connected and paired BleakClient that can be passed
-            directly to ``MeshCore.create_ble(client=...)``, or
-            ``None`` if pre-pairing failed.
+        Runs until ``self.running`` is cleared or a disconnect is
+        detected.  Subclasses call this from their ``_async_main``.
         """
-        from bleak import BleakClient
+        last_contact_refresh = time.time()
+        last_key_retry = time.time()
+        last_cleanup = time.time()
 
-        # Step 0: Ensure adapter is pairable (BlueZ >= 5.78 defaults to no)
-        await ensure_adapter_pairable()
-
-        self.shared.set_status(f"🔄 Pre-pairing with {self.address}...")
-        print(f"BLE: Pre-pairing with {self.address} (BlueZ >= 5.78 mode)...")
-        debug_print(f"Pre-pair: connecting with bleak to {self.address}")
-
-        try:
-            # Phase 1: Connect and pair (establishes bond)
-            client = BleakClient(self.address, timeout=30)
-            await client.connect()
-            debug_print(f"Pre-pair: bleak connected={client.is_connected}")
-
+        while self.running and not self._disconnected:
             try:
-                await client.pair()
-                debug_print("Pre-pair: pair() completed")
+                await self._cmd_handler.process_all()
             except Exception as e:
-                # Already paired, or pairing handled transparently
-                debug_print(f"Pre-pair: pair() result: {e}")
-
-            await asyncio.sleep(1)
-
-            # Phase 2: Disconnect and reconnect for clean GATT discovery
-            # After pair(), GATT services may be stale. A fresh connect
-            # with the bond in place gives meshcore_py clean characteristics.
-            debug_print("Pre-pair: disconnecting to refresh GATT services")
-            await client.disconnect()
-            await asyncio.sleep(1)
-
-            debug_print("Pre-pair: reconnecting with bond for clean GATT")
-            client = BleakClient(self.address, timeout=30)
-            await client.connect()
-            debug_print(
-                f"Pre-pair: reconnected={client.is_connected}, "
-                f"services={len(client.services.services) if client.services else 'none'}"
-            )
-            print("BLE: ✅ Pre-pairing complete, passing client to meshcore")
-            return client
-
-        except Exception as e:
-            print(
-                f"BLE: ⚠️ Pre-pair failed "
-                f"(may still work with existing bond): {e}"
-            )
-            debug_print(f"Pre-pair failed: {e}")
-            return None
-
-    # ------------------------------------------------------------------
-    # Subprocess-based BLE connection (v5.5)
-    # ------------------------------------------------------------------
-
-    async def _connect_via_subprocess(self) -> MeshCore:
-        """Connect to the device via meshcore-ble-connect --connect.
-
-        This method:
-        1. Starts ``meshcore-ble-connect <MAC> --pin <PIN> --connect``
-           as an async subprocess with stdout piped.
-        2. Reads stdout line-by-line until ``READY`` appears, meaning
-           the subprocess has connected via D-Bus and GATT services
-           are resolved.
-        3. Runs a short ``BleakScanner.find_device_by_address()`` to
-           populate bleak's internal BlueZManager cache with the
-           already-connected device.
-        4. Creates a ``BleakClient`` and calls ``.connect()``.  Because
-           bleak's manager sees the device as already connected in
-           BlueZ, it skips ``Device1.Connect()`` and only performs
-           GATT service discovery.
-        5. Passes the connected client to ``MeshCore.create_ble()``.
-
-        The subprocess is kept alive — its D-Bus connection holds the
-        BLE link open.  It is killed on disconnect or shutdown via
-        ``_kill_connect_subprocess()``.
-
-        Returns:
-            A connected MeshCore instance.
-
-        Raises:
-            Exception: If any step fails (connection, subprocess, etc).
-        """
-        from bleak import BleakClient, BleakScanner
-
-        # Kill any previous subprocess
-        await self._kill_connect_subprocess()
-
-        # ── Step 1: Start subprocess ──
-        cmd = [
-            sys.executable, "-m", "meshcore_ble_connect",
-            self.address,
-            "--pin", str(_config.BLE_PIN),
-            "--connect",
-        ]
-        debug_print(f"Subprocess connect: starting {' '.join(cmd)}")
-        print("BLE: Starting meshcore-ble-connect --connect subprocess...")
-
-        self._ble_connect_proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-        # ── Step 2: Wait for READY on stdout ──
-        debug_print("Subprocess connect: waiting for READY")
-        self.shared.set_status("🔄 Subprocess connecting...")
-
-        try:
-            ready_received = False
-            deadline = asyncio.get_event_loop().time() + SUBPROCESS_READY_TIMEOUT
-
-            while asyncio.get_event_loop().time() < deadline:
-                # Check if process died
-                if self._ble_connect_proc.returncode is not None:
-                    stderr_data = b""
-                    if self._ble_connect_proc.stderr:
-                        stderr_data = await self._ble_connect_proc.stderr.read()
-                    raise RuntimeError(
-                        f"meshcore-ble-connect exited with code "
-                        f"{self._ble_connect_proc.returncode}: "
-                        f"{stderr_data.decode(errors='replace').strip()}"
-                    )
-
-                # Read a line with timeout
-                try:
-                    line_bytes = await asyncio.wait_for(
-                        self._ble_connect_proc.stdout.readline(),
-                        timeout=2.0,
-                    )
-                except asyncio.TimeoutError:
-                    continue
-
-                if not line_bytes:
-                    # EOF — process closed stdout
+                error_str = str(e).lower()
+                if any(kw in error_str for kw in self._disconnect_keywords):
+                    print(f"{self._log_prefix}: ⚠️  Connection error detected: {e}")
+                    self._disconnected = True
                     break
+                debug_print(f"Command processing error: {e}")
 
-                line = line_bytes.decode(errors="replace").strip()
-                debug_print(f"Subprocess stdout: {line}")
+            now = time.time()
 
-                if line == "READY":
-                    ready_received = True
-                    break
+            if now - last_contact_refresh > CONTACT_REFRESH_SECONDS:
+                await self._refresh_contacts()
+                last_contact_refresh = now
 
-            if not ready_received:
-                raise RuntimeError(
-                    f"meshcore-ble-connect did not print READY within "
-                    f"{SUBPROCESS_READY_TIMEOUT}s"
-                )
+            if self._pending_keys and now - last_key_retry > KEY_RETRY_INTERVAL:
+                await self._retry_missing_keys()
+                last_key_retry = now
 
-            print("BLE: ✅ Subprocess READY — device connected via D-Bus")
-            debug_print("Subprocess connect: READY received")
+            if now - last_cleanup > CLEANUP_INTERVAL:
+                await self._cleanup_old_data()
+                last_cleanup = now
 
-        except Exception:
-            await self._kill_connect_subprocess()
-            raise
+            await asyncio.sleep(0.1)
 
-        # ── Step 3: Populate bleak's internal cache ──
-        # BleakScanner triggers bleak's BlueZManager to discover
-        # existing BlueZ device objects.  Our device is already
-        # connected (by the subprocess), so the manager will see
-        # Connected=True and skip Device1.Connect() in step 4.
-        debug_print("Subprocess connect: warming bleak scanner cache")
-        try:
-            device = await BleakScanner.find_device_by_address(
-                self.address, timeout=5.0,
-            )
-            if device:
-                debug_print(
-                    f"Subprocess connect: scanner found device: "
-                    f"{device.name} ({device.address})"
-                )
-            else:
-                # Device might not be advertising while connected.
-                # This is OK — bleak's manager may still know about it
-                # from the GetManagedObjects call during scanner init.
-                debug_print(
-                    "Subprocess connect: scanner did not find device "
-                    "(may still work via BlueZ managed objects)"
-                )
-        except Exception as exc:
-            debug_print(f"Subprocess connect: scanner warmup failed: {exc}")
-            # Non-fatal: try to proceed anyway
+    async def _handle_reconnect(self) -> bool:
+        """Shared reconnect logic after a disconnect.
 
-        # ── Step 4: BleakClient.connect() ──
-        # Bleak sees the device as already connected → skips
-        # Device1.Connect() → only does GATT service discovery.
-        debug_print("Subprocess connect: creating BleakClient")
-        self.shared.set_status("🔄 GATT service discovery...")
-
-        client = BleakClient(self.address, timeout=30)
-        await client.connect()
-
-        debug_print(
-            f"Subprocess connect: bleak connected={client.is_connected}, "
-            f"services={len(client.services.services) if client.services else 'none'}"
-        )
-        print("BLE: ✅ BleakClient attached to subprocess connection")
-
-        # ── Step 5: Create MeshCore with connected client ──
-        mc = await MeshCore.create_ble(
-            client=client,
-            auto_reconnect=False,
-            default_timeout=BLE_DEFAULT_TIMEOUT,
-            debug=BLE_LIB_DEBUG,
-        )
-
-        return mc
-
-    async def _kill_connect_subprocess(self) -> None:
-        """Kill the meshcore-ble-connect --connect subprocess if running.
-
-        Sends SIGTERM first for clean D-Bus disconnect, then SIGKILL
-        after a short grace period if needed.
+        Returns True if reconnection succeeded, False otherwise.
         """
-        proc = self._ble_connect_proc
-        if proc is None:
-            return
+        self.shared.set_connected(False)
+        self.shared.set_status("🔄 Verbinding verloren — herverbinden...")
+        print(f"{self._log_prefix}: Verbinding verloren, start reconnect...")
+        self.mc = None
 
-        if proc.returncode is not None:
-            debug_print(
-                f"Connect subprocess already exited: rc={proc.returncode}"
-            )
-            self._ble_connect_proc = None
-            return
+        new_mc = await self._reconnect()
 
-        debug_print("Killing connect subprocess")
-        try:
-            proc.terminate()  # SIGTERM
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=3.0)
-                debug_print(
-                    f"Connect subprocess terminated: rc={proc.returncode}"
-                )
-            except asyncio.TimeoutError:
-                debug_print("Connect subprocess did not exit, sending SIGKILL")
-                proc.kill()
-                await proc.wait()
-                debug_print(
-                    f"Connect subprocess killed: rc={proc.returncode}"
-                )
-        except ProcessLookupError:
-            debug_print("Connect subprocess already gone")
-        except Exception as exc:
-            debug_print(f"Error killing connect subprocess: {exc}")
-        finally:
-            self._ble_connect_proc = None
-
-    # ------------------------------------------------------------------
-    # Connection (cache-first)
-    # ------------------------------------------------------------------
-
-    async def _connect(self) -> None:
-        # Phase 1: Load cache → GUI is instantly populated
-        # Note: BLE bond has already been ensured by _async_main via
-        # ensure_bond() (meshcore-ble-connect) or _ensure_paired()
-        # (legacy) before this method is called.
-        if self._cache.load():
-            self._apply_cache()
-            print("BLE: Cache loaded — GUI populated from disk")
-            debug_print("Cache loaded from disk")
-        else:
-            print("BLE: No cache found — waiting for BLE data")
-            debug_print("No cache found")
-
-        # Phase 2: Connect BLE
-        self.shared.set_status(f"🔄 Connecting to {self.address}...")
-        try:
-            print(f"BLE: Connecting to {self.address}...")
-            debug_print(f"Connecting to {self.address}")
-
-            if self._use_ble_connect:
-                # v5.5: Subprocess-based connection (BlueZ 5.82+ fix)
-                # Primary: meshcore-ble-connect --connect holds D-Bus
-                # connection, BleakClient attaches for GATT only.
-                try:
-                    self.mc = await self._connect_via_subprocess()
-                    print("BLE: Connected via subprocess!")
-                    debug_print("Connected via subprocess")
-                except Exception as sub_exc:
-                    # Fallback: try direct BleakClient (may work on
-                    # older BlueZ versions where the bug doesn't exist)
-                    print(
-                        f"BLE: ⚠️ Subprocess connect failed: {sub_exc}"
-                    )
-                    debug_print(
-                        f"Subprocess connect failed, trying direct: {sub_exc}"
-                    )
-                    self.shared.set_status("🔄 Trying direct connect...")
-                    self.mc = await MeshCore.create_ble(
-                        self.address,
-                        auto_reconnect=False,
-                        default_timeout=BLE_DEFAULT_TIMEOUT,
-                        debug=BLE_LIB_DEBUG,
-                    )
-                    print("BLE: Connected via direct fallback!")
-                    debug_print("Connected via direct fallback")
-            else:
-                # Legacy path: use pre-paired client or direct address
-                client = self._prepair_client
-                self._prepair_client = None  # consume it
-
-                if client and client.is_connected:
-                    debug_print("Using pre-paired BleakClient for create_ble")
-                    self.mc = await MeshCore.create_ble(
-                        client=client,
-                        auto_reconnect=False,
-                        default_timeout=BLE_DEFAULT_TIMEOUT,
-                        debug=BLE_LIB_DEBUG,
-                    )
-                else:
-                    debug_print("No pre-paired client, connecting by address")
-                    self.mc = await MeshCore.create_ble(
-                        self.address,
-                        auto_reconnect=False,
-                        default_timeout=BLE_DEFAULT_TIMEOUT,
-                        debug=BLE_LIB_DEBUG,
-                    )
-
-            print("BLE: Connected!")
-            debug_print(f"Connected to {self.address}")
-
+        if new_mc:
+            self.mc = new_mc
             await asyncio.sleep(1)
-            debug_print("Post-connection sleep done, wiring collaborators")
-
-            # Wire collaborators now that mc is available
-            self._evt_handler = EventHandler(
-                shared=self.shared,
-                decoder=self._decoder,
-                dedup=self._dedup,
-                bot=self._bot,
-            )
-            self._cmd_handler = CommandHandler(mc=self.mc, shared=self.shared, cache=self._cache)
-            self._cmd_handler.set_load_data_callback(self._load_data)
-
-            # Subscribe to events
-            self.mc.subscribe(EventType.CHANNEL_MSG_RECV, self._evt_handler.on_channel_msg)
-            self.mc.subscribe(EventType.CONTACT_MSG_RECV, self._evt_handler.on_contact_msg)
-            self.mc.subscribe(EventType.RX_LOG_DATA, self._evt_handler.on_rx_log)
-            self.mc.subscribe(EventType.LOGIN_SUCCESS, self._on_login_success)
-
-            # Phase 3: Load data from device (includes channel discovery + keys)
+            self._wire_collaborators()
             await self._load_data()
             await self.mc.start_auto_message_fetching()
-
+            self._seed_dedup_from_messages()
             self.shared.set_connected(True)
-            self.shared.set_status("✅ Connected")
-            print("BLE: Ready!")
+            self.shared.set_status("✅ Herverbonden")
+            print(f"{self._log_prefix}: ✅ Herverbonden en operationeel")
+            return True
 
-            if self._pending_keys:
-                pending_names = [
-                    f"[{ch['idx']}] {ch['name']}"
-                    for ch in self._channels
-                    if ch['idx'] in self._pending_keys
-                ]
-                print(
-                    f"BLE: ⏳ Background retry active for: "
-                    f"{', '.join(pending_names)} "
-                    f"(every {KEY_RETRY_INTERVAL:.0f}s)"
-                )
+        self.shared.set_status("❌ Herverbinding mislukt — herstart nodig")
+        print(
+            f"{self._log_prefix}: ❌ Kan niet herverbinden — "
+            "wacht 60s en probeer opnieuw..."
+        )
+        return False
 
-        except Exception as e:
-            print(f"BLE: Connection error: {e}")
-            debug_print(f"Connection error: {e}")
-            if "not paired" in str(e).lower() or "authentication" in str(e).lower():
-                debug_print(
-                    "Pairing failure detected — likely cause: "
-                    "meshcore-ble-connect not installed, or "
-                    "D-Bus policy file missing. "
-                    "Install: pip install meshcore-ble-connect"
-                )
-            if self._cache.has_cache:
-                self.shared.set_status(f"⚠️ Offline — using cached data ({e})")
-            else:
-                self.shared.set_status(f"❌ {e}")
+    # ── collaborator wiring ───────────────────────────────────────
 
-    # ------------------------------------------------------------------
-    # LOGIN_SUCCESS handler (Room Server)
-    # ------------------------------------------------------------------
+    def _wire_collaborators(self) -> None:
+        """(Re-)create handlers and subscribe to MeshCore events."""
+        self._evt_handler = EventHandler(
+            shared=self.shared,
+            decoder=self._decoder,
+            dedup=self._dedup,
+            bot=self._bot,
+        )
+        self._cmd_handler = CommandHandler(
+            mc=self.mc, shared=self.shared, cache=self._cache,
+        )
+        self._cmd_handler.set_load_data_callback(self._load_data)
+
+        self.mc.subscribe(EventType.CHANNEL_MSG_RECV, self._evt_handler.on_channel_msg)
+        self.mc.subscribe(EventType.CONTACT_MSG_RECV, self._evt_handler.on_contact_msg)
+        self.mc.subscribe(EventType.RX_LOG_DATA, self._evt_handler.on_rx_log)
+        self.mc.subscribe(EventType.LOGIN_SUCCESS, self._on_login_success)
+
+    # ── LOGIN_SUCCESS handler (Room Server) ───────────────────────
 
     def _on_login_success(self, event) -> None:
-        """Handle LOGIN_SUCCESS from a Room Server.
-
-        After login the Room Server pushes stored messages over RF using
-        round-robin.  Each message travels via LoRa to the companion
-        radio, which buffers it and emits ``MESSAGES_WAITING``.  The
-        library's ``auto_message_fetching`` already handles that event,
-        so no extra polling is needed here.
-
-        Note: the login state is updated by ``_cmd_login_room`` via
-        ``wait_for_event``, so we do NOT set it here to avoid creating
-        a second entry with a different key (prefix vs full pubkey).
-        """
         payload = event.payload or {}
-        pubkey = payload.get('pubkey_prefix', '')
-        is_admin = payload.get('is_admin', False)
-        debug_print(
-            f"LOGIN_SUCCESS received: pubkey={pubkey}, "
-            f"admin={is_admin}"
-        )
+        pubkey = payload.get("pubkey_prefix", "")
+        is_admin = payload.get("is_admin", False)
+        debug_print(f"LOGIN_SUCCESS received: pubkey={pubkey}, admin={is_admin}")
+        self.shared.set_status("✅ Room login OK — messages arriving over RF…")
 
-        self.shared.set_status(
-            "✅ Room login OK — messages arriving over RF…"
-        )
-
-    # ------------------------------------------------------------------
-    # Apply cache to SharedData
-    # ------------------------------------------------------------------
+    # ── apply cache ───────────────────────────────────────────────
 
     def _apply_cache(self) -> None:
         """Push cached data to SharedData so GUI renders immediately."""
         device = self._cache.get_device()
         if device:
             self.shared.update_from_appstart(device)
-            # Firmware version may be stored under 'ver' or 'firmware_version'
             fw = device.get("firmware_version") or device.get("ver")
             if fw:
                 self.shared.update_from_device_query({"ver": fw})
             self.shared.set_status("📦 Loaded from cache")
             debug_print(f"Cache → device info: {device.get('name', '?')}")
 
-        # Only load channels from cache when channel caching is enabled
         if CHANNEL_CACHE_ENABLED:
             channels = self._cache.get_channels()
             if channels:
@@ -913,7 +291,6 @@ class BLEWorker:
             self.shared.set_contacts(contacts)
             debug_print(f"Cache → contacts: {len(contacts)}")
 
-        # Restore channel keys for instant packet decoding
         cached_keys = self._cache.get_channel_keys()
         for idx_str, secret_hex in cached_keys.items():
             try:
@@ -925,167 +302,123 @@ class BLEWorker:
             except (ValueError, TypeError) as exc:
                 debug_print(f"Cache → bad channel key [{idx_str}]: {exc}")
 
-        # Restore original device name (if BOT was active when app closed)
         cached_orig_name = self._cache.get_original_device_name()
         if cached_orig_name:
             self.shared.set_original_device_name(cached_orig_name)
             debug_print(f"Cache → original device name: {cached_orig_name}")
 
-        # Load recent archived messages for immediate display on main page
         count = self.shared.load_recent_from_archive(limit=100)
         if count:
             debug_print(f"Cache → {count} recent messages from archive")
 
-    # ------------------------------------------------------------------
-    # Initial data loading (refreshes cache)
-    # ------------------------------------------------------------------
+        self._seed_dedup_from_messages()
+
+    # ── initial data loading ──────────────────────────────────────
 
     async def _load_data(self) -> None:
-        """Load device info, channels and contacts from device.
+        """Load device info, channels and contacts from device."""
+        pfx = self._log_prefix
 
-        Updates both SharedData (for GUI) and the disk cache.
-
-        Key insight: ``MeshCore.connect()`` already sends ``send_appstart``
-        internally and stores the result in ``self.mc.self_info``.  We reuse
-        that instead of sending a duplicate command that is likely to fail
-        on a busy mesh network.  Only ``send_device_query`` needs a fresh
-        BLE round-trip.
-        """
-        # ----------------------------------------------------------
         # send_appstart — reuse result from MeshCore.connect()
-        # ----------------------------------------------------------
         self.shared.set_status("🔄 Device info...")
-
-        cached_info = self.mc.self_info  # Filled by connect() → send_appstart()
+        cached_info = self.mc.self_info
         if cached_info and cached_info.get("name"):
-            print(f"BLE: send_appstart OK (from connect): {cached_info.get('name')}")
+            print(f"{pfx}: send_appstart OK (from connect): {cached_info.get('name')}")
             self.shared.update_from_appstart(cached_info)
             self._cache.set_device(cached_info)
         else:
-            # Fallback: device info not populated by connect() — retry manually
-            debug_print(
-                "self_info empty after connect(), falling back to manual send_appstart"
-            )
+            debug_print("self_info empty after connect(), falling back to manual send_appstart")
             appstart_ok = False
             for i in range(3):
                 debug_print(f"send_appstart fallback attempt {i + 1}/3")
                 try:
                     r = await self.mc.commands.send_appstart()
                     if r is None:
-                        debug_print(
-                            f"send_appstart fallback {i + 1}: received None, retrying"
-                        )
+                        debug_print(f"send_appstart fallback {i + 1}: received None, retrying")
                         await asyncio.sleep(2.0)
                         continue
                     if r.type != EventType.ERROR:
-                        print(
-                            f"BLE: send_appstart OK: {r.payload.get('name')} "
-                            f"(fallback attempt {i + 1})"
-                        )
+                        print(f"{pfx}: send_appstart OK: {r.payload.get('name')} (fallback attempt {i + 1})")
                         self.shared.update_from_appstart(r.payload)
                         self._cache.set_device(r.payload)
                         appstart_ok = True
                         break
                     else:
-                        debug_print(
-                            f"send_appstart fallback {i + 1}: "
-                            f"ERROR — payload={pp(r.payload)}"
-                        )
+                        debug_print(f"send_appstart fallback {i + 1}: ERROR — payload={pp(r.payload)}")
                 except Exception as exc:
                     debug_print(f"send_appstart fallback {i + 1} exception: {exc}")
                 await asyncio.sleep(2.0)
-
             if not appstart_ok:
-                print("BLE: ⚠️  send_appstart failed after 3 fallback attempts")
+                print(f"{pfx}: ⚠️  send_appstart failed after 3 fallback attempts")
 
-        # ----------------------------------------------------------
-        # send_device_query — no internal cache, must query device
-        # Fewer attempts (5) with longer delays (2s) to give the
-        # firmware time to process between mesh traffic bursts.
-        # ----------------------------------------------------------
+        # send_device_query
         for i in range(5):
             debug_print(f"send_device_query attempt {i + 1}/5")
             try:
                 r = await self.mc.commands.send_device_query()
                 if r is None:
-                    debug_print(
-                        f"send_device_query attempt {i + 1}: "
-                        f"received None response, retrying"
-                    )
+                    debug_print(f"send_device_query attempt {i + 1}: received None response, retrying")
                     await asyncio.sleep(2.0)
                     continue
                 if r.type != EventType.ERROR:
                     fw = r.payload.get("ver", "")
-                    print(f"BLE: send_device_query OK: {fw} (attempt {i + 1})")
+                    print(f"{pfx}: send_device_query OK: {fw} (attempt {i + 1})")
                     self.shared.update_from_device_query(r.payload)
                     if fw:
                         self._cache.set_firmware_version(fw)
                     break
                 else:
-                    debug_print(
-                        f"send_device_query attempt {i + 1}: "
-                        f"ERROR response — payload={pp(r.payload)}"
-                    )
+                    debug_print(f"send_device_query attempt {i + 1}: ERROR response — payload={pp(r.payload)}")
             except Exception as exc:
                 debug_print(f"send_device_query attempt {i + 1} exception: {exc}")
             await asyncio.sleep(2.0)
 
-        # ----------------------------------------------------------
-        # Channels (dynamic discovery from device)
-        # ----------------------------------------------------------
+        # Channels
         await self._discover_channels()
 
-        # ----------------------------------------------------------
-        # Contacts (merge with cache)
-        # ----------------------------------------------------------
+        # Contacts
         self.shared.set_status("🔄 Contacts...")
         debug_print("get_contacts starting")
         try:
-            r = await self.mc.commands.get_contacts()
+            r = await self._get_contacts_with_timeout()
             debug_print(f"get_contacts result: type={r.type if r else None}")
             if r and r.payload:
-                debug_data("get_contacts payload", r.payload)
+                try:
+                    payload_len = len(r.payload)
+                except Exception:
+                    payload_len = None
+                if payload_len is not None and payload_len > 10:
+                    debug_print(f"get_contacts payload size={payload_len} (omitted)")
+                else:
+                    debug_data("get_contacts payload", r.payload)
             if r is None:
-                debug_print(
-                    "BLE: get_contacts returned None, "
-                    "keeping cached contacts"
-                )
+                debug_print(f"{pfx}: get_contacts returned None, keeping cached contacts")
             elif r.type != EventType.ERROR:
                 merged = self._cache.merge_contacts(r.payload)
                 self.shared.set_contacts(merged)
-                print(
-                    f"BLE: Contacts — {len(r.payload)} from device, "
-                    f"{len(merged)} total (with cache)"
-                )
+                print(f"{pfx}: Contacts — {len(r.payload)} from device, {len(merged)} total (with cache)")
             else:
-                debug_print(
-                    "BLE: get_contacts failed — "
-                    f"payload={pp(r.payload)}, keeping cached contacts"
-                )
+                debug_print(f"{pfx}: get_contacts failed — payload={pp(r.payload)}, keeping cached contacts")
         except Exception as exc:
-            debug_print(f"BLE: get_contacts exception: {exc}")
+            debug_print(f"{pfx}: get_contacts exception: {exc}")
 
-    # ------------------------------------------------------------------
-    # Channel key loading (quick startup + background retry)
-    # ------------------------------------------------------------------
+    async def _get_contacts_with_timeout(self):
+        """Fetch contacts with a bounded timeout to avoid hanging refresh."""
+        timeout = max(DEFAULT_TIMEOUT * 2, 10.0)
+        try:
+            return await asyncio.wait_for(
+                self.mc.commands.get_contacts(), timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            self.shared.set_status("⚠️ Contacts timeout — using cached contacts")
+            debug_print(f"get_contacts timeout after {timeout:.0f}s")
+            return None
+
+    # ── channel discovery ─────────────────────────────────────────
 
     async def _discover_channels(self) -> None:
-        """Discover channels and load their keys from the device.
-
-        Probes channel indices 0..MAX_CHANNELS-1 via ``get_channel()``.
-        Each successful response provides both the channel name and the
-        encryption key, so discovery and key loading happen in a single
-        pass.
-
-        Speed strategy: single attempt per slot with short delays.
-        Channels whose keys fail are retried in the background every
-        ``KEY_RETRY_INTERVAL`` seconds.
-
-        When ``CHANNEL_CACHE_ENABLED`` is True the discovered channel
-        list is persisted to disk cache.  Channel keys are always
-        cached regardless of this setting (they are needed for packet
-        decoding on next startup).
-        """
+        """Discover channels and load their keys from the device."""
+        pfx = self._log_prefix
         self.shared.set_status("🔄 Discovering channels...")
         discovered: List[Dict] = []
         cached_keys = self._cache.get_channel_keys()
@@ -1097,17 +430,10 @@ class BLEWorker:
         consecutive_errors = 0
 
         for idx in range(MAX_CHANNELS):
-            # Two attempts per slot to handle transient BLE timeouts,
-            # especially on slower mobile connections.
-            payload = await self._try_get_channel_info(
-                idx, max_attempts=2, delay=1.0,
-            )
+            payload = await self._try_get_channel_info(idx, max_attempts=2, delay=1.0)
 
             if payload is None:
                 consecutive_errors += 1
-                # After 3 consecutive empty slots, assume no more channels.
-                # Raised from 2 to 3: a single BLE hiccup no longer causes
-                # the entire discovery to abort prematurely.
                 if consecutive_errors >= 3:
                     debug_print(
                         f"Channel discovery: {consecutive_errors} consecutive "
@@ -1116,28 +442,15 @@ class BLEWorker:
                     break
                 continue
 
-            # Reset consecutive error counter on success
             consecutive_errors = 0
-
-            # Extract channel name (try common field names)
-            name = (
-                payload.get('name')
-                or payload.get('channel_name')
-                or ''
-            )
-
-            # Skip undefined/empty channel slots
+            name = payload.get("name") or payload.get("channel_name") or ""
             if not name.strip():
-                debug_print(
-                    f"Channel [{idx}]: response OK but no name — "
-                    f"skipping (undefined slot)"
-                )
+                debug_print(f"Channel [{idx}]: response OK but no name — skipping (undefined slot)")
                 continue
 
-            discovered.append({'idx': idx, 'name': name})
+            discovered.append({"idx": idx, "name": name})
 
-            # Extract key in the same pass
-            secret = payload.get('channel_secret')
+            secret = payload.get("channel_secret")
             secret_bytes = self._extract_secret(secret)
 
             if secret_bytes:
@@ -1146,180 +459,111 @@ class BLEWorker:
                 self._pending_keys.discard(idx)
                 confirmed.append(f"[{idx}] {name}")
             elif str(idx) in cached_keys:
-                # Cache has the key — use it, don't overwrite
                 from_cache.append(f"[{idx}] {name}")
-                print(f"BLE: 📦 Channel [{idx}] '{name}' — using cached key")
+                print(f"{pfx}: 📦 Channel [{idx}] '{name}' — using cached key")
             else:
-                # No device key, no cache key — derive from name
                 self._decoder.add_channel_key_from_name(idx, name)
                 self._pending_keys.add(idx)
                 derived.append(f"[{idx}] {name}")
-                print(
-                    f"BLE: ⚠️  Channel [{idx}] '{name}' — "
-                    f"name-derived key (will retry)"
-                )
+                print(f"{pfx}: ⚠️  Channel [{idx}] '{name}' — name-derived key (will retry)")
 
-            # Pause between channels to avoid BLE congestion.
-            # Increased from 0.15s to 0.3s: mobile BLE stacks need
-            # more time between consecutive GATT operations.
             await asyncio.sleep(0.3)
 
-        # Fallback: if nothing discovered, add Public as default
         if not discovered:
-            discovered = [{'idx': 0, 'name': 'Public'}]
-            print("BLE: ⚠️ No channels discovered, using default Public channel")
+            discovered = [{"idx": 0, "name": "Public"}]
+            print(f"{pfx}: ⚠️ No channels discovered, using default Public channel")
 
-        # Store discovered channels
         self._channels = discovered
         self.shared.set_channels(discovered)
         if CHANNEL_CACHE_ENABLED:
             self._cache.set_channels(discovered)
             debug_print("Channel list cached to disk")
 
-        print(f"BLE: Channels discovered: {[c['name'] for c in discovered]}")
-
-        # Key summary
-        print(f"BLE: PacketDecoder ready — has_keys={self._decoder.has_keys}")
+        print(f"{pfx}: Channels discovered: {[c['name'] for c in discovered]}")
+        print(f"{pfx}: PacketDecoder ready — has_keys={self._decoder.has_keys}")
         if confirmed:
-            print(f"BLE: ✅ Keys from device: {', '.join(confirmed)}")
+            print(f"{pfx}: ✅ Keys from device: {', '.join(confirmed)}")
         if from_cache:
-            print(f"BLE: 📦 Keys from cache: {', '.join(from_cache)}")
+            print(f"{pfx}: 📦 Keys from cache: {', '.join(from_cache)}")
         if derived:
-            print(f"BLE: ⚠️  Name-derived keys: {', '.join(derived)}")
+            print(f"{pfx}: ⚠️  Name-derived keys: {', '.join(derived)}")
 
     async def _try_get_channel_info(
-        self,
-        idx: int,
-        max_attempts: int,
-        delay: float,
+        self, idx: int, max_attempts: int, delay: float,
     ) -> Optional[Dict]:
-        """Try to get channel info from the device.
-
-        Returns the response payload dict on success, or None if the
-        channel does not exist or could not be read after all attempts.
-        """
         for attempt in range(max_attempts):
             try:
                 r = await self.mc.commands.get_channel(idx)
-
                 if r is None:
-                    debug_print(
-                        f"get_channel({idx}) attempt {attempt + 1}/{max_attempts}: "
-                        f"received None response, retrying"
-                    )
+                    debug_print(f"get_channel({idx}) attempt {attempt + 1}/{max_attempts}: received None response, retrying")
                     await asyncio.sleep(delay)
                     continue
-
                 if r.type == EventType.ERROR:
-                    debug_print(
-                        f"get_channel({idx}) attempt {attempt + 1}/{max_attempts}: "
-                        f"ERROR response — payload={pp(r.payload)}"
-                    )
+                    debug_print(f"get_channel({idx}) attempt {attempt + 1}/{max_attempts}: ERROR response — payload={pp(r.payload)}")
                     await asyncio.sleep(delay)
                     continue
-
-                debug_print(
-                    f"get_channel({idx}) attempt {attempt + 1}/{max_attempts}: "
-                    f"OK — keys={list(r.payload.keys())}"
-                )
+                debug_print(f"get_channel({idx}) attempt {attempt + 1}/{max_attempts}: OK — keys={list(r.payload.keys())}")
                 return r.payload
-
             except Exception as exc:
-                debug_print(
-                    f"get_channel({idx}) attempt {attempt + 1}/{max_attempts} "
-                    f"error: {exc}"
-                )
+                debug_print(f"get_channel({idx}) attempt {attempt + 1}/{max_attempts} error: {exc}")
                 await asyncio.sleep(delay)
-
         return None
 
     async def _try_load_channel_key(
-        self,
-        idx: int,
-        name: str,
-        max_attempts: int,
-        delay: float,
+        self, idx: int, name: str, max_attempts: int, delay: float,
     ) -> bool:
-        """Try to load a single channel key from the device.
-
-        Returns True if the key was successfully loaded and cached.
-        Used by background retry for channels that failed during
-        initial discovery.
-        """
         payload = await self._try_get_channel_info(idx, max_attempts, delay)
         if payload is None:
             return False
-
-        secret = payload.get('channel_secret')
+        secret = payload.get("channel_secret")
         secret_bytes = self._extract_secret(secret)
-
         if secret_bytes:
             self._decoder.add_channel_key(idx, secret_bytes, source="device")
             self._cache.set_channel_key(idx, secret_bytes.hex())
-            print(
-                f"BLE: ✅ Channel [{idx}] '{name}' — "
-                f"key from device (background retry)"
-            )
+            print(f"{self._log_prefix}: ✅ Channel [{idx}] '{name}' — key from device (background retry)")
             self._pending_keys.discard(idx)
             return True
-
-        debug_print(
-            f"get_channel({idx}): response OK but secret unusable"
-        )
+        debug_print(f"get_channel({idx}): response OK but secret unusable")
         return False
 
     async def _retry_missing_keys(self) -> None:
-        """Background retry for channels that failed during startup.
-
-        Called periodically from the main loop.  Each missing channel
-        gets one attempt per cycle.  Successfully loaded keys are
-        removed from ``_pending_keys``.
-        """
         if not self._pending_keys:
             return
-
         pending_copy = set(self._pending_keys)
-        ch_map = {ch['idx']: ch['name'] for ch in self._channels}
-
-        debug_print(
-            f"Background key retry: trying {len(pending_copy)} channels"
-        )
-
+        ch_map = {ch["idx"]: ch["name"] for ch in self._channels}
+        debug_print(f"Background key retry: trying {len(pending_copy)} channels")
         for idx in pending_copy:
             name = ch_map.get(idx, f"ch{idx}")
-            loaded = await self._try_load_channel_key(
-                idx, name, max_attempts=1, delay=0.5,
-            )
+            loaded = await self._try_load_channel_key(idx, name, max_attempts=1, delay=0.5)
             if loaded:
                 self._pending_keys.discard(idx)
             await asyncio.sleep(1.0)
-
         if not self._pending_keys:
-            print("BLE: ✅ All channel keys now loaded!")
+            print(f"{self._log_prefix}: ✅ All channel keys now loaded!")
         else:
-            remaining = [
-                f"[{idx}] {ch_map.get(idx, '?')}"
-                for idx in sorted(self._pending_keys)
-            ]
+            remaining = [f"[{idx}] {ch_map.get(idx, '?')}" for idx in sorted(self._pending_keys)]
             debug_print(f"Background retry: still pending: {', '.join(remaining)}")
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+    # ── helpers ────────────────────────────────────────────────────
+
+    def _seed_dedup_from_messages(self) -> None:
+        """Seed the deduplicator with messages already in SharedData."""
+        snapshot = self.shared.get_snapshot()
+        messages = snapshot.get("messages", [])
+        seeded = 0
+        for msg in messages:
+            if msg.message_hash:
+                self._dedup.mark_hash(msg.message_hash)
+                seeded += 1
+            if msg.sender and msg.text:
+                self._dedup.mark_content(msg.sender, msg.channel, msg.text)
+                seeded += 1
+        debug_print(f"Dedup seeded with {seeded} entries from {len(messages)} messages")
 
     @staticmethod
     def _extract_secret(secret) -> Optional[bytes]:
-        """Extract 16-byte secret from various formats.
-
-        Handles:
-        - bytes (normal case from BLE)
-        - hex string (some firmware versions)
-
-        Returns 16-byte secret or None if unusable.
-        """
         if secret and isinstance(secret, bytes) and len(secret) >= 16:
             return secret[:16]
-
         if secret and isinstance(secret, str) and len(secret) >= 32:
             try:
                 raw = bytes.fromhex(secret)
@@ -1327,17 +571,13 @@ class BLEWorker:
                     return raw[:16]
             except ValueError:
                 pass
-
         return None
 
-    # ------------------------------------------------------------------
-    # Periodic contact refresh
-    # ------------------------------------------------------------------
+    # ── periodic tasks ────────────────────────────────────────────
 
     async def _refresh_contacts(self) -> None:
-        """Periodic background contact refresh — merge new/changed."""
         try:
-            r = await self.mc.commands.get_contacts()
+            r = await self._get_contacts_with_timeout()
             if r is None:
                 debug_print("Periodic refresh: get_contacts returned None, skipping")
                 return
@@ -1351,14 +591,8 @@ class BLEWorker:
         except Exception as exc:
             debug_print(f"Periodic contact refresh failed: {exc}")
 
-    # ------------------------------------------------------------------
-    # Periodic cleanup
-    # ------------------------------------------------------------------
-
     async def _cleanup_old_data(self) -> None:
-        """Periodic cleanup of old archived data and contacts."""
         try:
-            # Cleanup archived messages and rxlog
             if self.shared.archive:
                 self.shared.archive.cleanup_old_data()
                 stats = self.shared.archive.get_stats()
@@ -1366,14 +600,278 @@ class BLEWorker:
                     f"Cleanup: archive now has {stats['total_messages']} messages, "
                     f"{stats['total_rxlog']} rxlog entries"
                 )
-            
-            # Prune old contacts from cache
             removed = self._cache.prune_old_contacts()
             if removed > 0:
-                # Reload contacts to SharedData after pruning
                 contacts = self._cache.get_contacts()
                 self.shared.set_contacts(contacts)
                 debug_print(f"Cleanup: pruned {removed} old contacts")
-            
         except Exception as exc:
             debug_print(f"Periodic cleanup failed: {exc}")
+
+
+# ======================================================================
+# Serial worker
+# ======================================================================
+
+class SerialWorker(_BaseWorker):
+    """Serial communication worker (USB/UART).
+
+    Args:
+        port:      Serial device path (e.g. ``"/dev/ttyUSB0"``).
+        shared:    SharedDataWriter for thread-safe communication.
+        baudrate:  Serial baudrate (default from config).
+        cx_dly:    Connection delay for meshcore serial transport.
+    """
+
+    def __init__(
+        self,
+        port: str,
+        shared: SharedDataWriter,
+        baudrate: int = _config.SERIAL_BAUDRATE,
+        cx_dly: float = _config.SERIAL_CX_DELAY,
+    ) -> None:
+        super().__init__(port, shared)
+        self.port = port
+        self.baudrate = baudrate
+        self.cx_dly = cx_dly
+
+    @property
+    def _log_prefix(self) -> str:
+        return "SERIAL"
+
+    @property
+    def _disconnect_keywords(self) -> tuple:
+        return (
+            "not connected", "disconnected", "connection reset",
+            "broken pipe", "serial", "tty", "port", "device",
+            "i/o", "read failed", "write failed",
+        )
+
+    async def _async_main(self) -> None:
+        try:
+            while self.running:
+                self._disconnected = False
+                await self._connect()
+
+                if not self.mc:
+                    print("SERIAL: Initial connection failed, retrying in 30s...")
+                    self.shared.set_status("⚠️ Connection failed — retrying...")
+                    await asyncio.sleep(30)
+                    continue
+
+                await self._main_loop()
+
+                if self._disconnected and self.running:
+                    ok = await self._handle_reconnect()
+                    if not ok:
+                        await asyncio.sleep(60)
+        finally:
+            return
+
+    async def _connect(self) -> None:
+        if self._cache.load():
+            self._apply_cache()
+            print("SERIAL: Cache loaded — GUI populated from disk")
+        else:
+            print("SERIAL: No cache found — waiting for device data")
+
+        self.shared.set_status(f"🔄 Connecting to {self.port}...")
+        try:
+            print(f"SERIAL: Connecting to {self.port}...")
+            self.mc = await MeshCore.create_serial(
+                self.port,
+                baudrate=self.baudrate,
+                auto_reconnect=False,
+                default_timeout=DEFAULT_TIMEOUT,
+                debug=MESHCORE_LIB_DEBUG,
+                cx_dly=self.cx_dly,
+            )
+            if self.mc is None:
+                raise RuntimeError("No response from device over serial")
+            print("SERIAL: Connected!")
+
+            await asyncio.sleep(1)
+            debug_print("Post-connection sleep done, wiring collaborators")
+            self._wire_collaborators()
+            await self._load_data()
+            await self.mc.start_auto_message_fetching()
+
+            self.shared.set_connected(True)
+            self.shared.set_status("✅ Connected")
+            print("SERIAL: Ready!")
+
+            if self._pending_keys:
+                pending_names = [
+                    f"[{ch['idx']}] {ch['name']}"
+                    for ch in self._channels
+                    if ch["idx"] in self._pending_keys
+                ]
+                print(
+                    f"SERIAL: ⏳ Background retry active for: "
+                    f"{', '.join(pending_names)} (every {KEY_RETRY_INTERVAL:.0f}s)"
+                )
+
+        except Exception as e:
+            print(f"SERIAL: Connection error: {e}")
+            if self._cache.has_cache:
+                self.shared.set_status(f"⚠️ Offline — using cached data ({e})")
+            else:
+                self.shared.set_status(f"❌ {e}")
+
+    async def _reconnect(self) -> Optional[MeshCore]:
+        for attempt in range(1, RECONNECT_MAX_RETRIES + 1):
+            delay = RECONNECT_BASE_DELAY * attempt
+            print(
+                f"SERIAL: 🔄 Reconnect attempt {attempt}/{RECONNECT_MAX_RETRIES} "
+                f"in {delay:.0f}s..."
+            )
+            await asyncio.sleep(delay)
+            try:
+                mc = await MeshCore.create_serial(
+                    self.port,
+                    baudrate=self.baudrate,
+                    auto_reconnect=False,
+                    default_timeout=DEFAULT_TIMEOUT,
+                    debug=MESHCORE_LIB_DEBUG,
+                    cx_dly=self.cx_dly,
+                )
+                if mc is None:
+                    raise RuntimeError("No response from device over serial")
+                return mc
+            except Exception as exc:
+                print(f"SERIAL: ❌ Reconnect attempt {attempt} failed: {exc}")
+        print(f"SERIAL: ❌ Reconnect failed after {RECONNECT_MAX_RETRIES} attempts")
+        return None
+
+
+# ======================================================================
+# BLE worker
+# ======================================================================
+
+class BLEWorker(_BaseWorker):
+    """BLE communication worker (Bluetooth Low Energy).
+
+    Args:
+        address:  BLE MAC address (e.g. ``"literal:AA:BB:CC:DD:EE:FF"``).
+        shared:   SharedDataWriter for thread-safe communication.
+    """
+
+    def __init__(self, address: str, shared: SharedDataWriter) -> None:
+        super().__init__(address, shared)
+        self.address = address
+
+        # BLE PIN agent — imported lazily so serial-only installs
+        # don't need dbus_fast / bleak.
+        from meshcore_gui.ble.ble_agent import BleAgentManager
+        self._agent = BleAgentManager(pin=_config.BLE_PIN)
+
+    @property
+    def _log_prefix(self) -> str:
+        return "BLE"
+
+    @property
+    def _disconnect_keywords(self) -> tuple:
+        return (
+            "not connected", "disconnected", "dbus",
+            "pin or key missing", "connection reset", "broken pipe",
+            "failed to discover", "service discovery",
+        )
+
+    async def _async_main(self) -> None:
+        from meshcore_gui.ble.ble_reconnect import remove_bond
+
+        # Step 1: Start PIN agent BEFORE any BLE connection
+        await self._agent.start()
+
+        # Step 2: Remove stale bond (clean slate)
+        await remove_bond(self.address)
+        await asyncio.sleep(1)
+
+        # Step 3: Connect + main loop
+        try:
+            while self.running:
+                self._disconnected = False
+                await self._connect()
+
+                if not self.mc:
+                    print("BLE: Initial connection failed, retrying in 30s...")
+                    self.shared.set_status("⚠️ Connection failed — retrying...")
+                    await asyncio.sleep(30)
+                    await remove_bond(self.address)
+                    await asyncio.sleep(1)
+                    continue
+
+                await self._main_loop()
+
+                if self._disconnected and self.running:
+                    ok = await self._handle_reconnect()
+                    if not ok:
+                        await asyncio.sleep(60)
+                        await remove_bond(self.address)
+                        await asyncio.sleep(1)
+        finally:
+            await self._agent.stop()
+
+    async def _connect(self) -> None:
+        if self._cache.load():
+            self._apply_cache()
+            print("BLE: Cache loaded — GUI populated from disk")
+        else:
+            print("BLE: No cache found — waiting for BLE data")
+
+        self.shared.set_status(f"🔄 Connecting to {self.address}...")
+        try:
+            print(f"BLE: Connecting to {self.address}...")
+            self.mc = await MeshCore.create_ble(
+                self.address,
+                auto_reconnect=False,
+                default_timeout=DEFAULT_TIMEOUT,
+                debug=MESHCORE_LIB_DEBUG,
+            )
+            print("BLE: Connected!")
+
+            await asyncio.sleep(1)
+            debug_print("Post-connection sleep done, wiring collaborators")
+            self._wire_collaborators()
+            await self._load_data()
+            await self.mc.start_auto_message_fetching()
+
+            self.shared.set_connected(True)
+            self.shared.set_status("✅ Connected")
+            print("BLE: Ready!")
+
+            if self._pending_keys:
+                pending_names = [
+                    f"[{ch['idx']}] {ch['name']}"
+                    for ch in self._channels
+                    if ch["idx"] in self._pending_keys
+                ]
+                print(
+                    f"BLE: ⏳ Background retry active for: "
+                    f"{', '.join(pending_names)} (every {KEY_RETRY_INTERVAL:.0f}s)"
+                )
+
+        except Exception as e:
+            print(f"BLE: Connection error: {e}")
+            if self._cache.has_cache:
+                self.shared.set_status(f"⚠️ Offline — using cached data ({e})")
+            else:
+                self.shared.set_status(f"❌ {e}")
+
+    async def _reconnect(self) -> Optional[MeshCore]:
+        from meshcore_gui.ble.ble_reconnect import reconnect_loop
+
+        async def _create_fresh_connection() -> MeshCore:
+            return await MeshCore.create_ble(
+                self.address,
+                auto_reconnect=False,
+                default_timeout=DEFAULT_TIMEOUT,
+                debug=MESHCORE_LIB_DEBUG,
+            )
+
+        return await reconnect_loop(
+            _create_fresh_connection,
+            self.address,
+            max_retries=RECONNECT_MAX_RETRIES,
+            base_delay=RECONNECT_BASE_DELAY,
+        )

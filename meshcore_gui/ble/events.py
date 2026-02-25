@@ -1,8 +1,8 @@
 """
-BLE event callbacks for MeshCore GUI.
+Device event callbacks for MeshCore GUI.
 
 Handles ``CHANNEL_MSG_RECV``, ``CONTACT_MSG_RECV`` and ``RX_LOG_DATA``
-events from the MeshCore library.  Extracted from ``BLEWorker`` so the
+events from the MeshCore library.  Extracted from ``SerialWorker`` so the
 worker only deals with connection lifecycle.
 """
 
@@ -17,7 +17,7 @@ from meshcore_gui.services.dedup import DualDeduplicator
 
 
 class EventHandler:
-    """Processes BLE events and writes results to shared data.
+    """Processes device events and writes results to shared data.
 
     Args:
         shared:  SharedDataWriter for storing messages and RX log.
@@ -347,4 +347,3 @@ class EventHandler:
             except (ValueError, TypeError):
                 pass
         return None
-

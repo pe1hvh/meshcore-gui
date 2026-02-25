@@ -217,16 +217,8 @@ class BLEWorker:
                         await asyncio.sleep(30)
                         continue
 
-                    # Bond is valid — give device time to become
-                    # connectable again after meshcore-ble-connect
-                    # releases its connection.  Without this delay,
-                    # BleakClient.connect() fails immediately with
-                    # "Not connected" on BlueZ 5.82.
-                    debug_print("Bond OK, waiting 4s for device to settle")
-                    await asyncio.sleep(4)
-
-                    # Create a connected BleakClient so that
-                    # create_ble() reuses it instead of opening a
+                    # Bond is valid — create a connected BleakClient so
+                    # that create_ble() reuses it instead of opening a
                     # fresh connection (which disconnects immediately on
                     # BlueZ >= 5.78 due to encrypted GATT discovery).
                     self._prepair_client = await self._bleak_connect_after_bond()
@@ -317,11 +309,6 @@ class BLEWorker:
                                 self.address, pin=_config.BLE_PIN,
                             )
                             if success:
-                                debug_print(
-                                    "Reconnect: bond OK, waiting 4s "
-                                    "for device to settle"
-                                )
-                                await asyncio.sleep(4)
                                 client = await self._bleak_connect_after_bond()
                                 if client and client.is_connected:
                                     return await MeshCore.create_ble(
@@ -433,158 +420,145 @@ class BLEWorker:
     async def _bleak_connect_after_bond(self) -> "BleakClient | None":
         """Create a connected BleakClient after bond is ensured.
 
-        Called after ``meshcore-ble-connect`` has guaranteed the bond
-        exists in BlueZ.  Performs the same connect → pair → disconnect
-        → reconnect cycle as :meth:`_ensure_paired`, but skips the
-        initial pairing step (since the bond already exists).
+        Called after ``meshcore-ble-connect`` (subprocess) has guaranteed
+        the bond exists in BlueZ.
 
-        Why ``pair()`` even though the bond exists?  Calling ``pair()``
-        on an already-bonded device tells BlueZ to activate encryption
-        on **this** connection.  Without it, BlueZ only exposes the 3
-        generic services (GAP, GATT, Device Info).  With encryption
-        active, the subsequent reconnect triggers full GATT discovery
-        that includes the MeshCore RX/TX characteristics.
+        The developer guide pattern (§4.3) is::
 
-        Strategy:
-            A) connect → pair → disconnect → reconnect (with retry)
-            B) If A fails entirely, try a simple connect (bond exists,
-               BlueZ may handle encryption automatically)
+            ensure_bond()          # subprocess — bond OK
+            BleakClient.connect()  # GATT communication
+
+        On BlueZ >= 5.82, ``BleakClient.connect()`` fails with "failed
+        to discover services" for bonded devices.  This method bridges
+        the gap by establishing the connection via D-Bus first (same
+        ``Device1.Connect()`` + ``ServicesResolved`` pattern that
+        ``meshcore-ble-connect`` uses internally), then letting
+        ``BleakClient`` attach to the existing connection.
+
+        Uses ``dbus-fast`` directly — consistent with how
+        :mod:`meshcore_gui.ble.ble_reconnect` already uses ``dbus-fast``
+        for ``remove_bond()`` and ``ensure_adapter_pairable()``.
 
         Returns:
             A connected BleakClient with full GATT services, or
             ``None`` on failure.
         """
         from bleak import BleakClient
+        from dbus_fast import BusType, Message, MessageType
+        from dbus_fast.aio import MessageBus
+
+        BLUEZ = "org.bluez"
+        DEVICE_IF = "org.bluez.Device1"
+        PROPS_IF = "org.freedesktop.DBus.Properties"
+        device_path = (
+            "/org/bluez/hci0/dev_"
+            + self.address.upper().replace(":", "_")
+        )
 
         self.shared.set_status(f"🔄 Connecting to {self.address}...")
-        debug_print(f"Post-bond: creating BleakClient for {self.address}")
+        debug_print(f"Post-bond: D-Bus connect for {self.address}")
 
-        # ── Strategy A: pair + disconnect/reconnect cycle ──
-        phase1_ok = False
+        bus = None
         try:
-            # Phase 1: Connect and activate encryption via pair()
-            client = BleakClient(self.address, timeout=30)
-            await client.connect()
-            svc_count = len(client.services.services) if client.services else 0
-            debug_print(
-                f"Post-bond phase 1: connected={client.is_connected}, "
-                f"services={svc_count}"
-            )
+            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
 
-            try:
-                await client.pair()
-                debug_print("Post-bond phase 1: pair() completed")
-            except Exception as e:
-                # Expected: "Already paired" or similar — harmless
-                debug_print(
-                    f"Post-bond phase 1: pair() result: "
-                    f"{type(e).__name__}: {e}"
+            # ── Device1.Connect() with retry on le-connection-abort ──
+            # Same pattern as meshcore-ble-connect device.py:_ble_connect
+            connected = False
+            for attempt in range(1, 6):
+                reply = await asyncio.wait_for(
+                    bus.call(Message(
+                        destination=BLUEZ,
+                        interface=DEVICE_IF,
+                        path=device_path,
+                        member="Connect",
+                    )),
+                    timeout=10,
                 )
 
-            await asyncio.sleep(1)
-            phase1_ok = True
+                if reply.message_type != MessageType.ERROR:
+                    debug_print(f"D-Bus Connect OK (attempt {attempt})")
+                    connected = True
+                    break
 
-            # Phase 2: Disconnect to invalidate stale GATT cache
-            debug_print("Post-bond phase 2: disconnecting for GATT refresh")
-            await client.disconnect()
-
-            # Phase 3: Reconnect with retry — BlueZ performs full
-            # encrypted GATT discovery.  Progressive delay gives BlueZ
-            # time to finish internal cleanup after disconnect.
-            max_phase3_attempts = 3
-            for attempt in range(1, max_phase3_attempts + 1):
-                delay = 1 + attempt  # 2s, 3s, 4s — progressive
-                debug_print(
-                    f"Post-bond phase 3: attempt {attempt}/{max_phase3_attempts}, "
-                    f"waiting {delay}s before reconnect"
+                error_msg = (
+                    reply.body[0] if reply.body else str(reply.error_name)
                 )
-                await asyncio.sleep(delay)
+                debug_print(
+                    f"D-Bus Connect attempt {attempt}/5: {error_msg}"
+                )
 
+                if "le-connection-abort-by-local" not in error_msg:
+                    print(f"BLE: ⚠️ D-Bus Connect failed: {error_msg}")
+                    return None
+
+                await asyncio.sleep(1.0 * attempt)
+
+            if not connected:
+                print("BLE: ⚠️ D-Bus Connect failed after 5 attempts")
+                return None
+
+            # ── Wait for ServicesResolved ──
+            debug_print("D-Bus: waiting for ServicesResolved")
+            resolved = False
+            for _ in range(30):  # 30 × 0.5s = 15s max
+                reply = await bus.call(Message(
+                    destination=BLUEZ,
+                    path=device_path,
+                    interface=PROPS_IF,
+                    member="Get",
+                    signature="ss",
+                    body=[DEVICE_IF, "ServicesResolved"],
+                ))
+                if (
+                    reply.message_type != MessageType.ERROR
+                    and reply.body
+                    and reply.body[0].value
+                ):
+                    resolved = True
+                    break
+                await asyncio.sleep(0.5)
+
+            if not resolved:
+                debug_print("D-Bus: ServicesResolved timeout")
                 try:
-                    client = BleakClient(self.address, timeout=30)
-                    await client.connect()
-                    svc_count = (
-                        len(client.services.services)
-                        if client.services else 0
-                    )
-                    debug_print(
-                        f"Post-bond phase 3 attempt {attempt}: "
-                        f"connected={client.is_connected}, "
-                        f"services={svc_count}"
-                    )
+                    await bus.call(Message(
+                        destination=BLUEZ,
+                        interface=DEVICE_IF,
+                        path=device_path,
+                        member="Disconnect",
+                    ))
+                except Exception:
+                    pass
+                print("BLE: ⚠️ GATT services did not resolve")
+                return None
 
-                    if client.is_connected and svc_count > 3:
-                        # Full GATT discovery succeeded
-                        print(
-                            f"BLE: ✅ Post-bond connect complete "
-                            f"({svc_count} services)"
-                        )
-                        return client
+            debug_print("D-Bus: services resolved, attaching BleakClient")
 
-                    if client.is_connected:
-                        # Connected but only generic services.  On the
-                        # last attempt, return what we have — MeshCore
-                        # may still be able to discover characteristics.
-                        if attempt == max_phase3_attempts:
-                            print(
-                                f"BLE: ⚠️ Post-bond connect: only "
-                                f"{svc_count} services, proceeding anyway"
-                            )
-                            return client
-                        # Not last attempt — disconnect and retry
-                        debug_print(
-                            f"Post-bond phase 3 attempt {attempt}: "
-                            f"only {svc_count} services, retrying"
-                        )
-                        await client.disconnect()
-
-                except Exception as e:
-                    debug_print(
-                        f"Post-bond phase 3 attempt {attempt} failed: "
-                        f"{type(e).__name__}: {e}"
-                    )
-
-        except Exception as e:
-            debug_print(
-                f"Post-bond strategy A failed: "
-                f"{type(e).__name__}: {e}"
-            )
-            print(f"BLE: ⚠️ Post-bond connect failed: {e}")
-
-        # ── Strategy B: simple connect (bond exists, skip pair dance) ──
-        # If the pair + disconnect/reconnect cycle failed, the bond
-        # from meshcore-ble-connect is still in BlueZ.  A plain connect
-        # may succeed if BlueZ activates encryption automatically for
-        # the stored bond.
-        debug_print(
-            "Post-bond: strategy A exhausted, trying simple connect "
-            "(strategy B)"
-        )
-        try:
-            await asyncio.sleep(3)
+            # ── BleakClient attaches to existing D-Bus connection ──
             client = BleakClient(self.address, timeout=30)
             await client.connect()
             svc_count = (
                 len(client.services.services) if client.services else 0
             )
             debug_print(
-                f"Post-bond strategy B: connected={client.is_connected}, "
+                f"Post-bond: connected={client.is_connected}, "
                 f"services={svc_count}"
             )
-            if client.is_connected:
-                print(
-                    f"BLE: ✅ Post-bond fallback connect "
-                    f"({svc_count} services)"
-                )
-                return client
-        except Exception as e:
-            debug_print(
-                f"Post-bond strategy B failed: "
-                f"{type(e).__name__}: {e}"
+            print(
+                f"BLE: ✅ Post-bond connect complete "
+                f"({svc_count} services)"
             )
-            print(f"BLE: ⚠️ Post-bond fallback also failed: {e}")
+            return client
 
-        return None
+        except asyncio.TimeoutError:
+            debug_print("D-Bus Connect timed out")
+            print("BLE: ⚠️ D-Bus Connect timed out")
+            return None
+        except Exception as e:
+            debug_print(f"Post-bond failed: {type(e).__name__}: {e}")
+            print(f"BLE: ⚠️ Post-bond connect failed: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # Pre-pairing (BlueZ >= 5.78) — legacy fallback

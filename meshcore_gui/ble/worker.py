@@ -421,16 +421,25 @@ class BLEWorker:
         """Create a connected BleakClient after bond is ensured.
 
         Called after ``meshcore-ble-connect`` has guaranteed the bond
-        exists in BlueZ.  Creates a BleakClient and connects it so that
-        ``MeshCore.create_ble(client=...)`` can reuse the connection.
+        exists in BlueZ.  Creates a BleakClient, performs a
+        connect → disconnect → reconnect cycle so that BlueZ builds a
+        complete GATT attribute cache, then returns the connected client
+        for ``MeshCore.create_ble(client=...)``.
 
-        Without this step, ``create_ble(address)`` opens a *fresh*
-        connection which on BlueZ >= 5.78 disconnects immediately during
-        GATT service discovery on encrypted characteristics — even
-        though the bond keys are valid.
+        Why the cycle?  ``meshcore-ble-connect`` only verifies the bond
+        — it does not enumerate all GATT services.  BlueZ therefore
+        caches an incomplete GATT profile.  A single connect would
+        reuse that stale cache and miss the MeshCore RX/TX
+        characteristics.  The disconnect forces BlueZ to invalidate
+        the cache; the subsequent reconnect triggers a fresh, full
+        GATT service discovery with the bond keys in place.
+
+        This mirrors the approach in :meth:`_ensure_paired` (the
+        legacy path for BlueZ >= 5.78).
 
         Returns:
-            A connected BleakClient, or ``None`` on failure.
+            A connected BleakClient with full GATT services, or
+            ``None`` on failure.
         """
         from bleak import BleakClient
 
@@ -438,13 +447,32 @@ class BLEWorker:
         debug_print(f"Post-bond: creating BleakClient for {self.address}")
 
         try:
+            # Phase 1: Connect (populates BlueZ GATT cache)
             client = BleakClient(self.address, timeout=30)
             await client.connect()
+            svc_count = len(client.services.services) if client.services else 0
             debug_print(
-                f"Post-bond: connected={client.is_connected}, "
-                f"services={len(client.services.services) if client.services else 'none'}"
+                f"Post-bond phase 1: connected={client.is_connected}, "
+                f"services={svc_count}"
             )
+
+            # Phase 2: Disconnect to invalidate stale GATT cache
+            debug_print("Post-bond phase 2: disconnecting for GATT refresh")
+            await client.disconnect()
+            await asyncio.sleep(1)
+
+            # Phase 3: Reconnect — BlueZ now performs full GATT discovery
+            debug_print("Post-bond phase 3: reconnecting for clean GATT")
+            client = BleakClient(self.address, timeout=30)
+            await client.connect()
+            svc_count = len(client.services.services) if client.services else 0
+            debug_print(
+                f"Post-bond phase 3: connected={client.is_connected}, "
+                f"services={svc_count}"
+            )
+            print(f"BLE: ✅ Post-bond connect complete ({svc_count} services)")
             return client
+
         except Exception as e:
             debug_print(f"Post-bond: BleakClient connect failed: {e}")
             print(f"BLE: ⚠️ Post-bond connect failed: {e}")

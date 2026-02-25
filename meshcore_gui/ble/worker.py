@@ -432,6 +432,11 @@ class BLEWorker:
         active, the subsequent reconnect triggers full GATT discovery
         that includes the MeshCore RX/TX characteristics.
 
+        Strategy:
+            A) connect → pair → disconnect → reconnect (with retry)
+            B) If A fails entirely, try a simple connect (bond exists,
+               BlueZ may handle encryption automatically)
+
         Returns:
             A connected BleakClient with full GATT services, or
             ``None`` on failure.
@@ -441,12 +446,16 @@ class BLEWorker:
         self.shared.set_status(f"🔄 Connecting to {self.address}...")
         debug_print(f"Post-bond: creating BleakClient for {self.address}")
 
+        # ── Strategy A: pair + disconnect/reconnect cycle ──
+        phase1_ok = False
         try:
             # Phase 1: Connect and activate encryption via pair()
             client = BleakClient(self.address, timeout=30)
             await client.connect()
+            svc_count = len(client.services.services) if client.services else 0
             debug_print(
-                f"Post-bond phase 1: connected={client.is_connected}"
+                f"Post-bond phase 1: connected={client.is_connected}, "
+                f"services={svc_count}"
             )
 
             try:
@@ -454,31 +463,115 @@ class BLEWorker:
                 debug_print("Post-bond phase 1: pair() completed")
             except Exception as e:
                 # Expected: "Already paired" or similar — harmless
-                debug_print(f"Post-bond phase 1: pair() result: {e}")
+                debug_print(
+                    f"Post-bond phase 1: pair() result: "
+                    f"{type(e).__name__}: {e}"
+                )
 
             await asyncio.sleep(1)
+            phase1_ok = True
 
             # Phase 2: Disconnect to invalidate stale GATT cache
             debug_print("Post-bond phase 2: disconnecting for GATT refresh")
             await client.disconnect()
-            await asyncio.sleep(2)
 
-            # Phase 3: Reconnect — BlueZ performs full encrypted GATT discovery
-            debug_print("Post-bond phase 3: reconnecting for clean GATT")
-            client = BleakClient(self.address, timeout=30)
-            await client.connect()
-            svc_count = len(client.services.services) if client.services else 0
-            debug_print(
-                f"Post-bond phase 3: connected={client.is_connected}, "
-                f"services={svc_count}"
-            )
-            print(f"BLE: ✅ Post-bond connect complete ({svc_count} services)")
-            return client
+            # Phase 3: Reconnect with retry — BlueZ performs full
+            # encrypted GATT discovery.  Progressive delay gives BlueZ
+            # time to finish internal cleanup after disconnect.
+            max_phase3_attempts = 3
+            for attempt in range(1, max_phase3_attempts + 1):
+                delay = 1 + attempt  # 2s, 3s, 4s — progressive
+                debug_print(
+                    f"Post-bond phase 3: attempt {attempt}/{max_phase3_attempts}, "
+                    f"waiting {delay}s before reconnect"
+                )
+                await asyncio.sleep(delay)
+
+                try:
+                    client = BleakClient(self.address, timeout=30)
+                    await client.connect()
+                    svc_count = (
+                        len(client.services.services)
+                        if client.services else 0
+                    )
+                    debug_print(
+                        f"Post-bond phase 3 attempt {attempt}: "
+                        f"connected={client.is_connected}, "
+                        f"services={svc_count}"
+                    )
+
+                    if client.is_connected and svc_count > 3:
+                        # Full GATT discovery succeeded
+                        print(
+                            f"BLE: ✅ Post-bond connect complete "
+                            f"({svc_count} services)"
+                        )
+                        return client
+
+                    if client.is_connected:
+                        # Connected but only generic services.  On the
+                        # last attempt, return what we have — MeshCore
+                        # may still be able to discover characteristics.
+                        if attempt == max_phase3_attempts:
+                            print(
+                                f"BLE: ⚠️ Post-bond connect: only "
+                                f"{svc_count} services, proceeding anyway"
+                            )
+                            return client
+                        # Not last attempt — disconnect and retry
+                        debug_print(
+                            f"Post-bond phase 3 attempt {attempt}: "
+                            f"only {svc_count} services, retrying"
+                        )
+                        await client.disconnect()
+
+                except Exception as e:
+                    debug_print(
+                        f"Post-bond phase 3 attempt {attempt} failed: "
+                        f"{type(e).__name__}: {e}"
+                    )
 
         except Exception as e:
-            debug_print(f"Post-bond: BleakClient connect failed: {e}")
+            debug_print(
+                f"Post-bond strategy A failed: "
+                f"{type(e).__name__}: {e}"
+            )
             print(f"BLE: ⚠️ Post-bond connect failed: {e}")
-            return None
+
+        # ── Strategy B: simple connect (bond exists, skip pair dance) ──
+        # If the pair + disconnect/reconnect cycle failed, the bond
+        # from meshcore-ble-connect is still in BlueZ.  A plain connect
+        # may succeed if BlueZ activates encryption automatically for
+        # the stored bond.
+        debug_print(
+            "Post-bond: strategy A exhausted, trying simple connect "
+            "(strategy B)"
+        )
+        try:
+            await asyncio.sleep(3)
+            client = BleakClient(self.address, timeout=30)
+            await client.connect()
+            svc_count = (
+                len(client.services.services) if client.services else 0
+            )
+            debug_print(
+                f"Post-bond strategy B: connected={client.is_connected}, "
+                f"services={svc_count}"
+            )
+            if client.is_connected:
+                print(
+                    f"BLE: ✅ Post-bond fallback connect "
+                    f"({svc_count} services)"
+                )
+                return client
+        except Exception as e:
+            debug_print(
+                f"Post-bond strategy B failed: "
+                f"{type(e).__name__}: {e}"
+            )
+            print(f"BLE: ⚠️ Post-bond fallback also failed: {e}")
+
+        return None
 
     # ------------------------------------------------------------------
     # Pre-pairing (BlueZ >= 5.78) — legacy fallback

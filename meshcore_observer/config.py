@@ -9,6 +9,7 @@ Dependencies:
     pyyaml (6.x)
 """
 
+import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -21,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 # Default config file location (next to meshcore_observer.py)
 DEFAULT_CONFIG_PATH: Path = Path(__file__).parent.parent / "observer_config.yaml"
+
+# Device identity file written by meshcore_gui (auto-detected)
+DEFAULT_DEVICE_IDENTITY_PATH: Path = Path.home() / ".meshcore-gui" / "device_identity.json"
 
 
 # ── MQTT Broker Configuration ────────────────────────────────────────
@@ -74,6 +78,7 @@ class MqttConfig:
         enabled:               Master MQTT enable switch (default OFF).
         iata:                  3-letter IATA airport code for topic path.
         brokers:               List of broker endpoints.
+        device_identity_file:  Path to meshcore_gui device identity JSON.
         private_key:           Ed25519 private key (hex) — from config.
         private_key_file:      Path to file containing private key.
         public_key:            Device public key (hex) — for topics/auth.
@@ -89,6 +94,7 @@ class MqttConfig:
     enabled: bool = False
     iata: str = "AMS"
     brokers: List[MqttBrokerConfig] = field(default_factory=list)
+    device_identity_file: str = ""
     private_key: str = ""
     private_key_file: str = ""
     public_key: str = ""
@@ -99,6 +105,11 @@ class MqttConfig:
     max_reconnect_retries: int = 0
     token_lifetime_s: int = 3600
     dry_run: bool = False
+
+    # Cached identity data (not serialised)
+    _identity_cache: Optional[dict] = field(
+        default=None, repr=False, compare=False,
+    )
 
     @classmethod
     def from_dict(cls, data: dict) -> "MqttConfig":
@@ -117,6 +128,7 @@ class MqttConfig:
             enabled=bool(data.get("enabled", False)),
             iata=str(data.get("iata", "AMS")),
             brokers=brokers,
+            device_identity_file=str(data.get("device_identity_file", "")),
             private_key=str(data.get("private_key", "")),
             private_key_file=str(data.get("private_key_file", "")),
             public_key=str(data.get("public_key", "")),
@@ -129,13 +141,61 @@ class MqttConfig:
             dry_run=bool(data.get("dry_run", False)),
         )
 
+    def _load_device_identity(self) -> Optional[dict]:
+        """Load device identity JSON written by meshcore_gui.
+
+        Checks (in order):
+            1. ``device_identity_file`` from config (explicit path)
+            2. Default path ``~/.meshcore-gui/device_identity.json``
+
+        Returns:
+            Dict with ``public_key`` and ``private_key``, or None.
+        """
+        if self._identity_cache is not None:
+            return self._identity_cache
+
+        # Determine which path to try
+        paths_to_try = []
+        if self.device_identity_file:
+            paths_to_try.append(Path(self.device_identity_file).expanduser())
+        paths_to_try.append(DEFAULT_DEVICE_IDENTITY_PATH)
+
+        for id_path in paths_to_try:
+            if not id_path.exists():
+                continue
+            try:
+                data = json.loads(id_path.read_text(encoding="utf-8"))
+                pub = data.get("public_key", "")
+                priv = data.get("private_key", "")
+                if len(pub) == 64 and len(priv) == 64:
+                    logger.info(
+                        "Loaded device identity from %s (key=%s...)",
+                        id_path, pub[:12],
+                    )
+                    self._identity_cache = data
+                    return data
+                else:
+                    logger.warning(
+                        "Device identity file %s has invalid key lengths",
+                        id_path,
+                    )
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning(
+                    "Cannot read device identity file %s: %s",
+                    id_path, exc,
+                )
+
+        self._identity_cache = {}  # Mark as tried (empty = not found)
+        return None
+
     def resolve_private_key(self) -> str:
-        """Resolve the private key from config, file, or environment.
+        """Resolve the private key.
 
         Priority:
             1. ``MESHCORE_PRIVATE_KEY`` environment variable
-            2. ``private_key_file`` config path
-            3. ``private_key`` config value
+            2. Device identity file (auto from meshcore_gui)
+            3. ``private_key_file`` config path
+            4. ``private_key`` config value
 
         Returns:
             64-char hex private key string, or empty string if not found.
@@ -146,7 +206,13 @@ class MqttConfig:
             logger.debug("Using private key from MESHCORE_PRIVATE_KEY env var")
             return env_key
 
-        # Priority 2: key file
+        # Priority 2: device identity file (written by meshcore_gui)
+        identity = self._load_device_identity()
+        if identity and identity.get("private_key"):
+            logger.debug("Using private key from device identity file")
+            return identity["private_key"]
+
+        # Priority 3: key file
         if self.private_key_file:
             key_path = Path(self.private_key_file).expanduser()
             if key_path.exists():
@@ -160,7 +226,7 @@ class MqttConfig:
             else:
                 logger.warning("Private key file not found: %s", key_path)
 
-        # Priority 3: inline config value
+        # Priority 4: inline config value
         if self.private_key:
             logger.warning(
                 "Using private key from plain-text config — "
@@ -171,11 +237,12 @@ class MqttConfig:
         return ""
 
     def resolve_public_key(self) -> str:
-        """Resolve the public key from config or environment.
+        """Resolve the public key.
 
         Priority:
             1. ``MESHCORE_PUBLIC_KEY`` environment variable
             2. ``public_key`` config value
+            3. Device identity file (auto from meshcore_gui)
 
         Returns:
             64-char hex public key string, or empty string if not found.
@@ -183,7 +250,36 @@ class MqttConfig:
         env_key = os.environ.get("MESHCORE_PUBLIC_KEY", "").strip()
         if env_key:
             return env_key
-        return self.public_key
+
+        if self.public_key:
+            return self.public_key
+
+        # Fallback: device identity file
+        identity = self._load_device_identity()
+        if identity and identity.get("public_key"):
+            logger.debug("Using public key from device identity file")
+            return identity["public_key"]
+
+        return ""
+
+    def resolve_device_name(self) -> str:
+        """Resolve the device display name.
+
+        Priority:
+            1. ``device_name`` config value
+            2. Device identity file
+
+        Returns:
+            Device name string, or ``"MeshCore Observer"`` as default.
+        """
+        if self.device_name:
+            return self.device_name
+
+        identity = self._load_device_identity()
+        if identity and identity.get("device_name"):
+            return identity["device_name"]
+
+        return "MeshCore Observer"
 
     def validate(self) -> List[str]:
         """Validate MQTT configuration and return list of errors.

@@ -57,6 +57,7 @@ from meshcore_gui.ble.packet_decoder import PacketDecoder
 from meshcore_gui.services.bot import BotConfig, MeshBot
 from meshcore_gui.services.cache import DeviceCache
 from meshcore_gui.services.dedup import DualDeduplicator
+from meshcore_gui.services.device_identity import write_device_identity
 
 
 # Seconds between background retry attempts for missing channel keys.
@@ -315,6 +316,60 @@ class _BaseWorker(abc.ABC):
 
     # ── initial data loading ──────────────────────────────────────
 
+    async def _export_device_identity(self) -> None:
+        """Export device keys and write identity file for Observer.
+
+        Calls ``export_private_key()`` on the device and writes the
+        result to ``~/.meshcore-gui/device_identity.json`` so the
+        MeshCore Observer can authenticate to the MQTT broker without
+        manual key configuration.
+        """
+        pfx = self._log_prefix
+        try:
+            r = await self.mc.commands.export_private_key()
+            if r is None:
+                debug_print(f"{pfx}: export_private_key returned None")
+                return
+
+            if r.type == EventType.PRIVATE_KEY:
+                prv_bytes = r.payload.get("private_key", b"")
+                if len(prv_bytes) == 64:
+                    # Gather device info for the identity file
+                    pub_key = ""
+                    dev_name = ""
+                    fw_ver = ""
+                    with self.shared.lock:
+                        pub_key = self.shared.device.public_key
+                        dev_name = self.shared.device.name
+                        fw_ver = self.shared.device.firmware_version
+
+                    write_device_identity(
+                        public_key=pub_key,
+                        private_key_bytes=prv_bytes,
+                        device_name=dev_name,
+                        firmware_version=fw_ver,
+                        source_device=self.device_id,
+                    )
+                else:
+                    debug_print(
+                        f"{pfx}: export_private_key: unexpected "
+                        f"length {len(prv_bytes)} bytes"
+                    )
+
+            elif r.type == EventType.DISABLED:
+                print(
+                    f"{pfx}: ℹ️  Private key export is disabled on device "
+                    f"— manual key setup required for Observer MQTT"
+                )
+            else:
+                debug_print(
+                    f"{pfx}: export_private_key: unexpected "
+                    f"response type {r.type}"
+                )
+
+        except Exception as exc:
+            debug_print(f"{pfx}: export_private_key failed: {exc}")
+
     async def _load_data(self) -> None:
         """Load device info, channels and contacts from device."""
         pfx = self._log_prefix
@@ -372,6 +427,9 @@ class _BaseWorker(abc.ABC):
             except Exception as exc:
                 debug_print(f"send_device_query attempt {i + 1} exception: {exc}")
             await asyncio.sleep(2.0)
+
+        # Export device identity for MeshCore Observer
+        await self._export_device_identity()
 
         # Channels
         await self._discover_channels()

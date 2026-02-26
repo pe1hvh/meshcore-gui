@@ -85,7 +85,7 @@ class MqttUplink:
         # Resolved identity
         self._public_key = mqtt_config.resolve_public_key().upper()
         self._private_key = mqtt_config.resolve_private_key()
-        self._device_name = mqtt_config.device_name or "MeshCore Observer"
+        self._device_name = mqtt_config.resolve_device_name()
         self._iata = mqtt_config.iata.upper()
 
         # Token manager

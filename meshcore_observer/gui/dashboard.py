@@ -16,6 +16,7 @@ from meshcore_observer.gui.panels.sources_panel import SourcesPanel
 from meshcore_observer.gui.panels.messages_panel import MessagesPanel
 from meshcore_observer.gui.panels.rxlog_panel import RxLogPanel
 from meshcore_observer.gui.panels.stats_panel import StatsPanel
+from meshcore_observer.gui.panels.mqtt_panel import MqttPanel
 
 
 # ── DOMCA Theme (identical to meshcore_bridge dashboard) ─────────────
@@ -70,27 +71,31 @@ class ObserverDashboard:
     """Observer dashboard page.
 
     Provides a NiceGUI-based monitoring view showing aggregated
-    messages, RX log entries, archive sources and statistics from
-    all detected archive files.
+    messages, RX log entries, archive sources, statistics, and
+    MQTT uplink status from all detected archive files.
 
     Args:
-        watcher: ArchiveWatcher for polling archive files.
-        config:  ObserverConfig for display settings.
+        watcher:      ArchiveWatcher for polling archive files.
+        config:       ObserverConfig for display settings.
+        mqtt_uplink:  MqttUplink instance (or None if MQTT disabled).
     """
 
     def __init__(
         self,
         watcher: ArchiveWatcher,
         config: ObserverConfig,
+        mqtt_uplink=None,
     ) -> None:
         self._watcher = watcher
         self._cfg = config
+        self._mqtt_uplink = mqtt_uplink
 
         # Panels (created in render)
         self._sources: SourcesPanel | None = None
         self._messages: MessagesPanel | None = None
         self._rxlog: RxLogPanel | None = None
         self._stats: StatsPanel | None = None
+        self._mqtt: MqttPanel | None = None
 
         # Header status label
         self._header_status = None
@@ -103,6 +108,7 @@ class ObserverDashboard:
         self._messages = MessagesPanel(self._cfg.max_messages_display)
         self._rxlog = RxLogPanel(self._cfg.max_rxlog_display)
         self._stats = StatsPanel(self._watcher)
+        self._mqtt = MqttPanel(self._mqtt_uplink)
 
         # Inject DOMCA theme
         ui.add_head_html(_DOMCA_HEAD)
@@ -140,24 +146,36 @@ class ObserverDashboard:
                     ).style("font-family: 'JetBrains Mono', monospace")
 
                 with ui.row().classes("gap-4 flex-wrap"):
-                    for lbl, val in [
+                    config_items = [
                         ("Archive dir", self._cfg.archive_dir),
                         ("Poll interval", f"{self._cfg.poll_interval_s}s"),
                         ("Max messages", str(self._cfg.max_messages_display)),
                         ("Max RX log", str(self._cfg.max_rxlog_display)),
-                    ]:
+                    ]
+
+                    # MQTT status in config summary
+                    if self._cfg.mqtt.enabled:
+                        mode = "DRY RUN" if self._cfg.mqtt.dry_run else "LIVE"
+                        config_items.append(("MQTT", f"{mode} ({self._cfg.mqtt.iata})"))
+                    else:
+                        config_items.append(("MQTT", "Disabled"))
+
+                    for lbl, val in config_items:
                         with ui.column().classes("gap-0"):
                             ui.label(lbl).classes("text-xs opacity-50")
                             ui.label(val).classes("text-xs font-bold").style(
                                 "font-family: 'JetBrains Mono', monospace"
                             )
 
-            # Top row: Sources + Stats
+            # Top row: Sources + Stats + MQTT
             with ui.row().classes("w-full gap-4 flex-wrap"):
                 with ui.column().classes("flex-1 min-w-[300px]"):
                     self._sources.render()
                 with ui.column().classes("flex-1 min-w-[280px]"):
                     self._stats.render()
+
+            # MQTT panel (full width, only if enabled or for status)
+            self._mqtt.render()
 
             # Messages panel (full width)
             self._messages.render()
@@ -169,7 +187,7 @@ class ObserverDashboard:
         ui.timer(self._cfg.poll_interval_s, self._on_timer)
 
     def _on_timer(self) -> None:
-        """Periodic UI update callback — poll watcher and refresh panels."""
+        """Periodic UI update callback — poll watcher, publish MQTT, refresh panels."""
         result = self._watcher.poll()
 
         # Feed new data to panels
@@ -177,6 +195,16 @@ class ObserverDashboard:
             self._messages.add_messages(result.new_messages)
         if result.new_rxlog and self._rxlog:
             self._rxlog.add_entries(result.new_rxlog)
+
+        # Publish new RX log entries to MQTT (if enabled)
+        if result.new_rxlog and self._mqtt_uplink:
+            try:
+                self._mqtt_uplink.publish_entries(result.new_rxlog)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).error(
+                    "MQTT publish error: %s", exc,
+                )
 
         # Update header status
         stats = self._watcher.get_stats()
@@ -201,3 +229,5 @@ class ObserverDashboard:
             self._rxlog.update()
         if self._stats:
             self._stats.update()
+        if self._mqtt:
+            self._mqtt.update()

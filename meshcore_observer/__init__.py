@@ -6,4 +6,4 @@ meshcore_gui and meshcore_bridge, aggregates them, and presents
 a unified NiceGUI monitoring dashboard.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

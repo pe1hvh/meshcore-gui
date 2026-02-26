@@ -9,14 +9,229 @@ Dependencies:
     pyyaml (6.x)
 """
 
-from dataclasses import dataclass
+import logging
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import List, Optional
 
 import yaml
 
+logger = logging.getLogger(__name__)
 
 # Default config file location (next to meshcore_observer.py)
 DEFAULT_CONFIG_PATH: Path = Path(__file__).parent.parent / "observer_config.yaml"
+
+
+# ── MQTT Broker Configuration ────────────────────────────────────────
+
+
+@dataclass
+class MqttBrokerConfig:
+    """Configuration for a single MQTT broker endpoint.
+
+    Attributes:
+        name:      Human-readable broker label.
+        server:    Broker hostname.
+        port:      Broker port (443 for WebSocket+TLS).
+        transport: MQTT transport type (``websockets`` or ``tcp``).
+        tls:       Enable TLS encryption.
+        enabled:   Whether this broker is active.
+    """
+
+    name: str = "letsmesh-eu"
+    server: str = "mqtt-eu-v1.letsmesh.net"
+    port: int = 443
+    transport: str = "websockets"
+    tls: bool = True
+    enabled: bool = True
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "MqttBrokerConfig":
+        """Create from a YAML dict.
+
+        Args:
+            data: Dict from YAML broker list entry.
+
+        Returns:
+            Populated MqttBrokerConfig.
+        """
+        return cls(
+            name=str(data.get("name", "letsmesh-eu")),
+            server=str(data.get("server", "mqtt-eu-v1.letsmesh.net")),
+            port=int(data.get("port", 443)),
+            transport=str(data.get("transport", "websockets")),
+            tls=bool(data.get("tls", True)),
+            enabled=bool(data.get("enabled", True)),
+        )
+
+
+@dataclass
+class MqttConfig:
+    """MQTT uplink configuration.
+
+    Attributes:
+        enabled:               Master MQTT enable switch (default OFF).
+        iata:                  3-letter IATA airport code for topic path.
+        brokers:               List of broker endpoints.
+        private_key:           Ed25519 private key (hex) — from config.
+        private_key_file:      Path to file containing private key.
+        public_key:            Device public key (hex) — for topics/auth.
+        device_name:           Device display name for ``origin`` field.
+        upload_packet_types:   Packet type filter (empty = all).
+        status_interval_s:     Seconds between status republish.
+        reconnect_delay_s:     Seconds between reconnect attempts.
+        max_reconnect_retries: Max reconnect retries (0 = infinite).
+        token_lifetime_s:      JWT token validity in seconds.
+        dry_run:               Log payloads but do not publish.
+    """
+
+    enabled: bool = False
+    iata: str = "AMS"
+    brokers: List[MqttBrokerConfig] = field(default_factory=list)
+    private_key: str = ""
+    private_key_file: str = ""
+    public_key: str = ""
+    device_name: str = ""
+    upload_packet_types: List[int] = field(default_factory=list)
+    status_interval_s: int = 300
+    reconnect_delay_s: int = 10
+    max_reconnect_retries: int = 0
+    token_lifetime_s: int = 3600
+    dry_run: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "MqttConfig":
+        """Create from a YAML dict.
+
+        Args:
+            data: Dict from YAML ``mqtt:`` section.
+
+        Returns:
+            Populated MqttConfig.
+        """
+        brokers_raw = data.get("brokers", [])
+        brokers = [MqttBrokerConfig.from_dict(b) for b in brokers_raw]
+
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            iata=str(data.get("iata", "AMS")),
+            brokers=brokers,
+            private_key=str(data.get("private_key", "")),
+            private_key_file=str(data.get("private_key_file", "")),
+            public_key=str(data.get("public_key", "")),
+            device_name=str(data.get("device_name", "")),
+            upload_packet_types=list(data.get("upload_packet_types", [])),
+            status_interval_s=int(data.get("status_interval_s", 300)),
+            reconnect_delay_s=int(data.get("reconnect_delay_s", 10)),
+            max_reconnect_retries=int(data.get("max_reconnect_retries", 0)),
+            token_lifetime_s=int(data.get("token_lifetime_s", 3600)),
+            dry_run=bool(data.get("dry_run", False)),
+        )
+
+    def resolve_private_key(self) -> str:
+        """Resolve the private key from config, file, or environment.
+
+        Priority:
+            1. ``MESHCORE_PRIVATE_KEY`` environment variable
+            2. ``private_key_file`` config path
+            3. ``private_key`` config value
+
+        Returns:
+            64-char hex private key string, or empty string if not found.
+        """
+        # Priority 1: environment variable
+        env_key = os.environ.get("MESHCORE_PRIVATE_KEY", "").strip()
+        if env_key:
+            logger.debug("Using private key from MESHCORE_PRIVATE_KEY env var")
+            return env_key
+
+        # Priority 2: key file
+        if self.private_key_file:
+            key_path = Path(self.private_key_file).expanduser()
+            if key_path.exists():
+                try:
+                    key_data = key_path.read_text(encoding="utf-8").strip()
+                    if key_data:
+                        logger.debug("Using private key from file: %s", key_path)
+                        return key_data
+                except OSError as exc:
+                    logger.error("Cannot read private key file %s: %s", key_path, exc)
+            else:
+                logger.warning("Private key file not found: %s", key_path)
+
+        # Priority 3: inline config value
+        if self.private_key:
+            logger.warning(
+                "Using private key from plain-text config — "
+                "consider using private_key_file or MESHCORE_PRIVATE_KEY env var instead"
+            )
+            return self.private_key
+
+        return ""
+
+    def resolve_public_key(self) -> str:
+        """Resolve the public key from config or environment.
+
+        Priority:
+            1. ``MESHCORE_PUBLIC_KEY`` environment variable
+            2. ``public_key`` config value
+
+        Returns:
+            64-char hex public key string, or empty string if not found.
+        """
+        env_key = os.environ.get("MESHCORE_PUBLIC_KEY", "").strip()
+        if env_key:
+            return env_key
+        return self.public_key
+
+    def validate(self) -> List[str]:
+        """Validate MQTT configuration and return list of errors.
+
+        Returns:
+            List of error message strings.  Empty list means valid.
+        """
+        errors: List[str] = []
+
+        if not self.enabled:
+            return errors
+
+        # IATA code
+        if not self.iata or len(self.iata) != 3 or not self.iata.isalpha():
+            errors.append(
+                f"IATA code must be exactly 3 letters, got: '{self.iata}'"
+            )
+
+        # Public key
+        pub = self.resolve_public_key()
+        if not pub:
+            errors.append("Public key is required for MQTT authentication")
+        elif len(pub) != 64:
+            errors.append(
+                f"Public key must be 64 hex chars, got {len(pub)}"
+            )
+
+        # Private key
+        priv = self.resolve_private_key()
+        if not priv:
+            errors.append(
+                "Private key is required for MQTT authentication "
+                "(set via config, file, or MESHCORE_PRIVATE_KEY env var)"
+            )
+        elif len(priv) != 64:
+            errors.append(
+                f"Private key must be 64 hex chars, got {len(priv)}"
+            )
+
+        # At least one enabled broker
+        enabled_brokers = [b for b in self.brokers if b.enabled]
+        if not enabled_brokers:
+            errors.append("At least one broker must be enabled")
+
+        return errors
+
+
+# ── Main Observer Configuration ──────────────────────────────────────
 
 
 @dataclass
@@ -32,6 +247,7 @@ class ObserverConfig:
         gui_title:            Browser tab title.
         debug:                Enable verbose debug logging.
         config_path:          Path to loaded config file (runtime only).
+        mqtt:                 MQTT uplink configuration.
     """
 
     archive_dir: str = str(Path.home() / ".meshcore-gui" / "archive")
@@ -42,6 +258,7 @@ class ObserverConfig:
     gui_title: str = "MeshCore Observer"
     debug: bool = False
     config_path: str = ""
+    mqtt: MqttConfig = field(default_factory=MqttConfig)
 
     @classmethod
     def from_yaml(cls, path: Path) -> "ObserverConfig":
@@ -64,6 +281,7 @@ class ObserverConfig:
 
         observer_section = raw.get("observer", {})
         gui_section = raw.get("gui", {})
+        mqtt_section = raw.get("mqtt", {})
 
         # Resolve archive_dir: expand ~ and make absolute
         archive_raw = observer_section.get(
@@ -72,6 +290,9 @@ class ObserverConfig:
         )
         archive_dir = str(Path(archive_raw).expanduser().resolve())
 
+        # Parse MQTT config
+        mqtt_cfg = MqttConfig.from_dict(mqtt_section) if mqtt_section else MqttConfig()
+
         return cls(
             archive_dir=archive_dir,
             poll_interval_s=float(observer_section.get("poll_interval_s", 2.0)),
@@ -79,4 +300,5 @@ class ObserverConfig:
             max_rxlog_display=int(observer_section.get("max_rxlog_display", 50)),
             gui_port=int(gui_section.get("port", 9093)),
             gui_title=str(gui_section.get("title", "MeshCore Observer")),
+            mqtt=mqtt_cfg,
         )

@@ -13,8 +13,8 @@ authentication — no manual key setup required.
 File format::
 
     {
-        "public_key":  "64-char hex",
-        "private_key": "64-char hex (Ed25519 seed)",
+        "public_key":  "64-char hex UPPERCASE (from send_appstart)",
+        "private_key": "128-char hex lowercase (full orlp/ed25519 expanded key)",
         "device_name": "PE1HVH T1000e",
         "firmware_version": "1.2.3",
         "source_device": "/dev/ttyUSB1",
@@ -50,8 +50,11 @@ def write_device_identity(
 
     Args:
         public_key:       64-char hex public key (from send_appstart).
-        private_key_bytes: 64 raw bytes from export_private_key()
-                           (first 32 = seed, last 32 = public key).
+                          This is the key shown in the GUI and registered
+                          at LetsMesh.  MUST be used for MQTT username.
+        private_key_bytes: 64 raw bytes from export_private_key() in
+                           orlp/ed25519 expanded format.  All 64 bytes
+                           are needed for createAuthToken().
         device_name:       Device display name.
         firmware_version:  Firmware version string.
         source_device:     Device path (e.g. ``/dev/ttyUSB1``).
@@ -60,9 +63,17 @@ def write_device_identity(
         True if the file was written successfully.
     """
     try:
-        # The 64 bytes from export_private_key contain:
-        #   bytes  0..31 = Ed25519 seed (private key)
-        #   bytes 32..63 = Ed25519 public key
+        # The 64 bytes from export_private_key() are in orlp/ed25519
+        # *expanded* format:
+        #   bytes  0..31 = clamped scalar (NOT the raw seed)
+        #   bytes 32..63 = nonce prefix   (NOT the public key)
+        #
+        # The public key is NOT contained in these 64 bytes — it must
+        # come from send_appstart() which returns the actual device
+        # public key as shown in the GUI and registered at LetsMesh.
+        #
+        # For MQTT auth via meshcore-decoder's createAuthToken(), the
+        # full 64 bytes are needed as privateKeyHex (128 hex chars).
         if len(private_key_bytes) != 64:
             debug_print(
                 f"DeviceIdentity: unexpected key length "
@@ -70,22 +81,19 @@ def write_device_identity(
             )
             return False
 
-        seed_hex = private_key_bytes[:32].hex()
-        derived_pub_hex = private_key_bytes[32:].hex()
+        # Full 64-byte private key in MeshCore/orlp format
+        private_key_hex = private_key_bytes.hex()
 
-        # Sanity check: derived public key should match appstart public key
-        if public_key and derived_pub_hex.lower() != public_key.lower():
+        if not public_key or len(public_key) != 64:
             debug_print(
-                f"DeviceIdentity: public key mismatch — "
-                f"appstart={public_key[:16]}... vs "
-                f"derived={derived_pub_hex[:16]}..."
+                f"DeviceIdentity: no valid public key from appstart "
+                f"(got {public_key!r}), cannot write identity file"
             )
-            # Use the derived public key (from the private key export)
-            # as it is cryptographically linked to the seed.
+            return False
 
         identity = {
-            "public_key": derived_pub_hex.lower(),
-            "private_key": seed_hex.lower(),
+            "public_key": public_key.upper(),
+            "private_key": private_key_hex.lower(),
             "device_name": device_name,
             "firmware_version": firmware_version,
             "source_device": source_device,
@@ -102,7 +110,7 @@ def write_device_identity(
 
         debug_print(
             f"DeviceIdentity: written to {IDENTITY_FILE} "
-            f"(pub={derived_pub_hex[:12]}...)"
+            f"(pub={public_key[:12]}... priv={private_key_hex[:12]}...)"
         )
         print(f"📝 Device identity saved → {IDENTITY_FILE}")
         return True
@@ -127,10 +135,11 @@ def read_device_identity() -> Optional[dict]:
         data = json.loads(IDENTITY_FILE.read_text(encoding="utf-8"))
         pub = data.get("public_key", "")
         priv = data.get("private_key", "")
-        if len(pub) == 64 and len(priv) == 64:
+        if len(pub) == 64 and len(priv) in (64, 128):
             return data
         debug_print(
-            f"DeviceIdentity: invalid key lengths in {IDENTITY_FILE}"
+            f"DeviceIdentity: invalid key lengths in {IDENTITY_FILE} "
+            f"(pub={len(pub)}, priv={len(priv)})"
         )
         return None
     except (json.JSONDecodeError, OSError) as exc:

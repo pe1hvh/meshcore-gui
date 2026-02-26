@@ -34,7 +34,12 @@ except ImportError:
 
 try:
     import paho.mqtt.client as paho_mqtt
-    print(f"  [OK] paho-mqtt installed (version: {paho_mqtt.__version__})")
+    try:
+        import paho.mqtt as _paho_base
+        _paho_ver = getattr(_paho_base, "__version__", "unknown")
+    except Exception:
+        _paho_ver = "unknown"
+    print(f"  [OK] paho-mqtt installed (version: {_paho_ver})")
 except ImportError:
     print("  [FAIL] paho-mqtt not installed — run: pip install paho-mqtt")
     sys.exit(1)

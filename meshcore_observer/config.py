@@ -241,8 +241,8 @@ class MqttConfig:
 
         Priority:
             1. ``MESHCORE_PUBLIC_KEY`` environment variable
-            2. ``public_key`` config value
-            3. Device identity file (auto from meshcore_gui)
+            2. Device identity file (auto from meshcore_gui)
+            3. ``public_key`` config value
 
         Returns:
             64-char hex public key string, or empty string if not found.
@@ -251,14 +251,15 @@ class MqttConfig:
         if env_key:
             return env_key
 
-        if self.public_key:
-            return self.public_key
-
-        # Fallback: device identity file
+        # Priority 2: device identity file (same source as private key)
         identity = self._load_device_identity()
         if identity and identity.get("public_key"):
             logger.debug("Using public key from device identity file")
             return identity["public_key"]
+
+        # Priority 3: config value
+        if self.public_key:
+            return self.public_key
 
         return ""
 

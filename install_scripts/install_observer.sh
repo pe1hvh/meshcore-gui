@@ -7,11 +7,11 @@
 # Automatically detects the venv and current user.
 #
 # Usage:
-#   cd ~/meshcore-gui        # (or wherever your project is located)
-#   bash install_observer.sh
+#   bash install_scripts/install_observer.sh         # from project root
+#   cd install_scripts && bash install_observer.sh   # from install_scripts/
 #
 # Optional:
-#   bash install_observer.sh --uninstall   # Remove the service
+#   bash install_scripts/install_observer.sh --uninstall
 #
 # Requirements:
 #   - meshcore-gui project with venv/ directory
@@ -39,6 +39,14 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
 SERVICE_NAME="meshcore-observer"
 
+# ── Resolve project root ──
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "$(basename "${SCRIPT_DIR}")" == "install_scripts" ]]; then
+    PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+else
+    PROJECT_DIR="${SCRIPT_DIR}"
+fi
+
 # ── Uninstall mode ──
 if [[ "${1:-}" == "--uninstall" ]]; then
     info "Removing ${SERVICE_NAME} service..."
@@ -54,14 +62,11 @@ fi
 # ── Detect environment ──
 info "Detecting environment..."
 
-# Current directory must be the project
-if [[ ! -f "meshcore_observer.py" ]] && [[ ! -d "meshcore_observer" ]]; then
-    error "This script must be run from the directory containing meshcore_observer.py.
-       Expected: meshcore_observer.py and meshcore_observer/ directory.
-       Current directory: $(pwd)"
+if [[ ! -f "${PROJECT_DIR}/meshcore_observer.py" ]] && [[ ! -d "${PROJECT_DIR}/meshcore_observer" ]]; then
+    error "Cannot find meshcore_observer.py or meshcore_observer/ in ${PROJECT_DIR}
+       Run this script from the project directory or from install_scripts/."
 fi
 
-PROJECT_DIR="$(pwd)"
 CURRENT_USER="$(whoami)"
 VENV_PYTHON="${PROJECT_DIR}/venv/bin/python"
 
@@ -97,6 +102,16 @@ info "Checking dependencies..."
 }
 
 ok "All dependencies satisfied"
+
+# ── Detect NODE_PATH for meshcore-decoder (MQTT auth) ──
+NODE_PATH_VALUE=""
+if command -v node &>/dev/null; then
+    NPM_GLOBAL="$(npm root -g 2>/dev/null || true)"
+    if [[ -n "${NPM_GLOBAL}" ]] && [[ -d "${NPM_GLOBAL}" ]]; then
+        NODE_PATH_VALUE="${NPM_GLOBAL}"
+        info "Node.js global modules: ${NPM_GLOBAL}"
+    fi
+fi
 
 # ── Optional settings ──
 WEB_PORT="${WEB_PORT:-9093}"
@@ -139,6 +154,9 @@ echo " Archive dir:  ${ARCHIVE_DIR}"
 echo " Web port:     ${WEB_PORT}"
 echo " Config:       ${CONFIG_FILE}"
 echo " Debug:        ${DEBUG_ON}"
+if [[ -n "${NODE_PATH_VALUE}" ]]; then
+echo " NODE_PATH:    ${NODE_PATH_VALUE}"
+fi
 echo "═══════════════════════════════════════════════════"
 echo ""
 read -rp "Continue? [y/N] " confirm
@@ -151,6 +169,12 @@ fi
 info "Installing systemd service..."
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
+# Build optional Environment line for NODE_PATH
+ENV_LINE=""
+if [[ -n "${NODE_PATH_VALUE}" ]]; then
+    ENV_LINE="Environment=\"NODE_PATH=${NODE_PATH_VALUE}\""
+fi
+
 sudo tee "${SERVICE_FILE}" > /dev/null << SERVICE_EOF
 [Unit]
 Description=MeshCore Observer — Read-Only Archive Monitor Dashboard
@@ -162,6 +186,7 @@ WorkingDirectory=${PROJECT_DIR}
 ExecStart=${VENV_PYTHON} meshcore_observer.py ${CONFIG_FLAG} --port=${WEB_PORT} ${DEBUG_FLAG}
 Restart=on-failure
 RestartSec=30
+${ENV_LINE}
 
 [Install]
 WantedBy=multi-user.target
@@ -187,7 +212,7 @@ echo ""
 echo " Dashboard: http://localhost:${WEB_PORT}"
 echo ""
 echo " Uninstall:"
-echo "   bash install_observer.sh --uninstall"
+echo "   bash install_scripts/install_observer.sh --uninstall"
 echo ""
 echo "═══════════════════════════════════════════════════"
 

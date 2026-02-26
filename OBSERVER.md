@@ -446,7 +446,7 @@ For running the Observer as a background service on Linux.
 cd ~/meshcore-gui
 source venv/bin/activate
 
-bash install_observer.sh
+bash install_scripts/install_observer.sh
 ```
 
 The installer detects the venv and current user automatically, creates a systemd service, and offers to start it immediately.
@@ -485,7 +485,7 @@ sudo systemctl restart meshcore-observer
 
 ```bash
 cd ~/meshcore-gui
-bash install_observer.sh --uninstall
+bash install_scripts/install_observer.sh --uninstall
 ```
 
 ---

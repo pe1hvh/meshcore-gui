@@ -6,8 +6,9 @@
 # Installs meshcore_bridge as a systemd daemon service.
 #
 # Usage:
-#   sudo bash install_bridge.sh
-#   sudo bash install_bridge.sh --uninstall
+#   sudo bash install_scripts/install_bridge.sh         # from project root
+#   cd install_scripts && sudo bash install_bridge.sh   # from install_scripts/
+#   sudo bash install_scripts/install_bridge.sh --uninstall
 #
 # What this script does:
 #   1. Copies meshcore_bridge.py and meshcore_bridge/ to /opt/meshcore-bridge/
@@ -34,7 +35,14 @@ INSTALL_DIR="/opt/meshcore-bridge"
 CONFIG_DIR="/etc/meshcore"
 CONFIG_FILE="${CONFIG_DIR}/bridge_config.yaml"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+
+# ── Resolve project root ──
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "$(basename "${SCRIPT_DIR}")" == "install_scripts" ]]; then
+    PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+else
+    PROJECT_DIR="${SCRIPT_DIR}"
+fi
 
 # Colors for output
 RED='\033[0;31m'
@@ -86,14 +94,14 @@ fi
 info "Installing ${SERVICE_NAME}..."
 
 # Verify source files exist
-if [[ ! -f "${SCRIPT_DIR}/meshcore_bridge.py" ]]; then
-    error "meshcore_bridge.py not found in ${SCRIPT_DIR}"
-    error "Run this script from the meshcore project directory."
+if [[ ! -f "${PROJECT_DIR}/meshcore_bridge.py" ]]; then
+    error "meshcore_bridge.py not found in ${PROJECT_DIR}"
+    error "Run this script from the project directory or from install_scripts/."
     exit 1
 fi
 
-if [[ ! -d "${SCRIPT_DIR}/meshcore_bridge" ]]; then
-    error "meshcore_bridge/ directory not found in ${SCRIPT_DIR}"
+if [[ ! -d "${PROJECT_DIR}/meshcore_bridge" ]]; then
+    error "meshcore_bridge/ directory not found in ${PROJECT_DIR}"
     exit 1
 fi
 
@@ -129,8 +137,8 @@ info "All dependencies satisfied."
 # Create install directory
 info "Copying files to ${INSTALL_DIR}/..."
 mkdir -p "${INSTALL_DIR}"
-cp "${SCRIPT_DIR}/meshcore_bridge.py" "${INSTALL_DIR}/"
-cp -r "${SCRIPT_DIR}/meshcore_bridge" "${INSTALL_DIR}/"
+cp "${PROJECT_DIR}/meshcore_bridge.py" "${INSTALL_DIR}/"
+cp -r "${PROJECT_DIR}/meshcore_bridge" "${INSTALL_DIR}/"
 chmod +x "${INSTALL_DIR}/meshcore_bridge.py"
 
 # Copy config (preserve existing)
@@ -138,10 +146,10 @@ mkdir -p "${CONFIG_DIR}"
 if [[ -f "${CONFIG_FILE}" ]]; then
     warn "Config already exists at ${CONFIG_FILE} — not overwriting."
     warn "New template saved as ${CONFIG_FILE}.new"
-    cp "${SCRIPT_DIR}/bridge_config.yaml" "${CONFIG_FILE}.new"
+    cp "${PROJECT_DIR}/bridge_config.yaml" "${CONFIG_FILE}.new"
 else
     info "Installing config template at ${CONFIG_FILE}"
-    cp "${SCRIPT_DIR}/bridge_config.yaml" "${CONFIG_FILE}"
+    cp "${PROJECT_DIR}/bridge_config.yaml" "${CONFIG_FILE}"
 fi
 
 # Detect meshcore_gui location for PYTHONPATH
@@ -204,8 +212,8 @@ info "Reloading systemd daemon..."
 systemctl daemon-reload
 
 # Copy documentation
-if [[ -f "${SCRIPT_DIR}/BRIDGE.md" ]]; then
-    cp "${SCRIPT_DIR}/BRIDGE.md" "${INSTALL_DIR}/"
+if [[ -f "${PROJECT_DIR}/BRIDGE.md" ]]; then
+    cp "${PROJECT_DIR}/BRIDGE.md" "${INSTALL_DIR}/"
 fi
 
 # ── Summary ──
@@ -227,4 +235,4 @@ info "  4. Check status:        sudo systemctl status ${SERVICE_NAME}"
 info "  5. Follow logs:         journalctl -u ${SERVICE_NAME} -f"
 info "  6. Open dashboard:      http://localhost:9092"
 echo
-info "To uninstall: sudo bash ${BASH_SOURCE[0]} --uninstall"
+info "To uninstall: sudo bash install_scripts/install_bridge.sh --uninstall"

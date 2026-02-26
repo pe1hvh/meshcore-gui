@@ -7,11 +7,11 @@
 # Automatically detects paths and the current user.
 #
 # Usage:
-#   cd ~/meshcore-gui        # (or wherever your project is located)
-#   bash install_serial.sh
+#   bash install_scripts/install_serial.sh         # from project root
+#   cd install_scripts && bash install_serial.sh   # from install_scripts/
 #
 # Optional:
-#   bash install_serial.sh --uninstall   # Remove the service
+#   bash install_scripts/install_serial.sh --uninstall
 #
 # Requirements:
 #   - meshcore-gui project with venv/ directory
@@ -33,6 +33,14 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
+# ── Resolve project root ──
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "$(basename "${SCRIPT_DIR}")" == "install_scripts" ]]; then
+    PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+else
+    PROJECT_DIR="${SCRIPT_DIR}"
+fi
+
 # ── Uninstall mode ──
 if [[ "${1:-}" == "--uninstall" ]]; then
     info "Removing meshcore-gui service..."
@@ -48,14 +56,11 @@ fi
 # ── Detect environment ──
 info "Detecting environment..."
 
-# Current directory must be the project
-if [[ ! -f "meshcore_gui.py" ]] && [[ ! -d "meshcore_gui" ]]; then
-    error "This script must be run from the meshcore-gui project directory.
-       Expected: meshcore_gui.py or meshcore_gui/ directory.
-       Current directory: $(pwd)"
+if [[ ! -f "${PROJECT_DIR}/meshcore_gui.py" ]] && [[ ! -d "${PROJECT_DIR}/meshcore_gui" ]]; then
+    error "Cannot find meshcore_gui.py or meshcore_gui/ in ${PROJECT_DIR}
+       Run this script from the project directory or from install_scripts/."
 fi
 
-PROJECT_DIR="$(pwd)"
 CURRENT_USER="$(whoami)"
 VENV_PYTHON="${PROJECT_DIR}/venv/bin/python"
 
@@ -85,7 +90,7 @@ if [[ -z "${SERIAL_PORT}" ]]; then
     echo "You can specify it in two ways:"
     echo ""
     echo "  1. As an environment variable:"
-    echo "     SERIAL_PORT=/dev/ttyACM0 bash install_serial.sh"
+    echo "     SERIAL_PORT=/dev/ttyACM0 bash $0"
     echo ""
     echo "  2. Enter manually:"
     read -rp "     Serial device (e.g. /dev/ttyACM0 or /dev/ttyUSB0): " SERIAL_PORT
@@ -215,7 +220,7 @@ echo "   sudo systemctl status meshcore-gui     # Status"
 echo "   journalctl -u meshcore-gui -f          # Live logs"
 echo ""
 echo " Uninstall:"
-echo "   bash install_serial.sh --uninstall"
+echo "   bash install_scripts/install_serial.sh --uninstall"
 echo ""
 echo "═══════════════════════════════════════════════════"
 

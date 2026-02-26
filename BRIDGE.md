@@ -134,7 +134,7 @@ Install the bridge as a systemd daemon for production use:
 
 ```bash
 # Run the installer script
-sudo bash install_bridge.sh
+sudo bash install_scripts/install_bridge.sh
 
 # Edit the configuration
 sudo nano /etc/meshcore/bridge_config.yaml
@@ -156,7 +156,7 @@ sudo systemctl enable meshcore-bridge
 **Uninstall:**
 
 ```bash
-sudo bash install_bridge.sh --uninstall
+sudo bash install_scripts/install_bridge.sh --uninstall
 ```
 
 ---
@@ -269,7 +269,7 @@ meshcore_bridge/
         └── log_panel.py                    # Forwarded message log (~100 lines)
 
 bridge_config.yaml                          # Configuration template
-install_bridge.sh                           # systemd service installer
+install_scripts/install_bridge.sh           # systemd service installer
 BRIDGE.md                                   # This documentation
 ```
 

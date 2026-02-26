@@ -217,7 +217,7 @@ sudo tee /etc/dbus-1/system.d/meshcore-ble.conf > /dev/null << 'EOF'
 EOF
 ```
 
-Replace `YOUR_USERNAME` with your actual username. This step is handled automatically if you use the `install_ble_stable.sh` installer (see [7.5.1](#751-automated-setup)).
+Replace `YOUR_USERNAME` with your actual username. This step is handled automatically if you use the `install_scripts/install_ble_stable.sh` installer (see [7.5.1](#751-automated-setup)).
 
 > **Note:** Without this policy, the BLE PIN agent cannot register with BlueZ and pairing will fail with a D-Bus permission error.
 
@@ -422,10 +422,10 @@ Use the appropriate installer for your transport:
 
 ```bash
 # Serial connection
-bash install_serial.sh
+bash install_scripts/install_serial.sh
 
 # BLE connection
-bash install_ble_stable.sh
+bash install_scripts/install_ble_stable.sh
 ```
 
 **Serial environment variables** (optional):
@@ -909,13 +909,13 @@ CLI options: `--config=PATH`, `--port=PORT`, `--debug-on`, `--help`.
 Install the bridge as a systemd daemon for production use:
 
 ```bash
-sudo bash install_bridge.sh
+sudo bash install_scripts/install_bridge.sh
 sudo nano /etc/meshcore/bridge_config.yaml
 sudo systemctl start meshcore-bridge
 sudo systemctl enable meshcore-bridge
 ```
 
-To uninstall: `sudo bash install_bridge.sh --uninstall`
+To uninstall: `sudo bash install_scripts/install_bridge.sh --uninstall`
 
 For full documentation including architecture details, troubleshooting and assumptions, see [BRIDGE.md](BRIDGE.md).
 
@@ -1106,8 +1106,12 @@ Debug output is written to both stdout and a per-device rotating log file at `~/
 ```
 meshcore-gui/
 ├── meshcore_gui.py                  # Entry point (auto-detects Serial or BLE)
-├── install_ble_stable.sh            # BLE installer (systemd service for BLE connections)
-├── install_serial.sh                # Serial installer (systemd service for serial connections)
+├── install_scripts/                 # Installer scripts (run from here or project root)
+│   ├── install_venv.sh              # Virtual environment setup
+│   ├── install_serial.sh            # Serial systemd service installer
+│   ├── install_ble_stable.sh        # BLE systemd service installer
+│   ├── install_bridge.sh            # Bridge systemd service installer
+│   └── install_observer.sh          # Observer systemd service installer
 ├── meshcore_gui/                    # Application package
 │   ├── __init__.py
 │   ├── __main__.py                  # Alternative entry: python -m meshcore_gui
@@ -1171,7 +1175,6 @@ meshcore-gui/
 │           ├── status_panel.py      # Device A/B connection status + statistics
 │           └── log_panel.py         # Forwarded message log
 ├── bridge_config.yaml               # Bridge configuration template (YAML)
-├── install_bridge.sh                # Bridge systemd service installer
 ├── BRIDGE.md                        # Bridge documentation
 ├── .gitattributes
 ├── .gitignore

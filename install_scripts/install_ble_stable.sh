@@ -7,11 +7,11 @@
 # and D-Bus policy.  Automatically detects the correct paths and user.
 #
 # Usage:
-#   cd ~/meshcore-gui        # (or wherever your project is located)
-#   bash install_ble_stable.sh
+#   bash install_scripts/install_ble_stable.sh         # from project root
+#   cd install_scripts && bash install_ble_stable.sh   # from install_scripts/
 #
 # Optional:
-#   bash install_ble_stable.sh --uninstall   # Remove everything
+#   bash install_scripts/install_ble_stable.sh --uninstall
 #
 # Requirements:
 #   - meshcore-gui project with venv/ directory
@@ -34,6 +34,14 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
+# ── Resolve project root ──
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "$(basename "${SCRIPT_DIR}")" == "install_scripts" ]]; then
+    PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+else
+    PROJECT_DIR="${SCRIPT_DIR}"
+fi
+
 # ── Uninstall mode ──
 if [[ "${1:-}" == "--uninstall" ]]; then
     info "Removing meshcore-gui service and configuration..."
@@ -54,14 +62,11 @@ fi
 # ── Detect environment ──
 info "Detecting environment..."
 
-# Current directory must be the project
-if [[ ! -f "meshcore_gui.py" ]] && [[ ! -d "meshcore_gui" ]]; then
-    error "This script must be run from the meshcore-gui project directory.
-       Expected: meshcore_gui.py or meshcore_gui/ directory.
-       Current directory: $(pwd)"
+if [[ ! -f "${PROJECT_DIR}/meshcore_gui.py" ]] && [[ ! -d "${PROJECT_DIR}/meshcore_gui" ]]; then
+    error "Cannot find meshcore_gui.py or meshcore_gui/ in ${PROJECT_DIR}
+       Run this script from the project directory or from install_scripts/."
 fi
 
-PROJECT_DIR="$(pwd)"
 CURRENT_USER="$(whoami)"
 VENV_PYTHON="${PROJECT_DIR}/venv/bin/python"
 
@@ -91,7 +96,7 @@ if [[ -z "${BLE_ADDRESS}" ]]; then
     echo "You can specify it in two ways:"
     echo ""
     echo "  1. As an environment variable:"
-    echo "     BLE_ADDRESS=FF:05:D6:71:83:8D bash install_ble_stable.sh"
+    echo "     BLE_ADDRESS=FF:05:D6:71:83:8D bash $0"
     echo ""
     echo "  2. Enter manually:"
     read -rp "     BLE MAC address (e.g. FF:05:D6:71:83:8D): " BLE_ADDRESS
@@ -137,10 +142,9 @@ else
     ok "dbus_fast installed"
 fi
 
-# ── Step 3: Copy Python files ──
-info "Step 3/6: Installing Python files..."
+# ── Step 3: Check Python files ──
+info "Step 3/6: Checking Python files..."
 
-# Detect if ble_agent.py and ble_reconnect.py already exist
 BLE_DIR="${PROJECT_DIR}/meshcore_gui/ble"
 if [[ ! -d "${BLE_DIR}" ]]; then
     error "Directory ${BLE_DIR} not found."
@@ -155,13 +159,9 @@ RECONNECT_OK=false
 if $AGENT_OK && $RECONNECT_OK; then
     ok "ble_agent.py and ble_reconnect.py are already installed"
 else
-    # Check if they are in the same directory as this script
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    
-    if [[ -f "${SCRIPT_DIR}/meshcore_gui/ble/ble_agent.py" ]]; then
-        cp "${SCRIPT_DIR}/meshcore_gui/ble/ble_agent.py" "${BLE_DIR}/"
-        cp "${SCRIPT_DIR}/meshcore_gui/ble/ble_reconnect.py" "${BLE_DIR}/"
-        ok "Files copied from ${SCRIPT_DIR}"
+    # Check if they are alongside the project files
+    if [[ -f "${PROJECT_DIR}/meshcore_gui/ble/ble_agent.py" ]]; then
+        ok "Files already present in project"
     else
         if ! $AGENT_OK; then
             error "ble_agent.py not found in ${BLE_DIR}/
@@ -272,7 +272,7 @@ echo "   sudo systemctl status meshcore-gui     # Status"
 echo "   journalctl -u meshcore-gui -f          # Live logs"
 echo ""
 echo " Uninstall:"
-echo "   bash install_ble_stable.sh --uninstall"
+echo "   bash install_scripts/install_ble_stable.sh --uninstall"
 echo ""
 echo "═══════════════════════════════════════════════════"
 

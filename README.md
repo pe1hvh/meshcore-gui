@@ -1,10 +1,12 @@
 # MeshCore GUI — Native USB & BLE
+### Cross-frequency bridge included — no MQTT, no broker, no cloud. Just LoRa ↔ LoRa.
 ![Status](https://img.shields.io/badge/Status-Production-green.svg)
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-orange.svg)
 ![Transport](https://img.shields.io/badge/Transport-USB%20Serial%20%7C%20BLE-blueviolet.svg)
+![Bridge](https://img.shields.io/badge/Bridge-Cross--Frequency%20LoRa%20↔%20LoRa-ff6600.svg)
 
 A graphical user interface for MeshCore mesh network devices with native USB serial and Bluetooth Low Energy (BLE) support, for on your desktop or as a headless service on your local network.
 
@@ -53,22 +55,27 @@ A graphical user interface for MeshCore mesh network devices with native USB ser
   - [9.11. RX Log](#911-rx-log)
   - [9.12. Actions](#912-actions)
 - [10. Architecture](#10-architecture)
-- [11. Known Limitations](#11-known-limitations)
-- [12. Troubleshooting](#12-troubleshooting)
-  - [12.1. Linux](#121-linux)
-    - [12.1.1. Serial Quick Fixes](#1211-serial-quick-fixes)
-    - [12.1.2. BLE Quick Fixes](#1212-ble-quick-fixes)
-  - [12.2. macOS](#122-macos)
-  - [12.3. Windows](#123-windows)
-  - [12.4. All Platforms](#124-all-platforms)
-- [13. Development](#13-development)
-  - [13.1. Debug Mode](#131-debug-mode)
-  - [13.2. Project Structure](#132-project-structure)
-- [14. Roadmap](#14-roadmap)
-- [15. Disclaimer](#15-disclaimer)
-- [16. License](#16-license)
-- [17. Author](#17-author)
-- [18. Acknowledgments](#18-acknowledgments)
+- [11. Cross-Frequency Bridge](#11-cross-frequency-bridge)
+  - [11.1. Bridge Overview](#111-bridge-overview)
+  - [11.2. Quick Start](#112-quick-start)
+  - [11.3. Bridge Configuration](#113-bridge-configuration)
+  - [11.4. systemd Service](#114-systemd-service)
+- [12. Known Limitations](#12-known-limitations)
+- [13. Troubleshooting](#13-troubleshooting)
+  - [13.1. Linux](#131-linux)
+    - [13.1.1. Serial Quick Fixes](#1311-serial-quick-fixes)
+    - [13.1.2. BLE Quick Fixes](#1312-ble-quick-fixes)
+  - [13.2. macOS](#132-macos)
+  - [13.3. Windows](#133-windows)
+  - [13.4. All Platforms](#134-all-platforms)
+- [14. Development](#14-development)
+  - [14.1. Debug Mode](#141-debug-mode)
+  - [14.2. Project Structure](#142-project-structure)
+- [15. Roadmap](#15-roadmap)
+- [16. Disclaimer](#16-disclaimer)
+- [17. License](#17-license)
+- [18. Author](#18-author)
+- [19. Acknowledgments](#19-acknowledgments)
 
 ---
 
@@ -86,6 +93,7 @@ This project provides a **native desktop GUI** that connects to your MeshCore de
 - **Message archive** — all messages are persisted to disk with configurable retention, so you maintain a searchable history of mesh traffic
 - **Bots and observation** — run a keyword-triggered auto-reply bot or passively observe mesh traffic 24/7
 - **Room Server support** — login to Room Servers directly from the GUI with dedicated message panels per room
+- **Cross-frequency bridge** — connect two MeshCore devices on different frequencies with an independent bridge daemon that forwards channel messages bidirectionally, with zero changes to the main codebase
 
 > **Note:** This project is under active development. Not all features from the official MeshCore Companion apps have been implemented yet. Contributions and feedback are welcome.
 
@@ -116,6 +124,7 @@ Under the hood it uses `meshcore` as the protocol layer, `meshcoredecoder` for r
 - **Periodic Contact Refresh** — Contacts are automatically refreshed from the device at a configurable interval (default: 5 minutes) and merged with the cache
 - **Threaded Architecture** — Device communication in separate thread for stable UI
 - **Dual Transport** — Auto-detects USB serial or Bluetooth LE from the device argument; BLE includes automatic PIN pairing and bond management
+- **Cross-Frequency Bridge** — Standalone bridge daemon (`meshcore_bridge`) connects two devices on different frequencies by forwarding messages on a configurable bridge channel. Runs as a separate process with its own DOMCA-themed dashboard, YAML configuration, loop prevention and systemd service installer. Requires zero changes to meshcore_gui. See [11. Cross-Frequency Bridge](#11-cross-frequency-bridge) for details
 
 ## 3. Screenshots
 
@@ -163,7 +172,7 @@ sudo systemctl status bluetooth
 > - `org.bluez.Error.AuthenticationFailed` or `org.bluez.Error.ConnectionAttemptFailed` in the logs
 > - Repeated bond/unbond cycles without a stable connection
 >
-> **Workaround:** If you experience BLE instability, try downgrading BlueZ to 5.65 or pinning the package version. Alternatively, use **USB serial mode** which is not affected by BlueZ and provides the most reliable connection on all platforms. See [12.1.2. BLE Quick Fixes](#1212-ble-quick-fixes) for troubleshooting steps.
+> **Workaround:** If you experience BLE instability, try downgrading BlueZ to 5.65 or pinning the package version. Alternatively, use **USB serial mode** which is not affected by BlueZ and provides the most reliable connection on all platforms. See [13.1.2. BLE Quick Fixes](#1312-ble-quick-fixes) for troubleshooting steps.
 
 **Raspberry Pi (Raspberry Pi OS Lite) — Serial:**
 ```bash
@@ -652,7 +661,7 @@ Route data is resolved from two sources (in priority order):
 2. **Contact out_path** — Stored route from the sender's contact record (fallback)
 
 <!-- CHANGED: Self-contained route table data (v1.7.1) -->
-Route table data (path hashes, resolved repeater names and channel names) is captured at receive time and stored in the archive. This means route tables (names and IDs) remain correct even when contacts are renamed, removed or offline. Sender identity is resolved via pubkey lookup with an automatic name-based fallback when the pubkey lookup fails. Map visualization still depends on live contact GPS data — see [11. Known Limitations](#11-known-limitations).
+Route table data (path hashes, resolved repeater names and channel names) is captured at receive time and stored in the archive. This means route tables (names and IDs) remain correct even when contacts are renamed, removed or offline. Sender identity is resolved via pubkey lookup with an automatic name-based fallback when the pubkey lookup fails. Map visualization still depends on live contact GPS data — see [12. Known Limitations](#12-known-limitations).
 
 <!-- ADDED: Room Server section (v5.7.0) -->
 ### 9.7. Room Server
@@ -810,7 +819,107 @@ The built-in bot automatically replies to messages containing recognised keyword
 - **ArchivePage**: Archive viewer with filters, pagination and inline route tables
 - **Communication**: Via command queue (GUI→worker) and shared state with flags (worker→GUI)
 
-## 11. Known Limitations
+## 11. Cross-Frequency Bridge
+
+### 11.1. Bridge Overview
+
+**meshcore_bridge** is a standalone daemon that connects two MeshCore devices operating on different radio frequencies. It forwards messages on a configurable bridge channel from one device to the other, effectively extending your mesh network across frequency boundaries.
+
+The bridge runs as an independent process, imports the existing meshcore_gui modules (SharedData, Worker, models, config) as a library, and requires **zero modifications** to the meshcore_gui codebase.
+
+```
+┌───────────────────────────────────────────┐
+│           meshcore_bridge daemon           │
+│                                           │
+│  ┌──────────────┐    ┌────────────────┐   │
+│  │ SharedData A │    │  BridgeEngine  │   │
+│  │ + Worker A   │◄──►│  (forward &    │   │
+│  │ (ttyUSB1)    │    │   dedup)       │   │
+│  └──────────────┘    └────────────────┘   │
+│  ┌──────────────┐         │               │
+│  │ SharedData B │◄────────┘               │
+│  │ + Worker B   │                         │
+│  │ (ttyUSB2)    │                         │
+│  └──────────────┘                         │
+│                                           │
+│  ┌───────────────────────────────────┐    │
+│  │  Bridge Dashboard (NiceGUI :9092) │    │
+│  └───────────────────────────────────┘    │
+└───────────────────────────────────────────┘
+```
+
+Key properties:
+
+- **Separate process** — the bridge runs independently from meshcore_gui; both can run simultaneously on the same host
+- **Loop prevention** — three mechanisms prevent message loops: direction filter, message hash tracking, and echo suppression
+- **Private channels** — encrypted channels work transparently because the bridge operates at the plaintext level between firmware decryption and encryption
+- **DOMCA dashboard** — status page on its own port showing both device connections, bridge statistics and a forwarded message log
+- **YAML configuration** — all settings in a single `bridge_config.yaml` file
+
+### 11.2. Quick Start
+
+```bash
+# 1. Install the additional dependency
+pip install pyyaml
+
+# 2. Edit the configuration
+cp bridge_config.yaml bridge_config.yaml.local
+nano bridge_config.yaml.local
+
+# 3. Start the bridge
+python meshcore_bridge.py --config=bridge_config.yaml.local
+
+# 4. Open the dashboard at http://localhost:9092
+```
+
+**Prerequisites**: two MeshCore devices connected via USB serial to the same host, with the bridge channel configured on both devices using the same channel secret/password.
+
+### 11.3. Bridge Configuration
+
+All settings are defined in `bridge_config.yaml`:
+
+```yaml
+bridge:
+  channel_name: "bridge"        # Channel name (for display)
+  channel_idx_a: 3              # Channel index on device A
+  channel_idx_b: 3              # Channel index on device B
+  poll_interval_ms: 200         # Polling interval (ms)
+  forward_prefix: true          # Add [sender] prefix to forwarded messages
+  max_forwarded_cache: 500      # Loop prevention cache size
+
+device_a:
+  port: /dev/ttyUSB1
+  baud: 115200
+  label: "869.525 MHz"
+
+device_b:
+  port: /dev/ttyUSB2
+  baud: 115200
+  label: "868.000 MHz"
+
+gui:
+  port: 9092
+  title: "MeshCore Bridge"
+```
+
+CLI options: `--config=PATH`, `--port=PORT`, `--debug-on`, `--help`.
+
+### 11.4. systemd Service
+
+Install the bridge as a systemd daemon for production use:
+
+```bash
+sudo bash install_bridge.sh
+sudo nano /etc/meshcore/bridge_config.yaml
+sudo systemctl start meshcore-bridge
+sudo systemctl enable meshcore-bridge
+```
+
+To uninstall: `sudo bash install_bridge.sh --uninstall`
+
+For full documentation including architecture details, troubleshooting and assumptions, see [BRIDGE.md](BRIDGE.md).
+
+## 12. Known Limitations
 
 1. **Channel discovery timing** — Dynamic channel discovery probes the device at startup; on very slow links (especially BLE), some channels may be missed on first attempt. Channels are retried in the background and cached for subsequent startups when `CHANNEL_CACHE_ENABLED = True`
 2. **Initial load time** — GUI waits for device data before the first render is complete (mitigated by cache: if cached data exists, the GUI populates instantly)
@@ -820,13 +929,13 @@ The built-in bot automatically replies to messages containing recognised keyword
 5. **BLE Linux only** — BLE mode requires Linux with BlueZ and D-Bus. macOS and Windows are not supported for BLE connections because the PIN agent relies on the D-Bus system bus
 6. **BlueZ 5.66+ instability** — Recent BlueZ versions (shipped with Ubuntu 24.04, Debian Bookworm, Raspberry Pi OS Bookworm) can cause BLE connection instability, pairing failures and unexpected disconnects. USB serial is not affected and is recommended as the most reliable transport
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
-### 12.1. Linux
+### 14.1. Linux
 
 For Linux troubleshooting, start by checking device permissions and that the correct device argument is used.
 
-#### 12.1.1. Serial Quick Fixes
+#### 13.1.1. Serial Quick Fixes
 
 ##### GUI remains empty / serial connection fails
 
@@ -853,7 +962,7 @@ For Linux troubleshooting, start by checking device permissions and that the cor
    python meshcore_gui.py /dev/ttyUSB0
    ```
 
-#### 12.1.2. BLE Quick Fixes
+#### 13.1.2. BLE Quick Fixes
 
 ##### GUI remains empty / BLE connection fails
 
@@ -943,30 +1052,30 @@ If the version is 5.66 or higher, you have several options:
    ```
    Restart Bluetooth after editing: `sudo systemctl restart bluetooth`
 
-### 12.2. macOS
+### 14.2. macOS
 
 - Ensure the device shows up under `/dev/tty.usb*`, `/dev/tty.usbserial*`, or `/dev/tty.usbmodem*`
 - Close any other app that might be using the serial port
 
-### 12.3. Windows
+### 13.3. Windows
 
 - Confirm the COM port in Device Manager → Ports (COM & LPT)
 - Close any other app that might be using the COM port
 
-### 12.4. All Platforms
+### 13.4. All Platforms
 
-#### 12.4.1. Device Not Found
+#### 13.4.1. Device Not Found
 
 **Serial:** Make sure the MeshCore device is powered on, running Serial Companion firmware, and the correct serial port is selected.
 
 **BLE:** Ensure the device is powered on and discoverable (`bluetoothctl scan on`). Check that the MAC address is correct and that the BLE PIN matches (default: `123456`). On Linux, verify D-Bus permissions — see `docs/ble/BLE_ARCHITECTURE.md` for details.
 
-#### 12.4.2. Messages Not Arriving
+#### 13.4.2. Messages Not Arriving
 
 - Check if your channels are correctly configured
 - Use `meshcli` to verify that messages are arriving
 
-#### 12.4.3. Clearing the Cache
+#### 13.4.3. Clearing the Cache
 
 If cached data causes issues (e.g. stale contacts), delete the cache file:
 
@@ -976,9 +1085,9 @@ rm ~/.meshcore-gui/cache/*.json
 
 The cache will be recreated on the next successful serial connection.
 
-## 13. Development
+## 14. Development
 
-### 13.1. Debug Mode
+### 14.1. Debug Mode
 
 Enable via command line flag:
 
@@ -990,7 +1099,7 @@ Or set `DEBUG = True` in `meshcore_gui/config.py`.
 
 Debug output is written to both stdout and a per-device rotating log file at `~/.meshcore-gui/logs/<ADDRESS>_meshcore_gui.log` (e.g. `F0_9E_9E_75_A3_01_meshcore_gui.log`).
 
-### 13.2. Project Structure
+### 14.2. Project Structure
 
 <!-- CHANGED: Project structure updated — added archive_page.py and message_archive.py -->
 
@@ -1048,6 +1157,22 @@ meshcore-gui/
 │   ├── MeshCore_GUI_Design.docx     # Design document
 │   ├── ble_capture_workflow_t_1000_e_explanation.md
 │   └── ble_capture_workflow_t_1000_e_uitleg.md
+├── meshcore_bridge.py               # Bridge entry point
+├── meshcore_bridge/                  # Bridge daemon package
+│   ├── __init__.py
+│   ├── __main__.py                  # CLI, dual-worker setup, NiceGUI server
+│   ├── config.py                    # YAML config loading (BridgeConfig dataclass)
+│   ├── bridge_engine.py             # Core bridge logic: poll, forward, dedup, loop prevention
+│   └── gui/                         # Bridge dashboard (DOMCA themed)
+│       ├── __init__.py
+│       ├── dashboard.py             # Bridge status dashboard page
+│       └── panels/
+│           ├── __init__.py
+│           ├── status_panel.py      # Device A/B connection status + statistics
+│           └── log_panel.py         # Forwarded message log
+├── bridge_config.yaml               # Bridge configuration template (YAML)
+├── install_bridge.sh                # Bridge systemd service installer
+├── BRIDGE.md                        # Bridge documentation
 ├── .gitattributes
 ├── .gitignore
 ├── LICENSE
@@ -1055,29 +1180,30 @@ meshcore-gui/
 └── README.md
 ```
 
-## 14. Roadmap
+## 15. Roadmap
 
 This project is under active development. The most common features from the official MeshCore Companion apps are being implemented gradually. Planned additions include:
 
+- [x] **Cross-frequency bridge** — standalone daemon connecting two devices on different frequencies via configurable channel forwarding (see [11. Cross-Frequency Bridge](#11-cross-frequency-bridge))
 - [ ] **Observer mode** — passively monitor mesh traffic without transmitting, useful for network analysis, coverage mapping and long-term logging
 - [ ] **Room Server administration** — authenticate as admin to manage Room Server settings and users directly from the GUI
 - [ ] **Repeater management** — connect to repeater nodes to view status and adjust configuration
 
 Have a feature request or want to contribute? Open an issue or submit a pull request.
 
-## 15. Disclaimer
+## 16. Disclaimer
 
 This is an **independent community project** and is not affiliated with or endorsed by the official [MeshCore](https://github.com/meshcore-dev) development team. It is built on top of the open-source `meshcore` Python library.
 
-## 16. License
+## 17. License
 
 MIT License - see LICENSE file
 
-## 17. Author
+## 18. Author
 
 **PE1HVH** — [GitHub](https://github.com/pe1hvh)
 
-## 18. Acknowledgments
+## 19. Acknowledgments
 
 - [MeshCore](https://github.com/meshcore-dev) — Mesh networking firmware and protocol
 - [meshcore_py](https://github.com/meshcore-dev/meshcore_py) — Python bindings for MeshCore

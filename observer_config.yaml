@@ -1,0 +1,45 @@
+# =============================================================================
+# MeshCore Observer — Configuration
+# =============================================================================
+#
+# Read-only archive monitor.  Reads JSON files produced by meshcore_gui
+# and meshcore_bridge and displays them in a unified dashboard.
+#
+# Usage:
+#   python meshcore_observer.py --config=observer_config.yaml
+#
+# All settings below have sensible defaults — the observer works
+# without any changes to this file.
+# =============================================================================
+
+observer:
+  # Path to the archive directory.
+  # This is where meshcore_gui and meshcore_bridge write their JSON files.
+  # Default: ~/.meshcore-gui/archive
+  archive_dir: "~/.meshcore-gui/archive"
+
+  # How often to check for new archive data (seconds).
+  # Lower = more responsive, higher = less CPU usage.
+  # Default: 2.0
+  poll_interval_s: 2.0
+
+  # Maximum number of messages displayed in the dashboard.
+  # Older messages are still in the archive — just not shown.
+  # Default: 100
+  max_messages_display: 100
+
+  # Maximum number of RX log entries displayed in the dashboard.
+  # Default: 50
+  max_rxlog_display: 50
+
+gui:
+  # TCP port for the NiceGUI web dashboard.
+  # Choose a port that doesn't conflict with:
+  #   - meshcore_gui (default: 8081 or 9090)
+  #   - meshcore_bridge (default: 9092)
+  # Default: 9093
+  port: 9093
+
+  # Browser tab title.
+  # Default: "MeshCore Observer"
+  title: "MeshCore Observer"

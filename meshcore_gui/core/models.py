@@ -310,6 +310,12 @@ class RxLogEntry:
     path_names: List[str] = field(default_factory=list)
     sender: str = ""
     receiver: str = ""
+    # ── Fase 1 Observer fields (raw packet metadata) ──
+    raw_payload: str = ""       # Raw hex packet data
+    packet_len: int = 0         # Total packet length (bytes)
+    payload_len: int = 0        # Payload length (bytes)
+    route_type: str = ""        # "F" (flood) or "D" (direct)
+    packet_type_num: int = -1   # Numeric packet type (0-15)
 
 
 # ---------------------------------------------------------------------------

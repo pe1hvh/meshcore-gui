@@ -99,6 +99,7 @@ class EventHandler:
         rx_sender: str = ""
         rx_receiver: str = self._shared.get_device_name() or ""
         payload_hex = payload.get('payload', '')
+        decoded = None
         if payload_hex:
             decoded = self._decoder.decode(payload_hex)
             if decoded is not None:
@@ -172,6 +173,17 @@ class EventHandler:
                     )
         
         # Add RX log entry with message_hash and path info (if available)
+        # ── Fase 1 Observer: raw packet metadata ──
+        raw_packet_len = len(payload_hex) // 2 if payload_hex else 0
+        raw_payload_len = max(0, raw_packet_len - 1 - hops) if payload_hex else 0
+        raw_route_type = "D" if hops > 0 else ("F" if payload_hex else "")
+        raw_packet_type_num = -1
+        if payload_hex and decoded is not None:
+            try:
+                raw_packet_type_num = decoded.payload_type.value
+            except (AttributeError, ValueError):
+                pass
+
         self._shared.add_rx_log(RxLogEntry(
             time=time_str,
             snr=snr,
@@ -183,6 +195,11 @@ class EventHandler:
             path_names=rx_path_names,
             sender=rx_sender,
             receiver=rx_receiver,
+            raw_payload=payload_hex,
+            packet_len=raw_packet_len,
+            payload_len=raw_payload_len,
+            route_type=raw_route_type,
+            packet_type_num=raw_packet_type_num,
         ))
 
     # ------------------------------------------------------------------

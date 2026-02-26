@@ -168,6 +168,11 @@ class MessageArchive:
                 "path_names": entry.path_names,
                 "sender": entry.sender,
                 "receiver": entry.receiver,
+                "raw_payload": entry.raw_payload,
+                "packet_len": entry.packet_len,
+                "payload_len": entry.payload_len,
+                "route_type": entry.route_type,
+                "packet_type_num": entry.packet_type_num,
             }
             
             self._rxlog_buffer.append(entry_dict)

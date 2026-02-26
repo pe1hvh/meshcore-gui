@@ -8,7 +8,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 
 ---
 
-## [1.10.0] - 2026-02-20 — Serial Connection Default
+## [1.12.0] - 2026-02-26 — MeshCore Observer Fase 1
+
+### Added
+- ✅ **MeshCore Observer daemon** — New standalone read-only daemon (`meshcore_observer.py`) that reads archive JSON files produced by meshcore_gui and meshcore_bridge, aggregates them, and presents a unified NiceGUI monitoring dashboard on port 9093.
+- ✅ **ArchiveWatcher** — Core component that polls `~/.meshcore-gui/archive/` for `*_messages.json` and `*_rxlog.json` files, tracks mtime changes, and returns only new entries since previous poll. Thread-safe, zero writes, graceful on corrupt JSON.
+- ✅ **Observer dashboard panels** — Sources overview, aggregated messages feed (sorted by timestamp), aggregated RX log table, and statistics panel with uptime/counters/per-source breakdown. Full DOMCA theme (dark + light mode).
+- ✅ **Source filter** — Dropdown to filter messages and RX log by archive source.
+- ✅ **Channel filter** — Dropdown to filter messages by channel name.
+- ✅ **ObserverConfig** — YAML-based configuration with `from_yaml()` classmethod, defaults work without config file.
+- ✅ **observer_config.yaml** — Documented config template with all options.
+- ✅ **install_observer.sh** — systemd installer (`/opt/meshcore-observer/`, `/etc/meshcore/observer_config.yaml`), with `--uninstall` option.
+- ✅ **RxLogEntry raw packet fields** — 5 new fields on `RxLogEntry` dataclass: `raw_payload`, `packet_len`, `payload_len`, `route_type`, `packet_type_num` (all with defaults, backward compatible).
+- ✅ **EventHandler.on_rx_log() metadata** — Raw payload hex and packet metadata now passed through to RxLogEntry and archived (preparation for Fase 2 LetsMesh uplink).
+
+### Changed
+- 🔄 `meshcore_gui/core/models.py`: RxLogEntry +5 fields with defaults (backward compatible).
+- 🔄 `meshcore_gui/ble/events.py`: on_rx_log() fills raw_payload and metadata (~10 lines added).
+- 🔄 `meshcore_gui/services/message_archive.py`: add_rx_log() serializes the 5 new RxLogEntry fields.
+- 🔄 `meshcore_gui/config.py`: Version bumped to `1.12.0`.
+
+### Impact
+- **No breaking changes** — All new RxLogEntry fields have defaults; existing archives and code work identically.
+- **New daemon** — meshcore_observer is fully standalone; no imports from meshcore_gui (reads only JSON files).
+
+---
 
 ### Added
 - ✅ **Serial CLI flags** — `--baud=BAUD` and `--serial-cx-dly=SECONDS` for serial configuration at startup.

@@ -98,10 +98,11 @@ def _create_token_nodejs(
 
     js_code = f"""
 const {{ createAuthToken }} = require('@michaelhart/meshcore-decoder');
-const keyHex = '{full_key_hex}';
-const keyBuf = Buffer.from(keyHex, 'hex');
-const token = createAuthToken(keyBuf, '{audience}', {lifetime_s});
-process.stdout.write(token);
+(async () => {{
+    const keyBuf = Buffer.from('{full_key_hex}', 'hex');
+    const token = await createAuthToken(keyBuf, '{audience}', {lifetime_s});
+    process.stdout.write(token);
+}})();
 """
 
     result = subprocess.run(

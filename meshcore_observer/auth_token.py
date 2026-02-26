@@ -93,13 +93,16 @@ def _create_token_nodejs(
     Raises:
         RuntimeError: If Node.js call fails.
     """
-    # meshcore-decoder expects the full 64-byte key (seed + public)
-    full_key_hex = private_key_hex + public_key_hex
-
     js_code = f"""
 const {{ createAuthToken }} = require('@michaelhart/meshcore-decoder');
 (async () => {{
-    const token = await createAuthToken('{full_key_hex}', '{audience}', {lifetime_s});
+    const payload = {{
+        publicKey: '{public_key_hex.upper()}',
+        aud: '{audience}',
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + {lifetime_s}
+    }};
+    const token = await createAuthToken(payload, '{private_key_hex}', '{public_key_hex.upper()}');
     process.stdout.write(token);
 }})();
 """
@@ -158,7 +161,7 @@ def _create_token_pynacl(
     private_key_bytes = bytes.fromhex(private_key_hex)
     signing_key = SigningKey(private_key_bytes)
 
-    header = {"alg": "EdDSA", "typ": "JWT"}
+    header = {"alg": "Ed25519", "typ": "JWT"}
 
     now = int(time.time())
     payload = {
@@ -216,18 +219,19 @@ def create_auth_token(
         )
 
     # Strategy 1: Node.js meshcore-decoder (reference implementation)
-    if _check_node_available():
-        try:
-            token = _create_token_nodejs(
-                public_key_hex, private_key_hex, audience, lifetime_s,
-            )
-            logger.debug("Token generated via Node.js meshcore-decoder")
-            return token
-        except Exception as exc:
-            logger.warning(
-                "Node.js token generation failed, falling back to PyNaCl: %s",
-                exc,
-            )
+    # Disabled for testing — using PyNaCl with corrected header
+    # if _check_node_available():
+    #     try:
+    #         token = _create_token_nodejs(
+    #             public_key_hex, private_key_hex, audience, lifetime_s,
+    #         )
+    #         logger.debug("Token generated via Node.js meshcore-decoder")
+    #         return token
+    #     except Exception as exc:
+    #         logger.warning(
+    #             "Node.js token generation failed, falling back to PyNaCl: %s",
+    #             exc,
+    #         )
 
     # Strategy 2: PyNaCl fallback
     token = _create_token_pynacl(

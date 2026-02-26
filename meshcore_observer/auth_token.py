@@ -2,17 +2,14 @@
 Ed25519 JWT authentication token for LetsMesh MQTT broker.
 
 Generates tokens compatible with the ``@michaelhart/meshcore-decoder``
-``createAuthToken()`` reference implementation.  Uses PyNaCl for
-Ed25519 signing — no Node.js dependency.
+``createAuthToken()`` reference implementation.
 
-Token format::
-
-    base64url(header) . base64url(payload) . base64url(signature)
-
-Where signature = Ed25519.sign(header_b64 + "." + payload_b64, private_key)
+Strategy:
+    1. **Node.js** — calls meshcore-decoder directly (reference impl)
+    2. **PyNaCl** — pure Python fallback if Node.js is unavailable
 
                    Author: PE1HVH
-                  Version: 1.0.0
+                  Version: 2.0.0
   SPDX-License-Identifier: MIT
                 Copyright: (c) 2026 PE1HVH
 """
@@ -20,6 +17,9 @@ Where signature = Ed25519.sign(header_b64 + "." + payload_b64, private_key)
 import base64
 import json
 import logging
+import os
+import shutil
+import subprocess
 import time
 from typing import Optional
 
@@ -29,32 +29,157 @@ logger = logging.getLogger(__name__)
 DEFAULT_TOKEN_LIFETIME_S = 3600  # 1 hour
 TOKEN_REFRESH_MARGIN_S = 300     # Refresh 5 minutes before expiry
 
+# Node.js environment — meshcore-decoder installed globally
+_NODE_ENV = {
+    **os.environ,
+    "NODE_PATH": os.environ.get("NODE_PATH", "/usr/lib/node_modules"),
+}
 
-def _base64url_encode(data: bytes) -> str:
-    """Base64url encode without padding (JWT standard).
+# Cache availability check
+_node_available: Optional[bool] = None
+
+
+def _check_node_available() -> bool:
+    """Check if Node.js and meshcore-decoder are available."""
+    global _node_available
+    if _node_available is not None:
+        return _node_available
+
+    if not shutil.which("node"):
+        logger.debug("Node.js not found in PATH")
+        _node_available = False
+        return False
+
+    try:
+        result = subprocess.run(
+            ["node", "-e",
+             "require('@michaelhart/meshcore-decoder').createAuthToken"],
+            env=_NODE_ENV,
+            capture_output=True,
+            timeout=5,
+        )
+        _node_available = result.returncode == 0
+        if _node_available:
+            logger.info("Using Node.js meshcore-decoder for MQTT auth tokens")
+        else:
+            logger.debug(
+                "meshcore-decoder not available: %s",
+                result.stderr.decode().strip(),
+            )
+    except Exception as exc:
+        logger.debug("Node.js check failed: %s", exc)
+        _node_available = False
+
+    return _node_available
+
+
+def _create_token_nodejs(
+    public_key_hex: str,
+    private_key_hex: str,
+    audience: str,
+    lifetime_s: int,
+) -> str:
+    """Create auth token via Node.js meshcore-decoder (reference impl).
 
     Args:
-        data: Raw bytes to encode.
+        public_key_hex:  64-char hex device public key.
+        private_key_hex: 64-char hex device Ed25519 private key (seed).
+        audience:        Broker hostname.
+        lifetime_s:      Token validity in seconds.
 
     Returns:
-        Base64url-encoded string without ``=`` padding.
+        JWT token string.
+
+    Raises:
+        RuntimeError: If Node.js call fails.
     """
+    # meshcore-decoder expects the full 64-byte key (seed + public)
+    full_key_hex = private_key_hex + public_key_hex
+
+    js_code = f"""
+const {{ createAuthToken }} = require('@michaelhart/meshcore-decoder');
+const keyHex = '{full_key_hex}';
+const keyBuf = Buffer.from(keyHex, 'hex');
+const token = createAuthToken(keyBuf, '{audience}', {lifetime_s});
+process.stdout.write(token);
+"""
+
+    result = subprocess.run(
+        ["node", "-e", js_code],
+        env=_NODE_ENV,
+        capture_output=True,
+        timeout=10,
+    )
+
+    if result.returncode != 0:
+        stderr = result.stderr.decode().strip()
+        raise RuntimeError(f"Node.js token generation failed: {stderr}")
+
+    token = result.stdout.decode().strip()
+    if not token or token.count(".") != 2:
+        raise RuntimeError(
+            f"Node.js returned invalid token: {token[:50]}..."
+        )
+
+    return token
+
+
+def _base64url_encode(data: bytes) -> str:
+    """Base64url encode without padding (JWT standard)."""
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
-def _base64url_decode(s: str) -> bytes:
-    """Base64url decode with padding restoration.
+def _create_token_pynacl(
+    public_key_hex: str,
+    private_key_hex: str,
+    audience: str,
+    lifetime_s: int,
+) -> str:
+    """Create auth token via PyNaCl (fallback).
 
     Args:
-        s: Base64url-encoded string.
+        public_key_hex:  64-char hex device public key.
+        private_key_hex: 64-char hex device Ed25519 private key (seed).
+        audience:        Broker hostname.
+        lifetime_s:      Token validity in seconds.
 
     Returns:
-        Decoded bytes.
+        JWT token string.
     """
-    padding = 4 - len(s) % 4
-    if padding != 4:
-        s += "=" * padding
-    return base64.urlsafe_b64decode(s)
+    try:
+        from nacl.signing import SigningKey
+    except ImportError:
+        raise ImportError(
+            "Neither Node.js meshcore-decoder nor PyNaCl are available. "
+            "Install one: npm install -g @michaelhart/meshcore-decoder "
+            "OR pip install PyNaCl"
+        )
+
+    private_key_bytes = bytes.fromhex(private_key_hex)
+    signing_key = SigningKey(private_key_bytes)
+
+    header = {"alg": "EdDSA", "typ": "JWT"}
+
+    now = int(time.time())
+    payload = {
+        "publicKey": public_key_hex.upper(),
+        "aud": audience,
+        "iat": now,
+        "exp": now + lifetime_s,
+    }
+
+    header_b64 = _base64url_encode(
+        json.dumps(header, separators=(",", ":")).encode("utf-8")
+    )
+    payload_b64 = _base64url_encode(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    )
+
+    message = f"{header_b64}.{payload_b64}".encode("utf-8")
+    signed = signing_key.sign(message)
+    signature_b64 = _base64url_encode(signed.signature)
+
+    return f"{header_b64}.{payload_b64}.{signature_b64}"
 
 
 def create_auth_token(
@@ -65,8 +190,8 @@ def create_auth_token(
 ) -> str:
     """Create a LetsMesh-compatible Ed25519 JWT authentication token.
 
-    Mirrors ``@michaelhart/meshcore-decoder`` ``createAuthToken()``
-    to produce tokens accepted by mqtt-eu-v1.letsmesh.net.
+    Tries Node.js meshcore-decoder first (reference implementation),
+    falls back to PyNaCl if unavailable.
 
     Args:
         public_key_hex:  64-char hex device public key.
@@ -79,16 +204,7 @@ def create_auth_token(
 
     Raises:
         ValueError: If key format is invalid.
-        ImportError: If PyNaCl is not installed.
     """
-    try:
-        from nacl.signing import SigningKey
-    except ImportError:
-        raise ImportError(
-            "PyNaCl is required for MQTT authentication. "
-            "Install with: pip install PyNaCl"
-        )
-
     # Validate key lengths
     if len(public_key_hex) != 64:
         raise ValueError(
@@ -99,40 +215,25 @@ def create_auth_token(
             f"Private key must be 64 hex chars, got {len(private_key_hex)}"
         )
 
-    # Parse keys
-    try:
-        private_key_bytes = bytes.fromhex(private_key_hex)
-        signing_key = SigningKey(private_key_bytes)
-    except Exception as exc:
-        raise ValueError(f"Invalid private key: {exc}") from exc
+    # Strategy 1: Node.js meshcore-decoder (reference implementation)
+    if _check_node_available():
+        try:
+            token = _create_token_nodejs(
+                public_key_hex, private_key_hex, audience, lifetime_s,
+            )
+            logger.debug("Token generated via Node.js meshcore-decoder")
+            return token
+        except Exception as exc:
+            logger.warning(
+                "Node.js token generation failed, falling back to PyNaCl: %s",
+                exc,
+            )
 
-    # Build header (matches meshcore-decoder format)
-    header = {"alg": "EdDSA", "typ": "JWT"}
-
-    # Build payload
-    now = int(time.time())
-    payload = {
-        "publicKey": public_key_hex.upper(),
-        "aud": audience,
-        "iat": now,
-        "exp": now + lifetime_s,
-    }
-
-    # Encode parts
-    header_b64 = _base64url_encode(
-        json.dumps(header, separators=(",", ":")).encode("utf-8")
+    # Strategy 2: PyNaCl fallback
+    token = _create_token_pynacl(
+        public_key_hex, private_key_hex, audience, lifetime_s,
     )
-    payload_b64 = _base64url_encode(
-        json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    )
-
-    # Sign: Ed25519(header_b64 + "." + payload_b64)
-    message = f"{header_b64}.{payload_b64}".encode("utf-8")
-    signed = signing_key.sign(message)
-    # signed.signature is the 64-byte Ed25519 signature
-    signature_b64 = _base64url_encode(signed.signature)
-
-    token = f"{header_b64}.{payload_b64}.{signature_b64}"
+    logger.debug("Token generated via PyNaCl")
     return token
 
 

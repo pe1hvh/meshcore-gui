@@ -102,7 +102,7 @@ const {{ createAuthToken }} = require('@michaelhart/meshcore-decoder');
         iat: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + {lifetime_s}
     }};
-    const token = await createAuthToken(payload, '{private_key_hex}', '{public_key_hex.upper()}');
+    const token = await createAuthToken(payload, '{private_key_hex}{public_key_hex.lower()}', '{public_key_hex.upper()}');
     process.stdout.write(token);
 }})();
 """
@@ -219,25 +219,24 @@ def create_auth_token(
         )
 
     # Strategy 1: Node.js meshcore-decoder (reference implementation)
-    # Disabled for testing — using PyNaCl with corrected header
-    # if _check_node_available():
-    #     try:
-    #         token = _create_token_nodejs(
-    #             public_key_hex, private_key_hex, audience, lifetime_s,
-    #         )
-    #         logger.debug("Token generated via Node.js meshcore-decoder")
-    #         return token
-    #     except Exception as exc:
-    #         logger.warning(
-    #             "Node.js token generation failed, falling back to PyNaCl: %s",
-    #             exc,
-    #         )
+    if _check_node_available():
+        try:
+            token = _create_token_nodejs(
+                public_key_hex, private_key_hex, audience, lifetime_s,
+            )
+            logger.debug("Token generated via Node.js meshcore-decoder")
+            return token
+        except Exception as exc:
+            logger.warning(
+                "Node.js token generation failed, falling back to PyNaCl: %s",
+                exc,
+            )
 
     # Strategy 2: PyNaCl fallback
     token = _create_token_pynacl(
         public_key_hex, private_key_hex, audience, lifetime_s,
     )
-    logger.debug("Token generated via PyNaCl")
+    logger.debug("Token generated via PyNaCl (fallback)")
     return token
 
 

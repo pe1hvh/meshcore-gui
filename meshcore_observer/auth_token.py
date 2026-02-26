@@ -4,12 +4,20 @@ Ed25519 JWT authentication token for LetsMesh MQTT broker.
 Generates tokens compatible with the ``@michaelhart/meshcore-decoder``
 ``createAuthToken()`` reference implementation.
 
+Private key formats supported:
+
+- **128 hex chars** (64 bytes): Full orlp/ed25519 expanded key as stored
+  in ``device_identity.json`` by ``device_identity.py``.
+  Format: ``[clamped_scalar(32)][nonce_prefix(32)]``.
+- **64 hex chars** (32 bytes): Legacy Ed25519 seed.  Works with PyNaCl
+  fallback and with Node.js (seed + pubkey concatenation).
+
 Strategy:
     1. **Node.js** — calls meshcore-decoder directly (reference impl)
-    2. **PyNaCl** — pure Python fallback if Node.js is unavailable
+    2. **PyNaCl** — pure Python fallback (seed-only, 64-char keys)
 
                    Author: PE1HVH
-                  Version: 2.0.0
+                  Version: 2.1.0
   SPDX-License-Identifier: MIT
                 Copyright: (c) 2026 PE1HVH
 """
@@ -21,22 +29,66 @@ import os
 import shutil
 import subprocess
 import time
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Token lifetime defaults
+# ── Constants ────────────────────────────────────────────────────────
+
 DEFAULT_TOKEN_LIFETIME_S = 3600  # 1 hour
 TOKEN_REFRESH_MARGIN_S = 300     # Refresh 5 minutes before expiry
 
-# Node.js environment — meshcore-decoder installed globally
-_NODE_ENV = {
-    **os.environ,
-    "NODE_PATH": os.environ.get("NODE_PATH", "/usr/lib/node_modules"),
-}
+VALID_PRIVATE_KEY_LENGTHS = (64, 128)  # 32-byte seed or 64-byte expanded
 
-# Cache availability check
+def _resolve_node_path() -> str:
+    """Resolve NODE_PATH — check common global install locations."""
+    env_val = os.environ.get("NODE_PATH", "")
+    if env_val:
+        return env_val
+    # Common locations: Debian/Ubuntu, npm global on Pi/macOS, nvm
+    for candidate in (
+        "/usr/lib/node_modules",
+        "/usr/local/lib/node_modules",
+        Path.home() / ".npm-global" / "lib" / "node_modules",
+    ):
+        if Path(candidate).is_dir():
+            return str(candidate)
+    return "/usr/lib/node_modules"  # fallback
+
+
+_NODE_ENV = {**os.environ, "NODE_PATH": _resolve_node_path()}
+
 _node_available: Optional[bool] = None
+
+
+# ── Key helpers ──────────────────────────────────────────────────────
+
+
+def _is_valid_hex(value: str, allowed_lengths: tuple) -> bool:
+    """Check if *value* is a hex string with one of *allowed_lengths*."""
+    try:
+        bytes.fromhex(value)
+    except ValueError:
+        return False
+    return len(value) in allowed_lengths
+
+
+def _build_nodejs_private_key(
+    private_key_hex: str,
+    public_key_hex: str,
+) -> str:
+    """Return the 128-char hex private key meshcore-decoder expects.
+
+    - 128-char input → already complete orlp expanded key; pass through.
+    - 64-char input  → legacy seed; concatenate ``seed + pubkey``.
+    """
+    if len(private_key_hex) == 128:
+        return private_key_hex
+    return private_key_hex + public_key_hex.lower()
+
+
+# ── Node.js strategy ────────────────────────────────────────────────
 
 
 def _check_node_available() -> bool:
@@ -79,30 +131,24 @@ def _create_token_nodejs(
     audience: str,
     lifetime_s: int,
 ) -> str:
-    """Create auth token via Node.js meshcore-decoder (reference impl).
+    """Create auth token via Node.js meshcore-decoder.
 
-    Args:
-        public_key_hex:  64-char hex device public key.
-        private_key_hex: 64-char hex device Ed25519 private key (seed).
-        audience:        Broker hostname.
-        lifetime_s:      Token validity in seconds.
-
-    Returns:
-        JWT token string.
-
-    Raises:
-        RuntimeError: If Node.js call fails.
+    Handles both 64-char seeds (concatenated with pubkey) and
+    128-char orlp expanded keys (passed directly).
     """
+    full_priv = _build_nodejs_private_key(private_key_hex, public_key_hex)
+    pub_upper = public_key_hex.upper()
+
     js_code = f"""
 const {{ createAuthToken }} = require('@michaelhart/meshcore-decoder');
 (async () => {{
     const payload = {{
-        publicKey: '{public_key_hex.upper()}',
+        publicKey: '{pub_upper}',
         aud: '{audience}',
         iat: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + {lifetime_s}
     }};
-    const token = await createAuthToken(payload, '{private_key_hex}{public_key_hex.lower()}', '{public_key_hex.upper()}');
+    const token = await createAuthToken(payload, '{full_priv}', '{pub_upper}');
     process.stdout.write(token);
 }})();
 """
@@ -127,6 +173,9 @@ const {{ createAuthToken }} = require('@michaelhart/meshcore-decoder');
     return token
 
 
+# ── PyNaCl strategy ──────────────────────────────────────────────────
+
+
 def _base64url_encode(data: bytes) -> str:
     """Base64url encode without padding (JWT standard)."""
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
@@ -138,17 +187,21 @@ def _create_token_pynacl(
     audience: str,
     lifetime_s: int,
 ) -> str:
-    """Create auth token via PyNaCl (fallback).
+    """Create auth token via PyNaCl (fallback, 64-char seed only).
 
-    Args:
-        public_key_hex:  64-char hex device public key.
-        private_key_hex: 64-char hex device Ed25519 private key (seed).
-        audience:        Broker hostname.
-        lifetime_s:      Token validity in seconds.
-
-    Returns:
-        JWT token string.
+    The orlp/ed25519 expanded format (128-char) cannot be used with
+    PyNaCl because the expanded key is not a seed — it is the result
+    of ``SHA-512(seed)`` with clamping applied.  PyNaCl's ``SigningKey``
+    expects the original 32-byte seed.
     """
+    if len(private_key_hex) == 128:
+        raise ValueError(
+            "PyNaCl fallback requires a 64-char Ed25519 seed. "
+            "The 128-char orlp/ed25519 expanded key is only supported "
+            "via Node.js meshcore-decoder. "
+            "Install: npm install -g @michaelhart/meshcore-decoder"
+        )
+
     try:
         from nacl.signing import SigningKey
     except ImportError:
@@ -158,11 +211,9 @@ def _create_token_pynacl(
             "OR pip install PyNaCl"
         )
 
-    private_key_bytes = bytes.fromhex(private_key_hex)
-    signing_key = SigningKey(private_key_bytes)
+    signing_key = SigningKey(bytes.fromhex(private_key_hex))
 
     header = {"alg": "Ed25519", "typ": "JWT"}
-
     now = int(time.time())
     payload = {
         "publicKey": public_key_hex.upper(),
@@ -185,6 +236,9 @@ def _create_token_pynacl(
     return f"{header_b64}.{payload_b64}.{signature_b64}"
 
 
+# ── Public API ───────────────────────────────────────────────────────
+
+
 def create_auth_token(
     public_key_hex: str,
     private_key_hex: str,
@@ -194,11 +248,12 @@ def create_auth_token(
     """Create a LetsMesh-compatible Ed25519 JWT authentication token.
 
     Tries Node.js meshcore-decoder first (reference implementation),
-    falls back to PyNaCl if unavailable.
+    falls back to PyNaCl if unavailable (seed-only).
 
     Args:
-        public_key_hex:  64-char hex device public key.
-        private_key_hex: 64-char hex device Ed25519 private key (seed).
+        public_key_hex:  64-char hex device public key (from appstart).
+        private_key_hex: Ed25519 private key — either 128-char hex
+                         (orlp expanded, preferred) or 64-char hex (seed).
         audience:        Broker hostname (e.g. ``mqtt-eu-v1.letsmesh.net``).
         lifetime_s:      Token validity in seconds (default 3600).
 
@@ -208,14 +263,14 @@ def create_auth_token(
     Raises:
         ValueError: If key format is invalid.
     """
-    # Validate key lengths
-    if len(public_key_hex) != 64:
+    if not _is_valid_hex(public_key_hex, (64,)):
         raise ValueError(
             f"Public key must be 64 hex chars, got {len(public_key_hex)}"
         )
-    if len(private_key_hex) != 64:
+    if not _is_valid_hex(private_key_hex, VALID_PRIVATE_KEY_LENGTHS):
         raise ValueError(
-            f"Private key must be 64 hex chars, got {len(private_key_hex)}"
+            f"Private key must be 64 or 128 hex chars, "
+            f"got {len(private_key_hex)}"
         )
 
     # Strategy 1: Node.js meshcore-decoder (reference implementation)
@@ -232,7 +287,7 @@ def create_auth_token(
                 exc,
             )
 
-    # Strategy 2: PyNaCl fallback
+    # Strategy 2: PyNaCl fallback (seed-only)
     token = _create_token_pynacl(
         public_key_hex, private_key_hex, audience, lifetime_s,
     )
@@ -243,12 +298,9 @@ def create_auth_token(
 class TokenManager:
     """Manages JWT token lifecycle with automatic refresh.
 
-    Generates tokens on demand and refreshes them before expiry.
-    Thread-safe for use from paho-mqtt callbacks.
-
     Args:
         public_key_hex:  64-char hex device public key.
-        private_key_hex: 64-char hex device Ed25519 private key (seed).
+        private_key_hex: 64- or 128-char hex Ed25519 private key.
         lifetime_s:      Token validity in seconds.
     """
 
@@ -270,14 +322,7 @@ class TokenManager:
         return f"v1_{self._public_key.upper()}"
 
     def get_token(self, audience: str) -> str:
-        """Get a valid token, refreshing if necessary.
-
-        Args:
-            audience: Broker hostname for the ``aud`` claim.
-
-        Returns:
-            Valid JWT token string.
-        """
+        """Get a valid token, refreshing if necessary."""
         now = time.time()
         if (
             self._current_token is None

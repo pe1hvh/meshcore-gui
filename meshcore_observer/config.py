@@ -26,22 +26,31 @@ DEFAULT_CONFIG_PATH: Path = Path(__file__).parent.parent / "observer_config.yaml
 # Device identity file written by meshcore_gui (auto-detected)
 DEFAULT_DEVICE_IDENTITY_PATH: Path = Path.home() / ".meshcore-gui" / "device_identity.json"
 
+# Valid key lengths (hex chars)
+VALID_PUBLIC_KEY_LENGTH = 64        # 32-byte Ed25519 public key
+VALID_PRIVATE_KEY_LENGTHS = (64, 128)  # 32-byte seed or 64-byte expanded
+
+
+# ── Key validation helper ────────────────────────────────────────────
+
+
+def _is_valid_key(hex_str: str, allowed_lengths: tuple) -> bool:
+    """Check if *hex_str* is valid hex with one of the allowed lengths."""
+    if not hex_str or len(hex_str) not in allowed_lengths:
+        return False
+    try:
+        bytes.fromhex(hex_str)
+        return True
+    except ValueError:
+        return False
+
 
 # ── MQTT Broker Configuration ────────────────────────────────────────
 
 
 @dataclass
 class MqttBrokerConfig:
-    """Configuration for a single MQTT broker endpoint.
-
-    Attributes:
-        name:      Human-readable broker label.
-        server:    Broker hostname.
-        port:      Broker port (443 for WebSocket+TLS).
-        transport: MQTT transport type (``websockets`` or ``tcp``).
-        tls:       Enable TLS encryption.
-        enabled:   Whether this broker is active.
-    """
+    """Configuration for a single MQTT broker endpoint."""
 
     name: str = "letsmesh-eu"
     server: str = "mqtt-eu-v1.letsmesh.net"
@@ -52,14 +61,6 @@ class MqttBrokerConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> "MqttBrokerConfig":
-        """Create from a YAML dict.
-
-        Args:
-            data: Dict from YAML broker list entry.
-
-        Returns:
-            Populated MqttBrokerConfig.
-        """
         return cls(
             name=str(data.get("name", "letsmesh-eu")),
             server=str(data.get("server", "mqtt-eu-v1.letsmesh.net")),
@@ -113,14 +114,6 @@ class MqttConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> "MqttConfig":
-        """Create from a YAML dict.
-
-        Args:
-            data: Dict from YAML ``mqtt:`` section.
-
-        Returns:
-            Populated MqttConfig.
-        """
         brokers_raw = data.get("brokers", [])
         brokers = [MqttBrokerConfig.from_dict(b) for b in brokers_raw]
 
@@ -141,6 +134,8 @@ class MqttConfig:
             dry_run=bool(data.get("dry_run", False)),
         )
 
+    # ── Device identity loading ──────────────────────────────────────
+
     def _load_device_identity(self) -> Optional[dict]:
         """Load device identity JSON written by meshcore_gui.
 
@@ -148,13 +143,15 @@ class MqttConfig:
             1. ``device_identity_file`` from config (explicit path)
             2. Default path ``~/.meshcore-gui/device_identity.json``
 
+        Accepts private keys in both 64-char (legacy seed) and 128-char
+        (orlp expanded) formats.
+
         Returns:
             Dict with ``public_key`` and ``private_key``, or None.
         """
         if self._identity_cache is not None:
             return self._identity_cache
 
-        # Determine which path to try
         paths_to_try = []
         if self.device_identity_file:
             paths_to_try.append(Path(self.device_identity_file).expanduser())
@@ -167,18 +164,22 @@ class MqttConfig:
                 data = json.loads(id_path.read_text(encoding="utf-8"))
                 pub = data.get("public_key", "")
                 priv = data.get("private_key", "")
-                if len(pub) == 64 and len(priv) == 64:
+
+                if (_is_valid_key(pub, (VALID_PUBLIC_KEY_LENGTH,))
+                        and _is_valid_key(priv, VALID_PRIVATE_KEY_LENGTHS)):
                     logger.info(
-                        "Loaded device identity from %s (key=%s...)",
-                        id_path, pub[:12],
+                        "Loaded device identity from %s "
+                        "(key=%s..., priv=%d chars)",
+                        id_path, pub[:12], len(priv),
                     )
                     self._identity_cache = data
                     return data
-                else:
-                    logger.warning(
-                        "Device identity file %s has invalid key lengths",
-                        id_path,
-                    )
+
+                logger.warning(
+                    "Device identity file %s has invalid key lengths "
+                    "(pub=%d, priv=%d)",
+                    id_path, len(pub), len(priv),
+                )
             except (json.JSONDecodeError, OSError) as exc:
                 logger.warning(
                     "Cannot read device identity file %s: %s",
@@ -187,6 +188,8 @@ class MqttConfig:
 
         self._identity_cache = {}  # Mark as tried (empty = not found)
         return None
+
+    # ── Key resolution (Single Responsibility) ───────────────────────
 
     def resolve_private_key(self) -> str:
         """Resolve the private key.
@@ -198,7 +201,7 @@ class MqttConfig:
             4. ``private_key`` config value
 
         Returns:
-            64-char hex private key string, or empty string if not found.
+            Hex private key string (64 or 128 chars), or empty string.
         """
         # Priority 1: environment variable
         env_key = os.environ.get("MESHCORE_PRIVATE_KEY", "").strip()
@@ -245,19 +248,17 @@ class MqttConfig:
             3. ``public_key`` config value
 
         Returns:
-            64-char hex public key string, or empty string if not found.
+            64-char hex public key string, or empty string.
         """
         env_key = os.environ.get("MESHCORE_PUBLIC_KEY", "").strip()
         if env_key:
             return env_key
 
-        # Priority 2: device identity file (same source as private key)
         identity = self._load_device_identity()
         if identity and identity.get("public_key"):
             logger.debug("Using public key from device identity file")
             return identity["public_key"]
 
-        # Priority 3: config value
         if self.public_key:
             return self.public_key
 
@@ -265,10 +266,6 @@ class MqttConfig:
 
     def resolve_device_name(self) -> str:
         """Resolve the device display name.
-
-        Priority:
-            1. ``device_name`` config value
-            2. Device identity file
 
         Returns:
             Device name string, or ``"MeshCore Observer"`` as default.
@@ -282,12 +279,10 @@ class MqttConfig:
 
         return "MeshCore Observer"
 
-    def validate(self) -> List[str]:
-        """Validate MQTT configuration and return list of errors.
+    # ── Validation ───────────────────────────────────────────────────
 
-        Returns:
-            List of error message strings.  Empty list means valid.
-        """
+    def validate(self) -> List[str]:
+        """Validate MQTT configuration and return list of errors."""
         errors: List[str] = []
 
         if not self.enabled:
@@ -303,21 +298,21 @@ class MqttConfig:
         pub = self.resolve_public_key()
         if not pub:
             errors.append("Public key is required for MQTT authentication")
-        elif len(pub) != 64:
+        elif not _is_valid_key(pub, (VALID_PUBLIC_KEY_LENGTH,)):
             errors.append(
                 f"Public key must be 64 hex chars, got {len(pub)}"
             )
 
-        # Private key
+        # Private key — accepts both 64 (seed) and 128 (expanded)
         priv = self.resolve_private_key()
         if not priv:
             errors.append(
                 "Private key is required for MQTT authentication "
                 "(set via config, file, or MESHCORE_PRIVATE_KEY env var)"
             )
-        elif len(priv) != 64:
+        elif not _is_valid_key(priv, VALID_PRIVATE_KEY_LENGTHS):
             errors.append(
-                f"Private key must be 64 hex chars, got {len(priv)}"
+                f"Private key must be 64 or 128 hex chars, got {len(priv)}"
             )
 
         # At least one enabled broker
@@ -333,19 +328,7 @@ class MqttConfig:
 
 @dataclass
 class ObserverConfig:
-    """Complete observer daemon configuration.
-
-    Attributes:
-        archive_dir:          Path to archive directory (glob target).
-        poll_interval_s:      Seconds between archive file polls.
-        max_messages_display: Maximum messages shown in dashboard.
-        max_rxlog_display:    Maximum RX log entries shown in dashboard.
-        gui_port:             NiceGUI dashboard TCP port.
-        gui_title:            Browser tab title.
-        debug:                Enable verbose debug logging.
-        config_path:          Path to loaded config file (runtime only).
-        mqtt:                 MQTT uplink configuration.
-    """
+    """Complete observer daemon configuration."""
 
     archive_dir: str = str(Path.home() / ".meshcore-gui" / "archive")
     poll_interval_s: float = 2.0
@@ -362,16 +345,6 @@ class ObserverConfig:
         """Load configuration from a YAML file.
 
         Missing keys fall back to dataclass defaults.
-
-        Args:
-            path: Path to the YAML configuration file.
-
-        Returns:
-            Populated ObserverConfig instance.
-
-        Raises:
-            FileNotFoundError: If the config file does not exist.
-            yaml.YAMLError: If the file contains invalid YAML.
         """
         with open(path, "r", encoding="utf-8") as fh:
             raw = yaml.safe_load(fh) or {}
@@ -380,14 +353,12 @@ class ObserverConfig:
         gui_section = raw.get("gui", {})
         mqtt_section = raw.get("mqtt", {})
 
-        # Resolve archive_dir: expand ~ and make absolute
         archive_raw = observer_section.get(
             "archive_dir",
             str(Path.home() / ".meshcore-gui" / "archive"),
         )
         archive_dir = str(Path(archive_raw).expanduser().resolve())
 
-        # Parse MQTT config
         mqtt_cfg = MqttConfig.from_dict(mqtt_section) if mqtt_section else MqttConfig()
 
         return cls(

@@ -1,13 +1,3 @@
-
-## [1.13.1] - 2026-03-09
-
-### Fixed
-- Route map markers now use the same JS-rendered node icons as the main MAP instead of NiceGUI default blue markers.
-- Route detail pages now bootstrap their Leaflet assets explicitly so the shared map icon runtime is available there too.
-
-### Changed
-- Route maps are now rendered browser-side through the shared Leaflet JS runtime for icon consistency with MAP, Messages, and Archive.
-
 # CHANGELOG
 
 <!-- CHANGED: Title changed from "CHANGELOG: Message & Metadata Persistence" to "CHANGELOG" — 
@@ -18,6 +8,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 
 ---
 ## [1.13.1] - 2026-03-09 — Message Icon Consistency
+
+### Fixed
+- Route map markers now use the same JS-rendered node icons as the main MAP instead of NiceGUI default blue markers.
+- Route detail pages now bootstrap their Leaflet assets explicitly so the shared map icon runtime is available there too
+- Route maps are now rendered browser-side through the shared Leaflet JS runtime for icon consistency with MAP, Messages, and Archive.
 
 ### Changed
 - 🔄 `meshcore_gui/gui/constants.py` — Added shared helper functions to resolve node-type icons and labels from the same contact type mapping used by the map and contacts panel

@@ -131,6 +131,8 @@ Under the hood it uses `meshcore` as the protocol layer, `meshcoredecoder` for r
 <img width="1000" height="873" alt="a_Screenshots" src="https://github.com/user-attachments/assets/bd19de9a-05f7-43fd-8acd-3b92cdf6c7fa" />
 <img width="944" height="877" alt="Screenshot from 2026-02-18 09-27-59" src="https://github.com/user-attachments/assets/6b0b19f4-9886-4cca-bd36-50b4c3797e02" />
 <img width="944" height="877" alt="Screenshot from 2026-02-18 09-28-27" src="https://github.com/user-attachments/assets/374694fa-ab2d-4b96-b81f-6a351af7710a" />
+<img width="920" height="769" alt="image" src="https://github.com/user-attachments/assets/78b8112a-1ad8-460c-99ae-a16d15b14b77" />
+
 
 ## 4. Requirements
 

@@ -7,6 +7,8 @@
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-orange.svg)
 ![Transport](https://img.shields.io/badge/Transport-USB%20Serial%20%7C%20BLE-blueviolet.svg)
 ![Bridge](https://img.shields.io/badge/Bridge-Cross--Frequency%20LoRa%20↔%20LoRa-ff6600.svg)
+<img width="920" height="769" alt="image" src="https://github.com/user-attachments/assets/ff38b97f-557b-4217-abce-aaec68a90c35" />
+
 
 A graphical user interface for MeshCore mesh network devices with native USB serial and Bluetooth Low Energy (BLE) support, for on your desktop or as a headless service on your local network.
 

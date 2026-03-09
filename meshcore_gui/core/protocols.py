@@ -1,0 +1,115 @@
+"""
+Protocol interfaces for MeshCore GUI.
+
+Defines the contracts between components using ``typing.Protocol``.
+Each protocol captures the subset of SharedData that a specific
+consumer needs, following the Interface Segregation Principle (ISP)
+and the Dependency Inversion Principle (DIP).
+
+Consumers depend on these protocols rather than on the concrete
+SharedData class, which makes the contracts explicit and enables
+testing with lightweight stubs.
+
+v4.1 changes
+~~~~~~~~~~~~~
+- Added ``CommandSink`` protocol for bot and command dispatch.
+- ``SharedDataWriter.add_message`` now accepts a ``Message`` dataclass.
+- ``SharedDataWriter.add_rx_log`` now accepts an ``RxLogEntry`` dataclass.
+"""
+
+from typing import Dict, List, Optional, Protocol, runtime_checkable
+
+from meshcore_gui.core.models import Message, RxLogEntry
+
+
+# ----------------------------------------------------------------------
+# CommandSink — used by MeshBot and GUI pages
+# ----------------------------------------------------------------------
+
+@runtime_checkable
+class CommandSink(Protocol):
+    """Enqueue commands for the worker."""
+
+    def put_command(self, cmd: Dict) -> None: ...
+
+
+# ----------------------------------------------------------------------
+# Writer — used by the worker
+# ----------------------------------------------------------------------
+
+@runtime_checkable
+class SharedDataWriter(Protocol):
+    """Write-side interface used by the worker.
+
+    The worker pushes data into the shared store: device info,
+    contacts, channels, messages, RX log entries and status updates.
+    It also reads commands enqueued by the GUI.
+    """
+
+    def update_from_appstart(self, payload: Dict) -> None: ...
+    def update_from_device_query(self, payload: Dict) -> None: ...
+    def set_status(self, status: str) -> None: ...
+    def set_connected(self, connected: bool) -> None: ...
+    def set_contacts(self, contacts_dict: Dict) -> None: ...
+    def set_channels(self, channels: List[Dict]) -> None: ...
+    def add_message(self, msg: Message) -> None: ...
+    def add_rx_log(self, entry: RxLogEntry) -> None: ...
+    def get_next_command(self) -> Optional[Dict]: ...
+    def get_contact_name_by_prefix(self, pubkey_prefix: str) -> str: ...
+    def get_contact_by_name(self, name: str) -> Optional[tuple]: ...
+    def is_bot_enabled(self) -> bool: ...
+    def put_command(self, cmd: Dict) -> None: ...
+    def set_auto_add_enabled(self, enabled: bool) -> None: ...
+    def is_auto_add_enabled(self) -> bool: ...
+    def set_original_device_name(self, name: Optional[str]) -> None: ...
+    def get_original_device_name(self) -> Optional[str]: ...
+    def get_device_name(self) -> str: ...
+    def set_room_login_state(self, pubkey_prefix: str, state: str, detail: str = "") -> None: ...
+    def load_room_history(self, pubkey: str, limit: int = 50) -> None: ...
+
+
+# ----------------------------------------------------------------------
+# Reader — used by DashboardPage
+# ----------------------------------------------------------------------
+
+@runtime_checkable
+class SharedDataReader(Protocol):
+    """Read-side interface used by GUI pages.
+
+    GUI pages read snapshots of the shared data and manage
+    update flags.  They also enqueue commands for the worker.
+    """
+
+    def get_snapshot(self) -> Dict: ...
+    def clear_update_flags(self) -> None: ...
+    def mark_gui_initialized(self) -> None: ...
+    def put_command(self, cmd: Dict) -> None: ...
+    def set_bot_enabled(self, enabled: bool) -> None: ...
+    def set_auto_add_enabled(self, enabled: bool) -> None: ...
+
+
+# ----------------------------------------------------------------------
+# ContactLookup — used by RouteBuilder
+# ----------------------------------------------------------------------
+
+@runtime_checkable
+class ContactLookup(Protocol):
+    """Contact lookup interface used by RouteBuilder.
+
+    RouteBuilder needs to resolve public key prefixes and names
+    to contact records.
+    """
+
+    def get_contact_by_prefix(self, pubkey_prefix: str) -> Optional[Dict]: ...
+    def get_contact_by_name(self, name: str) -> Optional[tuple]: ...
+
+
+# ----------------------------------------------------------------------
+# ReadAndLookup — used by RoutePage (needs both Reader + Lookup)
+# ----------------------------------------------------------------------
+
+@runtime_checkable
+class SharedDataReadAndLookup(SharedDataReader, ContactLookup, Protocol):
+    """Combined interface for RoutePage which reads snapshots and
+    delegates contact lookups to RouteBuilder."""
+    ...

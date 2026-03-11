@@ -7,6 +7,33 @@ All notable changes to MeshCore GUI are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
 ---
+## [1.13.2] - 2026-03-11 — Map Display Bugfix
+
+### Fixed
+- 🛠 **MAP panel blank when contacts list is empty at startup** — dashboard update loop
+  had two separate conditional map-update blocks that both silently stopped firing after
+  tick 1 when `data['contacts']` was empty (e.g. device just booted or no contacts
+  stored). Map panel received no further snapshots and remained blank indefinitely.
+- 🛠 **Route map not rendered when no node has GPS coordinates** — `_render_map` in
+  `route_page.py` returned early before creating the Leaflet container when
+  `payload['nodes']` was empty. `MeshCoreRouteMapBoot` handles an empty nodes list
+  correctly (renders map at home area), so the early return was incorrect.
+
+### Changed
+- 🔄 `meshcore_gui/gui/dashboard.py` — Consolidated two conditional map-update blocks
+  into a single unconditional `self._map.update(data)` that fires on every timer tick
+  while the MAP panel is active. The JS runtime coalesces pending payloads so only the
+  newest snapshot is ever applied; the extra calls are cheap.
+- 🔄 `meshcore_gui/gui/route_page.py` — Removed early `return` from `_render_map` when
+  no GPS nodes are present. The Leaflet container is now always created. A small inline
+  notice is shown when there is no location data instead of skipping the map entirely.
+
+### Impact
+- MAP panel now renders reliably on first open regardless of contact/GPS availability
+- Route map now always shows even when route nodes carry no GPS coordinates
+- No breaking changes — only the two files above are modified
+
+---
 ## [1.13.1] - 2026-03-09 — Message Icon Consistency
 
 ### Fixed

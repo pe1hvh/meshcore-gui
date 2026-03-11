@@ -756,16 +756,14 @@ class DashboardPage:
             if data['device_updated'] or is_first:
                 self._device.update(data)
 
-            # Map updates are intentionally limited to when the map panel
-            # is visible. Updating Leaflet every 500 ms while hidden can
-            # trigger excessive tile/layer work in the browser and make the
-            # rest of the UI feel unresponsive (for example the hamburger
-            # menu appearing to do nothing). The explicit update in
-            # _show_panel('map') still refreshes and recenters the map when
-            # the user opens it.
-            if self._active_panel == 'map' and (
-                data['device_updated'] or is_first
-            ):
+            # Map: always send a snapshot while the panel is active.
+            # The JS runtime coalesces pending payloads — only the newest
+            # is ever applied — so calling update() on every tick is cheap.
+            # This ensures the Leaflet runtime always gets at least one
+            # valid snapshot after it finishes loading, regardless of
+            # whether device_updated or is_first happened to be True
+            # on the tick that fired before MeshCoreLeafletBoot was defined.
+            if self._active_panel == 'map':
                 self._map.update(data)
 
             # Channel-dependent UI: always ensure consistency when
@@ -789,18 +787,6 @@ class DashboardPage:
             # Contacts
             if data['contacts_updated'] or is_first:
                 self._contacts.update(data)
-
-            # Map
-            if (
-                self._active_panel == 'map'
-                and data['contacts']
-                and (
-                    data['contacts_updated']
-                    or not self._map.has_markers
-                    or is_first
-                )
-            ):
-                self._map.update(data)
 
             # Messages (always — for live filter changes)
             self._messages.update(

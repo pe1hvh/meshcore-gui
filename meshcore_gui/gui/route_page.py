@@ -230,14 +230,24 @@ class RoutePage:
 
     @staticmethod
     def _render_map(data: Dict, route: Dict) -> None:
-        """Render the route map in browser JS using the shared MAP icons."""
+        """Render the route map in browser JS using the shared MAP icons.
+
+        The Leaflet container is always rendered.  When no nodes carry GPS
+        coordinates a notice is shown inside the card, but the map itself
+        still initialises so the user sees the configured home area.
+        MeshCoreRouteMapBoot handles an empty nodes array gracefully by
+        displaying the map at payload.center with no markers.
+        """
         with ui.card().classes('w-full'):
             payload = RoutePage._build_route_map_payload(data, route)
+
+            # Show a notice when no node carries GPS, but do NOT skip the
+            # Leaflet container.  The JS runtime renders the map at the
+            # configured home area (DEFAULT_MAP_CENTER) with no markers.
             if not payload['nodes']:
                 ui.label(
-                    '📍 No location data available for map display'
-                ).classes('text-gray-500 italic p-4')
-                return
+                    '📍 No GPS location data — map shows home area'
+                ).classes('text-xs text-gray-400 italic px-2 pt-2')
 
             container_id = f'route-map-{uuid4().hex}'
             ui.html(

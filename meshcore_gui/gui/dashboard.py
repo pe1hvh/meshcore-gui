@@ -193,6 +193,7 @@ body.body--light .domca-drawer .q-item { color: #3d6380 !important; }
 .domca-panel .h-40  { height: calc(100vh - 20rem) !important; min-height: 10rem; }
 .domca-panel .h-32  { height: calc(100vh - 24rem) !important; min-height: 8rem; }
 .domca-panel .h-72  { height: calc(100vh - 12rem) !important; min-height: 14rem; }
+.domca-panel .h-96  { height: calc(100vh - 8rem)  !important; min-height: 16rem; }
 .domca-panel .max-h-48 { max-height: calc(100vh - 16rem) !important; min-height: 6rem; }
 
 /* ── Allow narrow viewports down to 320px ── */

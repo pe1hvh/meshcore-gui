@@ -251,8 +251,8 @@ class RoutePage:
 
             container_id = f'route-map-{uuid4().hex}'
             ui.html(
-                f'<div id="{container_id}" class="w-full h-96 rounded-lg overflow-hidden"></div>'
-            ).classes('w-full')
+                f'<div id="{container_id}" style="width:100%;height:24rem;border-radius:0.5rem;overflow:hidden;"></div>'
+            ).classes('w-full').style('height: 24rem')
 
             boot_script = (
                 '(function bootRouteMap(retries){'

@@ -42,6 +42,16 @@
       return null;
     }
 
+    // Do not initialize the Leaflet map while the host container has no
+    // rendered dimensions.  This happens when the map panel is hidden at
+    // page load (display:none via Vue v-show).  Calling L.map() on a
+    // zero-size element produces a broken map that never recovers.
+    // processPending will retry on the next scheduled tick once the panel
+    // becomes visible and the host gains real dimensions.
+    if (!existing && host.clientWidth === 0 && host.clientHeight === 0) {
+      return null;
+    }
+
     if (existing) {
       if (existing.host !== host) {
         if (existing.resizeObserver) {

@@ -31,7 +31,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ### Changed
 - 🔄 `meshcore_gui/static/leaflet_map_panel.js` — Added size guard in `ensureMap`:
   returns `null` when host has `clientWidth === 0 && clientHeight === 0` and no map
-  state exists yet. `processPending` retries on the next tick once the panel is visible.
+  state exists yet. `processPending` now explicitly reschedules itself until the panel
+  becomes visible, instead of silently returning and leaving the map pending forever.
 - 🔄 `meshcore_gui/gui/dashboard.py` — Consolidated two conditional map-update blocks
   into a single unconditional update while the MAP panel is active. Added `h-96` to the
   DOMCA CSS height overrides for consistency with the route page map container.

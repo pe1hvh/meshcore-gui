@@ -470,6 +470,13 @@
     try {
       const state = PANEL.ensureMap(containerId);
       if (!state) {
+        if (retries >= MAX_RETRIES) {
+          console.error('MeshCoreLeafletBoot timeout waiting for visible map host', { containerId });
+          return;
+        }
+        window.setTimeout(() => {
+          scheduleProcess(containerId, retries + 1);
+        }, RETRY_DELAY_MS);
         return;
       }
       const current = pending.get(containerId);

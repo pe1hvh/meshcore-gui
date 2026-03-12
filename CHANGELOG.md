@@ -1,29 +1,26 @@
-# CHANGELOG
+## [1.13.4] - 2026-03-12 — Room Server message classification fix
 
-<!-- CHANGED: Title changed from "CHANGELOG: Message & Metadata Persistence" to "CHANGELOG" — 
-     a root-level CHANGELOG.md should be project-wide, not feature-specific. -->
+### Fixed
+- 🛠 **Room messages without `signature` were not shown in the Room Server panel** — `CONTACT_MSG_RECV` with `txt_type == 2` is now always treated as room traffic, even when the room server omits the `signature` field.
+- 🛠 **Room messages could be stored under the wrong pubkey** — room message classification now prefers `room_pubkey` / receiver-style keys before falling back to `pubkey_prefix`, so incoming room traffic is attached to the room and becomes visible in the room panel/history cache.
+- 🛠 **UI state could lag behind the actual room login event** — `LOGIN_SUCCESS` now also updates `room_login_states` and refreshes room history through `SharedData`, so the panel reflects the server-confirmed login immediately.
+
+### Changed
+- 🔄 `meshcore_gui/ble/events.py`: relaxed room-message detection from `txt_type == 2 and signature` to `txt_type == 2`; added safer fallbacks for room pubkey and author resolution.
+- 🔄 `meshcore_gui/ble/worker.py`: `LOGIN_SUCCESS` handler now updates room login state and reloads room history.
+- 🔄 `meshcore_gui/config.py`: Version kept at `1.13.4`.
+
+### Impact
+- Keeps the original login behaviour without the rejected extra post-login fetch loop from Iteratie A.
+- Targets USB/serial and BLE equally because the changes are in the shared event/worker layer above the transport.
+- No intended breaking changes outside the Room Server flow.
+
+---
+
+# CHANGELOG
 
 All notable changes to MeshCore GUI are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
-
----
-## [1.13.4] - 2026-03-12 — Room Server USB Login & Fetch Fix
-
-### Changed
-- 🔄 `meshcore_gui/ble/commands.py` — After `LOGIN_SUCCESS`, the room login flow now starts a bounded background `get_msg()` sync loop so serial/USB sessions actively drain queued room messages instead of relying on a single defensive fetch
-- 🔄 `meshcore_gui/ble/events.py` — Room messages are now classified on `txt_type == 2` even when the `signature` field is absent; sender/room pubkeys also use broader payload fallbacks for room traffic
-- 🔄 `meshcore_gui/ble/worker.py` — Global `LOGIN_SUCCESS` handling now updates `room_login_states` and refreshes cached room history in `SharedData`
-- 🔄 `meshcore_gui/config.py` — Version bumped to `1.13.4`
-
-### Fixed
-- 🛠 **USB/serial room login showed only app-sent messages** — After login, the app now keeps polling queued room messages for a short window so messages from other room participants are actually fetched
-- 🛠 **Incoming room messages without `signature` were misclassified** — `CONTACT_MSG_RECV` packets with `txt_type == 2` no longer fall back to DM handling just because the room server omitted `signature`
-- 🛠 **Room login UI state could depend on one code path** — Worker-side `LOGIN_SUCCESS` processing now reinforces the room state update even when the command-side wait path is not the only consumer
-
-### Impact
-- Faster and more reliable room history retrieval on USB/serial setups
-- Room traffic from other users has a better chance of appearing in the Room Server panel immediately after login
-- No intended regression for DM or normal channel message handling
 
 ---
 ## [1.13.3] - 2026-03-12 — Active Panel Timer Gating
@@ -85,7 +82,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 - No breaking changes outside the three files listed above
 
 ---
->>>>>>> b76eacf1119026c49c25d2811a6d713da8f8e01b
 ## [1.13.0] - 2026-03-09 — Leaflet Map Runtime Stabilization
 
 ### Added

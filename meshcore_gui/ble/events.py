@@ -333,6 +333,7 @@ class EventHandler:
                 or payload.get('sender_pubkey', '')
                 or payload.get('sender_prefix', '')
             )
+
             author = ''
             if author_prefix:
                 author = self._shared.get_contact_name_by_prefix(author_prefix)

@@ -842,3 +842,7 @@ overwriting all historical data with only the new buffered messages.
 - Fixed dashboard MAP bootstrap for hidden/inactive panels by rendering the Leaflet host as a real NiceGUI `div` element instead of injecting raw HTML inside a hidden container.
 - Fixed browser bootstrap retries so a zero-size hidden host is retried instead of being dropped permanently.
 - Simplified host waiting logic to polling-based retries, which avoids missing late NiceGUI DOM inserts while the MAP panel is still being mounted.
+
+## 2026-03-12 route map host mount fix
+- Fixed Message and Archive route pages so the Leaflet route map host is rendered as a real NiceGUI DOM element instead of injected raw HTML.
+- This aligns the route page bootstrap with the dashboard MAP fix and prevents route maps from staying blank after clicking a message.

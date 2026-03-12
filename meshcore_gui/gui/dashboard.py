@@ -34,6 +34,7 @@ class _DeletedClientFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         return 'Client has been deleted' not in record.getMessage()
 
+
 logging.getLogger('nicegui').addFilter(_DeletedClientFilter())
 
 
@@ -229,9 +230,10 @@ body, .q-layout, .q-page {
 </style>
 '''
 
+
 # ── Landing SVG loader ────────────────────────────────────────────────
 # Reads the SVG from config.LANDING_SVG_PATH and replaces {callsign}
-# with config.OPERATOR_CALLSIGN.  Falls back to a minimal placeholder
+# with config.OPERATOR_CALLSIGN. Falls back to a minimal placeholder
 # when the file is missing.
 
 
@@ -259,14 +261,15 @@ def _load_landing_svg() -> str:
 # ── Standalone menu items (no submenus) ──────────────────────────────
 
 _STANDALONE_ITEMS = [
-    ('\U0001f465', 'CONTACTS', 'contacts'),
-    ('\U0001f5fa\ufe0f', 'MAP',      'map'),
-    ('\U0001f4e1', 'DEVICE',   'device'),
-    ('\u26a1',     'ACTIONS',  'actions'),
-    ('\U0001f4ca', 'RX LOG',   'rxlog'),
+    ('👥', 'CONTACTS', 'contacts'),
+    ('🗺️', 'MAP', 'map'),
+    ('📡', 'DEVICE', 'device'),
+    ('⚡', 'ACTIONS', 'actions'),
+    ('📊', 'RX LOG', 'rxlog'),
 ]
 
 _EXT_LINKS = config.EXT_LINKS
+
 
 # ── Shared button styles ─────────────────────────────────────────────
 
@@ -290,7 +293,12 @@ class DashboardPage:
         shared: SharedDataReader for data access and command dispatch.
     """
 
-    def __init__(self, shared: SharedDataReader, pin_store: PinStore, room_password_store: RoomPasswordStore) -> None:
+    def __init__(
+        self,
+        shared: SharedDataReader,
+        pin_store: PinStore,
+        room_password_store: RoomPasswordStore,
+    ) -> None:
         self._shared = shared
         self._pin_store = pin_store
         self._room_password_store = room_password_store
@@ -343,7 +351,12 @@ class DashboardPage:
         # Create panel instances (UNCHANGED functional wiring)
         put_cmd = self._shared.put_command
         self._device = DevicePanel()
-        self._contacts = ContactsPanel(put_cmd, self._pin_store, self._shared.set_auto_add_enabled, self._on_add_room_server)
+        self._contacts = ContactsPanel(
+            put_cmd,
+            self._pin_store,
+            self._shared.set_auto_add_enabled,
+            self._on_add_room_server,
+        )
         self._map = MapPanel()
         self._messages = MessagesPanel(put_cmd)
         self._actions = ActionsPanel(put_cmd, self._shared.set_bot_enabled)
@@ -379,46 +392,57 @@ class DashboardPage:
 
             # ── 💬 MESSAGES (expandable with channel submenu) ──────
             with ui.expansion(
-                '\U0001f4ac  MESSAGES', icon=None, value=False,
+                '💬  MESSAGES',
+                icon=None,
+                value=False,
             ).props('dense header-class="q-pa-none"').classes('w-full'):
                 self._msg_sub_container = ui.column().classes('w-full gap-0')
                 with self._msg_sub_container:
                     self._make_sub_btn(
-                        'ALL', lambda: self._navigate_panel('messages', channel=None)
+                        'ALL',
+                        lambda: self._navigate_panel('messages', channel=None),
                     )
                     self._make_sub_btn(
-                        'DM', lambda: self._navigate_panel('messages', channel='DM')
+                        'DM',
+                        lambda: self._navigate_panel('messages', channel='DM'),
                     )
                     # Dynamic channel items populated by _update_submenus
 
             # ── 🏠 ROOMS (expandable with room submenu) ───────────
             with ui.expansion(
-                '\U0001f3e0  ROOMS', icon=None, value=False,
+                '🏠  ROOMS',
+                icon=None,
+                value=False,
             ).props('dense header-class="q-pa-none"').classes('w-full'):
                 self._rooms_sub_container = ui.column().classes('w-full gap-0')
                 with self._rooms_sub_container:
                     self._make_sub_btn(
-                        'ALL', lambda: self._navigate_panel('rooms')
+                        'ALL',
+                        lambda: self._navigate_panel('rooms'),
                     )
                     # Pre-populate from persisted rooms
                     for entry in self._room_password_store.get_rooms():
                         short = entry.name or entry.pubkey[:12]
                         self._make_sub_btn(
-                            f'\U0001f3e0 {short}',
+                            f'🏠 {short}',
                             lambda: self._navigate_panel('rooms'),
                         )
 
             # ── 📚 ARCHIVE (expandable with channel submenu) ──────
             with ui.expansion(
-                '\U0001f4da  ARCHIVE', icon=None, value=False,
+                '📚  ARCHIVE',
+                icon=None,
+                value=False,
             ).props('dense header-class="q-pa-none"').classes('w-full'):
                 self._archive_sub_container = ui.column().classes('w-full gap-0')
                 with self._archive_sub_container:
                     self._make_sub_btn(
-                        'ALL', lambda: self._navigate_panel('archive', channel=None)
+                        'ALL',
+                        lambda: self._navigate_panel('archive', channel=None),
                     )
                     self._make_sub_btn(
-                        'DM', lambda: self._navigate_panel('archive', channel='DM')
+                        'DM',
+                        lambda: self._navigate_panel('archive', channel='DM'),
                     )
                     # Dynamic channel items populated by _update_submenus
 
@@ -450,7 +474,9 @@ class DashboardPage:
 
             # Footer in drawer
             ui.space()
-            ui.label(f'\u00a9 2026 {config.OPERATOR_CALLSIGN}').classes('domca-footer').style('padding: 0 1.2rem 1rem')
+            ui.label(f'© 2026 {config.OPERATOR_CALLSIGN}').classes(
+                'domca-footer'
+            ).style('padding: 0 1.2rem 1rem')
 
         # ── Header ────────────────────────────────────────────────
         with ui.header().classes('items-center px-4 py-2 shadow-md'):
@@ -464,7 +490,7 @@ class DashboardPage:
                 lambda e: menu_btn.props(f'icon={"close" if e.value else "menu"}')
             )
 
-            ui.label(f'\U0001f517 MeshCore v{config.VERSION}').classes(
+            ui.label(f'🔗 MeshCore v{config.VERSION}').classes(
                 'text-lg font-bold ml-2 domca-header-text'
             ).style("font-family: 'JetBrains Mono', monospace")
 
@@ -504,11 +530,11 @@ class DashboardPage:
         panel_defs = [
             ('messages', self._messages),
             ('contacts', self._contacts),
-            ('map',      self._map),
-            ('device',   self._device),
-            ('actions',  self._actions),
-            ('rxlog',    self._rxlog),
-            ('rooms',    self._room_server),
+            ('map', self._map),
+            ('device', self._device),
+            ('actions', self._actions),
+            ('rxlog', self._rxlog),
+            ('rooms', self._room_server),
         ]
 
         for panel_id, panel_obj in panel_defs:
@@ -568,10 +594,12 @@ class DashboardPage:
                 self._msg_sub_container.clear()
                 with self._msg_sub_container:
                     self._make_sub_btn(
-                        'ALL', lambda: self._navigate_panel('messages', channel=None)
+                        'ALL',
+                        lambda: self._navigate_panel('messages', channel=None),
                     )
                     self._make_sub_btn(
-                        'DM', lambda: self._navigate_panel('messages', channel='DM')
+                        'DM',
+                        lambda: self._navigate_panel('messages', channel='DM'),
                     )
                     for ch in channels:
                         idx = ch['idx']
@@ -586,10 +614,12 @@ class DashboardPage:
                 self._archive_sub_container.clear()
                 with self._archive_sub_container:
                     self._make_sub_btn(
-                        'ALL', lambda: self._navigate_panel('archive', channel=None)
+                        'ALL',
+                        lambda: self._navigate_panel('archive', channel=None),
                     )
                     self._make_sub_btn(
-                        'DM', lambda: self._navigate_panel('archive', channel='DM')
+                        'DM',
+                        lambda: self._navigate_panel('archive', channel='DM'),
                     )
                     for ch in channels:
                         idx = ch['idx']
@@ -610,12 +640,13 @@ class DashboardPage:
                 self._rooms_sub_container.clear()
                 with self._rooms_sub_container:
                     self._make_sub_btn(
-                        'ALL', lambda: self._navigate_panel('rooms')
+                        'ALL',
+                        lambda: self._navigate_panel('rooms'),
                     )
                     for entry in rooms:
                         short = entry.name or entry.pubkey[:12]
                         self._make_sub_btn(
-                            f'\U0001f3e0 {short}',
+                            f'🏠 {short}',
                             lambda: self._navigate_panel('rooms'),
                         )
 
@@ -683,11 +714,6 @@ class DashboardPage:
         if panel_id == 'archive' and self._archive_page:
             self._archive_page.set_channel_filter(channel)
 
-<<<<<<< HEAD
-=======
-        self._refresh_active_panel_now(force_map_center=(panel_id == 'map'))
-
->>>>>>> b76eacf1119026c49c25d2811a6d713da8f8e01b
         # Update active menu highlight (standalone buttons only)
         for pid, btn in self._menu_buttons.items():
             if pid == panel_id:
@@ -697,33 +723,12 @@ class DashboardPage:
 
         # Refresh only the selected panel immediately so the user does not
         # need to wait for the next 500 ms dashboard tick.
-        self._refresh_active_panel_now()
+        self._refresh_active_panel_now(force_map_center=(panel_id == 'map'))
 
         # Close drawer after selection
         if self._drawer:
             self._drawer.hide()
 
-<<<<<<< HEAD
-    def _refresh_active_panel_now(self) -> None:
-        """Refresh exactly the active panel once, outside the timer tick."""
-        data = self._shared.get_snapshot()
-
-        if self._active_panel == 'device' and self._device:
-            self._device.update(data)
-        elif self._active_panel == 'map' and self._map:
-            data = dict(data)
-            data['force_center'] = True
-            self._map.update(data)
-        elif self._active_panel == 'actions' and self._actions:
-            self._actions.update(data)
-        elif self._active_panel == 'contacts' and self._contacts:
-            self._contacts.update(data)
-        elif self._active_panel == 'messages' and self._messages:
-            if data.get('channels'):
-                self._messages.update_filters(data)
-                self._messages.update_channel_options(data['channels'])
-                self._update_submenus(data)
-=======
     def _refresh_active_panel_now(self, force_map_center: bool = False) -> None:
         """Refresh only the currently visible panel.
 
@@ -732,51 +737,45 @@ class DashboardPage:
         """
         data = self._shared.get_snapshot()
 
-        if data.get('channels'):
+        if data.get('channels') and self._messages:
             self._messages.update_filters(data)
             self._messages.update_channel_options(data['channels'])
             self._update_submenus(data)
 
-        if self._active_panel == 'device':
+        if self._active_panel == 'device' and self._device:
             self._device.update(data)
-        elif self._active_panel == 'map':
+
+        elif self._active_panel == 'map' and self._map:
+            data = dict(data)
             if force_map_center:
                 data['force_center'] = True
             self._map.update(data)
-        elif self._active_panel == 'actions':
+
+        elif self._active_panel == 'actions' and self._actions:
             self._actions.update(data)
-        elif self._active_panel == 'contacts':
+
+        elif self._active_panel == 'contacts' and self._contacts:
             self._contacts.update(data)
-        elif self._active_panel == 'messages':
->>>>>>> b76eacf1119026c49c25d2811a6d713da8f8e01b
+
+        elif self._active_panel == 'messages' and self._messages:
             self._messages.update(
                 data,
                 self._messages.channel_filters,
                 self._messages.last_channels,
-<<<<<<< HEAD
-                room_pubkeys=self._room_server.get_room_pubkeys() if self._room_server else None,
-            )
-        elif self._active_panel == 'rooms' and self._room_server:
-            if data.get('channels'):
-                self._messages.update_filters(data)
-                self._messages.update_channel_options(data['channels'])
-                self._update_submenus(data)
-            self._room_server.update(data)
-        elif self._active_panel == 'rxlog' and self._rxlog:
-            self._rxlog.update(data)
-        elif self._active_panel == 'archive' and self._archive_page:
-            self._archive_page.refresh()
-=======
                 room_pubkeys=(
                     self._room_server.get_room_pubkeys()
                     if self._room_server else None
                 ),
             )
-        elif self._active_panel == 'rooms':
+
+        elif self._active_panel == 'rooms' and self._room_server:
             self._room_server.update(data)
-        elif self._active_panel == 'rxlog':
+
+        elif self._active_panel == 'rxlog' and self._rxlog:
             self._rxlog.update(data)
->>>>>>> b76eacf1119026c49c25d2811a6d713da8f8e01b
+
+        elif self._active_panel == 'archive' and self._archive_page:
+            self._archive_page.refresh()
 
     # ------------------------------------------------------------------
     # Room Server callback (from ContactsPanel)
@@ -815,15 +814,10 @@ class DashboardPage:
             # Always update status
             self._status_label.text = data['status']
 
-<<<<<<< HEAD
-            # Channel-dependent navigation/filter state remains global, but
-            # expensive panel refreshes must only run for the active panel.
-=======
             # Channel-dependent drawer/submenu state may stay global.
             # The helpers below already contain equality checks, so this
             # remains cheap while keeping navigation consistent.
->>>>>>> b76eacf1119026c49c25d2811a6d713da8f8e01b
-            if data['channels']:
+            if data['channels'] and self._messages:
                 self._messages.update_filters(data)
                 self._messages.update_channel_options(data['channels'])
                 self._update_submenus(data)
@@ -831,16 +825,6 @@ class DashboardPage:
             if self._active_panel == 'device':
                 if data['device_updated'] or is_first:
                     self._device.update(data)
-<<<<<<< HEAD
-            elif self._active_panel == 'map':
-                self._map.update(data)
-            elif self._active_panel == 'actions':
-                if data['channels_updated'] or is_first:
-                    self._actions.update(data)
-            elif self._active_panel == 'contacts':
-                if data['contacts_updated'] or is_first:
-                    self._contacts.update(data)
-=======
 
             elif self._active_panel == 'map':
                 # Keep sending snapshots while the map panel is active.
@@ -856,24 +840,11 @@ class DashboardPage:
                 if data['contacts_updated'] or is_first:
                     self._contacts.update(data)
 
->>>>>>> b76eacf1119026c49c25d2811a6d713da8f8e01b
             elif self._active_panel == 'messages':
                 self._messages.update(
                     data,
                     self._messages.channel_filters,
                     self._messages.last_channels,
-<<<<<<< HEAD
-                    room_pubkeys=self._room_server.get_room_pubkeys() if self._room_server else None,
-                )
-            elif self._active_panel == 'rooms':
-                self._room_server.update(data)
-            elif self._active_panel == 'rxlog':
-                if data['rxlog_updated'] or is_first:
-                    self._rxlog.update(data)
-            elif self._active_panel == 'archive' and self._archive_page:
-                if data.get('messages_updated') or data.get('channels_updated') or is_first:
-                    self._archive_page.refresh()
-=======
                     room_pubkeys=(
                         self._room_server.get_room_pubkeys()
                         if self._room_server else None
@@ -886,7 +857,14 @@ class DashboardPage:
             elif self._active_panel == 'rxlog':
                 if data['rxlog_updated'] or is_first:
                     self._rxlog.update(data)
->>>>>>> b76eacf1119026c49c25d2811a6d713da8f8e01b
+
+            elif self._active_panel == 'archive' and self._archive_page:
+                if (
+                    data.get('messages_updated')
+                    or data.get('channels_updated')
+                    or is_first
+                ):
+                    self._archive_page.refresh()
 
             # Signal worker that GUI is ready for data
             if is_first and data['channels'] and data['contacts']:

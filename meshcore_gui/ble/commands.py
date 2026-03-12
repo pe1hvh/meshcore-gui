@@ -406,6 +406,7 @@ class CommandHandler:
                     pubkey, 'ok',
                     f"admin={is_admin}",
                 )
+                self._shared.load_room_history(pubkey)
                 self._shared.set_status(
                     f"✅ Room login OK: {room_name} — "
                     f"history arriving over RF…"

@@ -1,13 +1,28 @@
 # CHANGELOG
 
-<!-- CHANGED: Title changed from "CHANGELOG: Message & Metadata Persistence" to "CHANGELOG" — 
-     a root-level CHANGELOG.md should be project-wide, not feature-specific. -->
-
 All notable changes to MeshCore GUI are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
 ---
-<<<<<<< HEAD
+## [1.13.4] - 2026-03-12 — Room Server Login & Receive Reliability
+
+### Changed
+- 🔄 `meshcore_gui/ble/commands.py` — Room login success now refreshes archived room history immediately after `LOGIN_SUCCESS`, so the room panel is populated deterministically right after a successful login
+- 🔄 `meshcore_gui/ble/events.py` — `CONTACT_MSG_RECV` with `txt_type == 2` is now always treated as a Room Server message, even when the `signature` field is absent; the author name falls back gracefully instead of routing the message through the normal DM path
+- 🔄 `meshcore_gui/ble/worker.py` — The global `LOGIN_SUCCESS` subscriber now also synchronizes room login state into `SharedData` and refreshes room history, so UI state no longer depends solely on the command-side waiter winning the event timing race
+- 🔄 `meshcore_gui/config.py` — Version bumped to `1.13.4`
+
+### Fixed
+- 🛠 **Initial room login could remain pending or feel unreliable** — UI state now also updates from the subscribed `LOGIN_SUCCESS` event, not only from the command coroutine waiting for the same event
+- 🛠 **Room messages could be missed when `txt_type == 2` arrived without `signature`** — such packets are now still classified as room traffic and shown in the Room Server panel
+- 🛠 **Room history refresh after login was timing-sensitive** — history is now reloaded both from the command success path and from the subscribed login-success callback
+
+### Impact
+- More reliable first login behaviour for Room Server panels
+- Better chance that room history and newly arriving room messages show up immediately after login
+- No intended breaking changes outside the Room Server receive/login flow
+
+---
 ## [1.13.3] - 2026-03-12 — Active Panel Timer Gating
 
 ### Changed
@@ -32,34 +47,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ## [1.13.2] - 2026-03-11 — Map Display Bugfix
 
 ### Fixed
-- 🛠 **MAP panel blank when contacts list is empty at startup** — dashboard update loop
-  had two separate conditional map-update blocks that both silently stopped firing after
-  tick 1 when `data['contacts']` was empty. Map panel received no further snapshots and
-  remained blank indefinitely.
-- 🛠 **Leaflet map initialized on hidden (zero-size) container** — `processPending` in
-  the browser runtime called `L.map()` on the host element while it was still
-  `display:none` (Vue v-show, panel not yet visible). This produced a broken 0×0 map
-  that never recovered because `ensureMap` returned the cached broken state on all
-  subsequent calls. Fixed by adding a `clientWidth/clientHeight` guard in `ensureMap`:
-  initialization is deferred until the host has real dimensions.
-- 🛠 **Route map container had no height** — `route_page.py` used the Tailwind class
-  `h-96` for the Leaflet host `<div>`. NiceGUI/Quasar does not include Tailwind CSS,
-  so `h-96` had no effect and the container rendered at height 0. Leaflet initialized
-  on a zero-height element and produced a blank map.
-- 🛠 **Route map not rendered when no node has GPS coordinates** — `_render_map`
-  returned early before creating the Leaflet container when `payload['nodes']` was
-  empty. Fixed: container is always created; a notice label is shown instead.
+- 🛠 **MAP panel blank when contacts list is empty at startup** — dashboard update loop had two separate conditional map-update blocks that both silently stopped firing after tick 1 when `data['contacts']` was empty. Map panel received no further snapshots and remained blank indefinitely.
+- 🛠 **Leaflet map initialized on hidden (zero-size) container** — `processPending` in the browser runtime called `L.map()` on the host element while it was still `display:none` (Vue v-show, panel not yet visible). This produced a broken 0×0 map that never recovered because `ensureMap` returned the cached broken state on all subsequent calls. Fixed by adding a `clientWidth/clientHeight` guard in `ensureMap`: initialization is deferred until the host has real dimensions.
+- 🛠 **Route map container had no height** — `route_page.py` used the Tailwind class `h-96` for the Leaflet host `<div>`. NiceGUI/Quasar does not include Tailwind CSS, so `h-96` had no effect and the container rendered at height 0. Leaflet initialized on a zero-height element and produced a blank map.
+- 🛠 **Route map not rendered when no node has GPS coordinates** — `_render_map` returned early before creating the Leaflet container when `payload['nodes']` was empty. Fixed: container is always created; a notice label is shown instead.
 
 ### Changed
-- 🔄 `meshcore_gui/static/leaflet_map_panel.js` — Added size guard in `ensureMap`:
-  returns `null` when host has `clientWidth === 0 && clientHeight === 0` and no map
-  state exists yet. `processPending` retries on the next tick once the panel is visible.
-- 🔄 `meshcore_gui/gui/dashboard.py` — Consolidated two conditional map-update blocks
-  into a single unconditional update while the MAP panel is active. Added `h-96` to the
-  DOMCA CSS height overrides for consistency with the route page map container.
-- 🔄 `meshcore_gui/gui/route_page.py` — Replaced `h-96` Tailwind class on the route
-  map host `<div>` with an explicit inline `style` (height: 24rem). Removed early
-  `return` guard so the Leaflet container is always created.
+- 🔄 `meshcore_gui/static/leaflet_map_panel.js` — Added size guard in `ensureMap`: returns `null` when host has `clientWidth === 0 && clientHeight === 0` and no map state exists yet. `processPending` retries on the next tick once the panel is visible.
+- 🔄 `meshcore_gui/gui/dashboard.py` — Consolidated two conditional map-update blocks into a single unconditional update while the MAP panel is active. Added `h-96` to the DOMCA CSS height overrides for consistency with the route page map container.
+- 🔄 `meshcore_gui/gui/route_page.py` — Replaced `h-96` Tailwind class on the route map host `<div>` with an explicit inline `style` (height: 24rem). Removed early `return` guard so the Leaflet container is always created.
 
 ### Impact
 - MAP panel now renders reliably on first open regardless of contact/GPS availability
@@ -67,7 +63,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 - No breaking changes outside the three files listed above
 
 ---
->>>>>>> b76eacf1119026c49c25d2811a6d713da8f8e01b
 ## [1.13.0] - 2026-03-09 — Leaflet Map Runtime Stabilization
 
 ### Added

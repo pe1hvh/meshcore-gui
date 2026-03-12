@@ -258,10 +258,22 @@ class _BaseWorker(abc.ABC):
     # ── LOGIN_SUCCESS handler (Room Server) ───────────────────────
 
     def _on_login_success(self, event) -> None:
+        """Synchronise Room Server login success into SharedData.
+
+        This callback is intentionally independent from the command-side
+        ``wait_for_event(LOGIN_SUCCESS)`` path.  If the library delivers the
+        event to subscribers before or instead of the waiter, the UI must
+        still transition to the logged-in state and refresh room history.
+        """
         payload = event.payload or {}
         pubkey = payload.get("pubkey_prefix", "")
         is_admin = payload.get("is_admin", False)
+        detail = f"admin={is_admin}"
+
         debug_print(f"LOGIN_SUCCESS received: pubkey={pubkey}, admin={is_admin}")
+        self.shared.set_room_login_state(pubkey, 'ok', detail)
+        if pubkey:
+            self.shared.load_room_history(pubkey)
         self.shared.set_status("✅ Room login OK — messages arriving over RF…")
 
     # ── apply cache ───────────────────────────────────────────────

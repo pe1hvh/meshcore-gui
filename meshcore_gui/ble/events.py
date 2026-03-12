@@ -319,11 +319,18 @@ class EventHandler:
             path_len = len(path_hashes)
 
         # --- Room Server message (txt_type 2) ---
-        if txt_type == 2 and signature:
-            # Resolve actual author from signature (author pubkey prefix)
-            author = self._shared.get_contact_name_by_prefix(signature)
+        if txt_type == 2:
+            # Prefer the embedded author signature when available.
+            # Some room-history / server-side messages arrive without a
+            # signature; those still belong to the room and must not fall
+            # through to the regular DM path.
+            author = ''
+            if signature:
+                author = self._shared.get_contact_name_by_prefix(signature)
+                if not author:
+                    author = signature[:8]
             if not author:
-                author = signature[:8] if signature else '?'
+                author = pubkey[:8] if pubkey else '?'
 
             self._shared.add_message(Message.incoming(
                 author,
@@ -337,7 +344,7 @@ class EventHandler:
                 message_hash=msg_hash,
             ))
             debug_print(
-                f"Room msg from {author} (sig={signature}) "
+                f"Room msg from {author} (sig={signature or '-'}) "
                 f"via room {pubkey[:12]}: "
                 f"{payload.get('text', '')[:30]}"
             )

@@ -593,11 +593,25 @@ class SharedData:
         return None
 
     def get_contact_name_by_prefix(self, pubkey_prefix: str) -> str:
+        """Resolve a pubkey/prefix to a display name.
+
+        Accepts either a short prefix or a longer/full public key and
+        returns the best-known human-readable name. This keeps room
+        messages readable when the room server reports the author as a
+        full hash instead of the shorter contact key used elsewhere.
+        """
         if not pubkey_prefix:
             return ""
+
+        probe = pubkey_prefix.lower()
         with self.lock:
+            device_key = (self.device.public_key or '').lower()
+            if device_key and (device_key.startswith(probe) or probe.startswith(device_key)):
+                return self.device.name or 'Me'
+
             for key, contact in self.contacts.items():
-                if key.lower().startswith(pubkey_prefix.lower()):
+                key_lower = key.lower()
+                if key_lower.startswith(probe) or probe.startswith(key_lower):
                     name = contact.get('adv_name', '')
                     if name:
                         return name

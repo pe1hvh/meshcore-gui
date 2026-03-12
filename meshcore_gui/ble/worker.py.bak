@@ -258,29 +258,11 @@ class _BaseWorker(abc.ABC):
     # ── LOGIN_SUCCESS handler (Room Server) ───────────────────────
 
     def _on_login_success(self, event) -> None:
-        """Handle Room Server login confirmation.
-
-        The device event may expose the room key under different fields.
-        Update both the generic status line and the per-room login state,
-        then refresh archived room history for the matched room.
-        """
         payload = event.payload or {}
-        pubkey = (
-            payload.get("room_pubkey")
-            or payload.get("receiver")
-            or payload.get("receiver_pubkey")
-            or payload.get("pubkey_prefix")
-            or ""
-        )
+        pubkey = payload.get("pubkey_prefix", "")
         is_admin = payload.get("is_admin", False)
-        debug_print(
-            f"LOGIN_SUCCESS received: pubkey={pubkey}, admin={is_admin}, "
-            f"keys={list(payload.keys())}"
-        )
+        debug_print(f"LOGIN_SUCCESS received: pubkey={pubkey}, admin={is_admin}")
         self.shared.set_status("✅ Room login OK — messages arriving over RF…")
-        if pubkey:
-            self.shared.set_room_login_state(pubkey, 'ok', 'Server confirmed login')
-            self.shared.load_room_history(pubkey)
 
     # ── apply cache ───────────────────────────────────────────────
 

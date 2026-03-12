@@ -1,3 +1,22 @@
+## [1.13.4] - 2026-03-12 — Room Server message classification fix
+
+### Fixed
+- 🛠 **Incoming room messages from other participants could be misclassified as normal DMs** — `CONTACT_MSG_RECV` room detection now keys on `txt_type == 2` instead of requiring `signature`.
+- 🛠 **Incoming room traffic could be attached to the wrong key** — room message handling now prefers `room_pubkey` / receiver-style payload keys before falling back to `pubkey_prefix`.
+- 🛠 **Room login UI could stay out of sync with the actual server-confirmed state** — `LOGIN_SUCCESS` now updates `room_login_states` and refreshes room history using the resolved room key.
+
+### Changed
+- 🔄 `meshcore_gui/ble/events.py` — Broadened room payload parsing and added payload-key debug logging for incoming room traffic.
+- 🔄 `meshcore_gui/ble/worker.py` — `LOGIN_SUCCESS` handler now updates per-room login state and refreshes cached room history.
+- 🔄 `meshcore_gui/config.py` — Version kept at `1.13.4`.
+
+### Impact
+- Keeps the existing Room Server panel logic intact.
+- Fix is limited to room event classification and room login confirmation handling.
+- No intended behavioural change for ordinary DMs or channel messages.
+
+---
+
 # CHANGELOG
 
 <!-- CHANGED: Title changed from "CHANGELOG: Message & Metadata Persistence" to "CHANGELOG" — 

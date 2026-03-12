@@ -302,6 +302,13 @@ class EventHandler:
         pubkey = payload.get('pubkey_prefix', '')
         txt_type = payload.get('txt_type', 0)
         signature = payload.get('signature', '')
+        room_pubkey = (
+            payload.get('room_pubkey')
+            or payload.get('receiver')
+            or payload.get('receiver_pubkey')
+            or payload.get('receiver_pubkey_prefix')
+            or pubkey
+        )
 
         debug_print(f"DM payload keys: {list(payload.keys())}")
 
@@ -320,27 +327,21 @@ class EventHandler:
 
         # --- Room Server message (txt_type 2) ---
         if txt_type == 2:
-            room_pubkey = (
-                payload.get('room_pubkey')
-                or payload.get('receiver_pubkey')
-                or payload.get('recipient_pubkey')
-                or payload.get('pubkey')
-                or pubkey
-            )
-            author_prefix = (
-                signature
-                or payload.get('sender_pubkey_prefix', '')
-                or payload.get('sender_pubkey', '')
-                or payload.get('sender_prefix', '')
-            )
-
+            # Resolve actual author from signature when present.
+            # Some room servers omit the signature field; in that case
+            # fall back to the payload sender/display name if available.
             author = ''
-            if author_prefix:
-                author = self._shared.get_contact_name_by_prefix(author_prefix)
+            if signature:
+                author = self._shared.get_contact_name_by_prefix(signature)
+                if not author:
+                    author = signature[:8]
             if not author:
-                author = payload.get('sender_name', '') or payload.get('name', '')
-            if not author:
-                author = author_prefix[:8] if author_prefix else room_pubkey[:8] if room_pubkey else '?'
+                author = (
+                    payload.get('sender')
+                    or payload.get('name')
+                    or payload.get('author')
+                    or '?'
+                )
 
             self._shared.add_message(Message.incoming(
                 author,

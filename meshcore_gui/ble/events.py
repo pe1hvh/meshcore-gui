@@ -320,17 +320,26 @@ class EventHandler:
 
         # --- Room Server message (txt_type 2) ---
         if txt_type == 2:
-            # Prefer the embedded author signature when available.
-            # Some room-history / server-side messages arrive without a
-            # signature; those still belong to the room and must not fall
-            # through to the regular DM path.
+            room_pubkey = (
+                payload.get('room_pubkey')
+                or payload.get('receiver_pubkey')
+                or payload.get('recipient_pubkey')
+                or payload.get('pubkey')
+                or pubkey
+            )
+            author_prefix = (
+                signature
+                or payload.get('sender_pubkey_prefix', '')
+                or payload.get('sender_pubkey', '')
+                or payload.get('sender_prefix', '')
+            )
             author = ''
-            if signature:
-                author = self._shared.get_contact_name_by_prefix(signature)
-                if not author:
-                    author = signature[:8]
+            if author_prefix:
+                author = self._shared.get_contact_name_by_prefix(author_prefix)
             if not author:
-                author = pubkey[:8] if pubkey else '?'
+                author = payload.get('sender_name', '') or payload.get('name', '')
+            if not author:
+                author = author_prefix[:8] if author_prefix else room_pubkey[:8] if room_pubkey else '?'
 
             self._shared.add_message(Message.incoming(
                 author,
@@ -338,14 +347,14 @@ class EventHandler:
                 None,
                 snr=self._extract_snr(payload),
                 path_len=path_len,
-                sender_pubkey=pubkey,
+                sender_pubkey=room_pubkey,
                 path_hashes=path_hashes,
                 path_names=path_names,
                 message_hash=msg_hash,
             ))
             debug_print(
-                f"Room msg from {author} (sig={signature or '-'}) "
-                f"via room {pubkey[:12]}: "
+                f"Room msg from {author} (sig={signature}) "
+                f"via room {room_pubkey[:12]}: "
                 f"{payload.get('text', '')[:30]}"
             )
             return

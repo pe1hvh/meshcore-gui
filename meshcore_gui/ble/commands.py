@@ -35,6 +35,7 @@ class CommandHandler:
         self._mc = mc
         self._shared = shared
         self._cache = cache
+        self._room_sync_tasks: Dict[str, asyncio.Task] = {}
 
         # Handler registry — add new commands here (OCP)
         self._handlers: Dict[str, object] = {
@@ -406,7 +407,6 @@ class CommandHandler:
                     pubkey, 'ok',
                     f"admin={is_admin}",
                 )
-                self._shared.load_room_history(pubkey)
                 self._shared.set_status(
                     f"✅ Room login OK: {room_name} — "
                     f"history arriving over RF…"
@@ -425,6 +425,8 @@ class CommandHandler:
                     debug_print("login_room: defensive get_msg() done")
                 except Exception as exc:
                     debug_print(f"login_room: defensive get_msg() error: {exc}")
+
+                self._start_room_sync(pubkey, room_name)
 
             else:
                 self._shared.set_room_login_state(
@@ -551,6 +553,63 @@ class CommandHandler:
                 f"⚠️ Room message error: {exc}"
             )
             debug_print(f"send_room_msg exception: {exc}")
+
+    def _cancel_room_sync(self, pubkey: str) -> None:
+        """Cancel an active background room-history sync task."""
+        task = self._room_sync_tasks.pop(pubkey, None)
+        if task and not task.done():
+            task.cancel()
+
+    def _start_room_sync(self, pubkey: str, room_name: str) -> None:
+        """Start a bounded background fetch loop for room history."""
+        self._cancel_room_sync(pubkey)
+        self._room_sync_tasks[pubkey] = asyncio.create_task(
+            self._sync_room_history(pubkey, room_name)
+        )
+
+    async def _sync_room_history(self, pubkey: str, room_name: str) -> None:
+        """Fetch queued room messages for a short period after login.
+
+        On some serial/USB setups the SDK's auto-message fetching is
+        not sufficient to drain the room backlog promptly after
+        ``LOGIN_SUCCESS``. This bounded loop polls ``get_msg()`` for a
+        short window so historical room messages from other users are
+        actually pulled into the app.
+        """
+        idle_errors = 0
+        try:
+            for attempt in range(24):
+                try:
+                    result = await self._mc.commands.get_msg()
+                    result_type = getattr(result, 'type', None)
+                    if result_type == EventType.ERROR:
+                        idle_errors += 1
+                        debug_print(
+                            f"room_sync: get_msg ERROR for {room_name} "
+                            f"(attempt {attempt + 1}/24, idle={idle_errors})"
+                        )
+                    else:
+                        idle_errors = 0
+                        debug_print(
+                            f"room_sync: get_msg fetched data for {room_name} "
+                            f"(attempt {attempt + 1}/24)"
+                        )
+                except Exception as exc:
+                    idle_errors += 1
+                    debug_print(
+                        f"room_sync: get_msg exception for {room_name}: {exc}"
+                    )
+
+                if idle_errors >= 4:
+                    break
+
+                await asyncio.sleep(2.0)
+        except asyncio.CancelledError:
+            debug_print(f"room_sync: cancelled for {room_name}")
+            raise
+        finally:
+            self._shared.load_room_history(pubkey)
+            self._room_sync_tasks.pop(pubkey, None)
 
     # ------------------------------------------------------------------
     # Callback for refresh (set by SerialWorker after construction)

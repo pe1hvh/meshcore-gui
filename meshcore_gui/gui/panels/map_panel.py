@@ -45,9 +45,9 @@ class MapPanel:
                         on_change=lambda e: self._set_map_theme_mode(e.value),
                     ).props('dense')
                     ui.button('Center on Device', on_click=self._center_on_device)
-            ui.html(
-                f'<div id="{self._container_id}" class="meshcore-leaflet-host w-full h-72"></div>'
-            ).classes('w-full h-72')
+            ui.element('div').props(f'id={self._container_id}').classes(
+                'meshcore-leaflet-host w-full h-72'
+            )
             self._dispatch_to_browser(snapshot={'__command__': 'ensure_map'})
             self._apply_theme_only()
 

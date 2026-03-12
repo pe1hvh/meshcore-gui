@@ -31,8 +31,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ### Changed
 - 🔄 `meshcore_gui/static/leaflet_map_panel.js` — Added size guard in `ensureMap`:
   returns `null` when host has `clientWidth === 0 && clientHeight === 0` and no map
-  state exists yet. `processPending` now explicitly reschedules itself until the panel
-  becomes visible, instead of silently returning and leaving the map pending forever.
+  state exists yet. `processPending` retries on the next tick once the panel is visible.
 - 🔄 `meshcore_gui/gui/dashboard.py` — Consolidated two conditional map-update blocks
   into a single unconditional update while the MAP panel is active. Added `h-96` to the
   DOMCA CSS height overrides for consistency with the route page map container.
@@ -838,3 +837,8 @@ overwriting all historical data with only the new buffered messages.
 ### Changed
 - Map lifecycle is browser-owned: NiceGUI hosts the container, Leaflet owns map state.
 - Contact markers are updated incrementally in the existing cluster layer.
+
+## 2026-03-12 map host bootstrap fix
+- Fixed dashboard MAP bootstrap for hidden/inactive panels by rendering the Leaflet host as a real NiceGUI `div` element instead of injecting raw HTML inside a hidden container.
+- Fixed browser bootstrap retries so a zero-size hidden host is retried instead of being dropped permanently.
+- Simplified host waiting logic to polling-based retries, which avoids missing late NiceGUI DOM inserts while the MAP panel is still being mounted.

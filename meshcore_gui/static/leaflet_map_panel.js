@@ -504,35 +504,21 @@
       return;
     }
 
-    const observer = new MutationObserver(() => {
+    const timer = window.setTimeout(() => {
+      watchers.delete(containerId);
       const host = document.getElementById(containerId);
-      if (!host) {
+      if (host) {
+        scheduleProcess(containerId, retries + 1);
         return;
       }
-      observer.disconnect();
-      watchers.delete(containerId);
-      scheduleProcess(containerId, retries + 1);
-    });
-
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-    });
-
-    watchers.set(containerId, observer);
-
-    window.setTimeout(() => {
-      if (watchers.get(containerId) !== observer) {
-        return;
-      }
-      observer.disconnect();
-      watchers.delete(containerId);
       if (retries >= MAX_RETRIES) {
         console.error('MeshCoreLeafletBoot timeout waiting for host element', { containerId });
         return;
       }
       scheduleProcess(containerId, retries + 1);
     }, RETRY_DELAY_MS);
+
+    watchers.set(containerId, timer);
   }
 
   function isDomReady() {

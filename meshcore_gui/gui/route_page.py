@@ -79,9 +79,8 @@ _ROUTE_MAP_ASSETS = r"""
   ensureStylesheet('meshcore-leaflet-panel-css', '/static/leaflet_map_panel.css');
 
   ensureScript('meshcore-leaflet-vendor-js', 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', function () {
-    ensureScript('meshcore-leaflet-markercluster-js', 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js', function () {
-      ensureScript('meshcore-leaflet-panel-js', '/static/leaflet_map_panel.js');
-    });
+    ensureScript('meshcore-leaflet-panel-js', '/static/leaflet_map_panel.js');
+    ensureScript('meshcore-leaflet-markercluster-js', 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js');
   });
 })();
 </script>

@@ -188,10 +188,10 @@ class MapPanel:
     'meshcore-leaflet-vendor-js',
     'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
     function () {
+      ensurePanelRuntime();
       ensureScript(
         'meshcore-leaflet-markercluster-js',
-        'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js',
-        ensurePanelRuntime
+        'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js'
       );
     }
   );

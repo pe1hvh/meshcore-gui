@@ -48,7 +48,6 @@ class MapPanel:
             ui.element('div').props(f'id={self._container_id}').classes(
                 'meshcore-leaflet-host w-full h-72'
             )
-            self._dispatch_to_browser(snapshot={'__command__': 'ensure_map'})
             self._apply_theme_only()
 
     def set_ui_dark_mode(self, value: bool | None) -> None:

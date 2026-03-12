@@ -634,6 +634,18 @@
       }
     }
 
+<<<<<<< HEAD
+    const hasSnapshotWork = Boolean(current.snapshot);
+    const hasLiveMap = maps.has(containerId);
+
+    if (!hasSnapshotWork && !hasLiveMap) {
+=======
+    if (!current.snapshot && current.theme && !maps.has(containerId)) {
+      pending.set(containerId, current);
+>>>>>>> b76eacf1119026c49c25d2811a6d713da8f8e01b
+      return;
+    }
+
     pending.set(containerId, current);
     scheduleProcess(containerId, 0);
   };

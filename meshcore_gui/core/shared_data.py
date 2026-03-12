@@ -77,6 +77,12 @@ class SharedData:
         # Room Server login states: pubkey → {'state': 'ok'|'fail'|'pending'|'logged_out', 'detail': str}
         self.room_login_states: Dict[str, Dict] = {}
 
+        # Known room pubkeys/prefixes (normalised to 12 hex chars).
+        # This is a central, UI-independent registry used by the
+        # MessagesPanel to keep Room Server traffic out of All Messages,
+        # even when the room cards are not yet fully restored.
+        self._known_room_pubkeys: set[str] = set()
+
         # Room message cache: pubkey_prefix (12 hex) → List[Message]
         # Populated from archive on first access per room, then kept in
         # sync by add_message().
@@ -177,8 +183,36 @@ class SharedData:
             return self.device.name
 
     # ------------------------------------------------------------------
-    # Room Server login state
+    # Room Server login state / known room registry
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalise_room_pubkey(pubkey: str) -> str:
+        """Return a comparable room pubkey prefix.
+
+        Normalises a full Room Server pubkey or a shorter prefix to the
+        canonical 12-hex representation used throughout the room-cache
+        logic. Returns an empty string for falsey input.
+        """
+        return (pubkey or '').strip()[:12]
+
+    def register_room_pubkey(self, pubkey: str) -> None:
+        """Register a Room Server pubkey/prefix as known.
+
+        Keeps the registry small and stable by storing only the
+        canonical 12-hex prefix. Safe to call repeatedly.
+        """
+        norm = self._normalise_room_pubkey(pubkey)
+        if not norm:
+            return
+        with self.lock:
+            self._known_room_pubkeys.add(norm)
+
+    def get_known_room_pubkeys(self) -> set[str]:
+        """Return a copy of all centrally known Room Server keys."""
+        with self.lock:
+            return set(self._known_room_pubkeys)
+
 
     def set_room_login_state(
         self, pubkey_prefix: str, state: str, detail: str = "",
@@ -195,9 +229,14 @@ class SharedData:
             state:         One of 'pending', 'ok', 'fail', 'logged_out'.
             detail:        Human-readable detail string.
         """
+        norm = self._normalise_room_pubkey(pubkey_prefix)
+        if not norm:
+            return
+
         with self.lock:
+            self._known_room_pubkeys.add(norm)
+
             # Remove overlapping entries (different key length, same room)
-            norm = pubkey_prefix[:12]
             stale = [
                 k for k in self.room_login_states
                 if k != pubkey_prefix and k[:12] == norm
@@ -240,10 +279,14 @@ class SharedData:
         if not self.archive:
             return
 
-        norm = pubkey[:12]
+        norm = self._normalise_room_pubkey(pubkey)
+        if not norm:
+            return
+
         archived = self.archive.get_messages_by_sender_pubkey(norm, limit)
 
         with self.lock:
+            self._known_room_pubkeys.add(norm)
             messages = [Message.from_dict(d) for d in archived]
             self._room_msg_cache[norm] = messages
             debug_print(
@@ -259,7 +302,9 @@ class SharedData:
         Returns:
             List of Message objects (oldest first), or empty list.
         """
-        norm = pubkey[:12]
+        norm = self._normalise_room_pubkey(pubkey)
+        if not norm:
+            return []
         with self.lock:
             return list(self._room_msg_cache.get(norm, []))
 
@@ -559,6 +604,8 @@ class SharedData:
                 k: v.copy()
                 for k, v in self.room_login_states.items()
             },
+            # Centrally known room keys (UI-independent)
+            'known_room_pubkeys': set(self._known_room_pubkeys),
             # Room message cache (archived + live)
             'room_messages': {
                 k: list(v)

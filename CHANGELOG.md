@@ -1,28 +1,13 @@
-## [1.13.4] - 2026-03-12 — Room Server message classification fix
-
-### Fixed
-- 🛠 **Room messages without `signature` were not shown in the Room Server panel** — `CONTACT_MSG_RECV` with `txt_type == 2` is now always treated as room traffic, even when the room server omits the `signature` field.
-- 🛠 **Room messages could be stored under the wrong pubkey** — room message classification now prefers `room_pubkey` / receiver-style keys before falling back to `pubkey_prefix`, so incoming room traffic is attached to the room and becomes visible in the room panel/history cache.
-- 🛠 **UI state could lag behind the actual room login event** — `LOGIN_SUCCESS` now also updates `room_login_states` and refreshes room history through `SharedData`, so the panel reflects the server-confirmed login immediately.
-
-### Changed
-- 🔄 `meshcore_gui/ble/events.py`: relaxed room-message detection from `txt_type == 2 and signature` to `txt_type == 2`; added safer fallbacks for room pubkey and author resolution.
-- 🔄 `meshcore_gui/ble/worker.py`: `LOGIN_SUCCESS` handler now updates room login state and reloads room history.
-- 🔄 `meshcore_gui/config.py`: Version kept at `1.13.4`.
-
-### Impact
-- Keeps the original login behaviour without the rejected extra post-login fetch loop from Iteratie A.
-- Targets USB/serial and BLE equally because the changes are in the shared event/worker layer above the transport.
-- No intended breaking changes outside the Room Server flow.
-
----
-
 # CHANGELOG
+
+<!-- CHANGED: Title changed from "CHANGELOG: Message & Metadata Persistence" to "CHANGELOG" — 
+     a root-level CHANGELOG.md should be project-wide, not feature-specific. -->
 
 All notable changes to MeshCore GUI are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
 ---
+<<<<<<< HEAD
 ## [1.13.3] - 2026-03-12 — Active Panel Timer Gating
 
 ### Changed
@@ -82,6 +67,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 - No breaking changes outside the three files listed above
 
 ---
+>>>>>>> b76eacf1119026c49c25d2811a6d713da8f8e01b
 ## [1.13.0] - 2026-03-09 — Leaflet Map Runtime Stabilization
 
 ### Added

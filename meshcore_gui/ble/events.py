@@ -293,22 +293,15 @@ class EventHandler:
         """Handle direct message and room message events.
 
         Room Server messages arrive as ``CONTACT_MSG_RECV`` with
-        ``txt_type == 2``.  The ``pubkey_prefix`` is the Room Server's
-        key and the ``signature`` field contains the original author's
-        pubkey prefix.  We resolve the author name from ``signature``
-        so the UI shows who actually wrote the message.
+        ``txt_type == 2``.  Some room servers omit the ``signature``
+        field, so room detection may not depend on that key being
+        present.  For room traffic the storage key must match the room
+        pubkey that the Room Server panel later filters on.
         """
         payload = event.payload
         pubkey = payload.get('pubkey_prefix', '')
         txt_type = payload.get('txt_type', 0)
         signature = payload.get('signature', '')
-        room_pubkey = (
-            payload.get('room_pubkey')
-            or payload.get('receiver')
-            or payload.get('receiver_pubkey')
-            or payload.get('receiver_pubkey_prefix')
-            or pubkey
-        )
 
         debug_print(f"DM payload keys: {list(payload.keys())}")
 
@@ -327,21 +320,8 @@ class EventHandler:
 
         # --- Room Server message (txt_type 2) ---
         if txt_type == 2:
-            # Resolve actual author from signature when present.
-            # Some room servers omit the signature field; in that case
-            # fall back to the payload sender/display name if available.
-            author = ''
-            if signature:
-                author = self._shared.get_contact_name_by_prefix(signature)
-                if not author:
-                    author = signature[:8]
-            if not author:
-                author = (
-                    payload.get('sender')
-                    or payload.get('name')
-                    or payload.get('author')
-                    or '?'
-                )
+            room_pubkey = self._resolve_room_pubkey(payload) or pubkey
+            author = self._resolve_room_author(payload)
 
             self._shared.add_message(Message.incoming(
                 author,
@@ -380,6 +360,43 @@ class EventHandler:
             message_hash=msg_hash,
         ))
         debug_print(f"DM received from {sender}: {payload.get('text', '')[:30]}")
+
+    def _resolve_room_pubkey(self, payload: Dict) -> str:
+        """Resolve the room key used for room-message storage.
+
+        Prefer explicit room/receiver-style keys because some room-server
+        events carry the room identity there instead of in
+        ``pubkey_prefix``.  Falling back to ``pubkey_prefix`` preserves
+        compatibility with earlier working cases.
+        """
+        for key in (
+            'room_pubkey',
+            'receiver',
+            'receiver_pubkey',
+            'receiver_pubkey_prefix',
+            'pubkey_prefix',
+        ):
+            value = payload.get(key, '')
+            if isinstance(value, str) and value:
+                return value
+        return ''
+
+    def _resolve_room_author(self, payload: Dict) -> str:
+        """Resolve the display author for a room message."""
+        signature = payload.get('signature', '')
+        if signature:
+            author = self._shared.get_contact_name_by_prefix(signature)
+            if author:
+                return author
+            return signature[:8]
+
+        for key in ('sender', 'name', 'author'):
+            value = payload.get(key, '')
+            if isinstance(value, str) and value:
+                return value
+
+        pubkey = payload.get('pubkey_prefix', '')
+        return pubkey[:8] if pubkey else '?'
 
     # ------------------------------------------------------------------
     # Helpers

@@ -260,17 +260,21 @@ class _BaseWorker(abc.ABC):
     def _on_login_success(self, event) -> None:
         payload = event.payload or {}
         pubkey = (
-            payload.get("room_pubkey")
-            or payload.get("pubkey_prefix")
-            or payload.get("receiver")
-            or ""
+            payload.get('room_pubkey')
+            or payload.get('pubkey_prefix')
+            or payload.get('receiver')
+            or payload.get('receiver_pubkey')
+            or payload.get('receiver_pubkey_prefix')
+            or ''
         )
         is_admin = payload.get("is_admin", False)
         debug_print(f"LOGIN_SUCCESS received: pubkey={pubkey}, admin={is_admin}")
-        self.shared.set_status("✅ Room login OK — messages arriving over RF…")
         if pubkey:
-            self.shared.set_room_login_state(pubkey, 'ok', f'admin={is_admin}')
+            self.shared.set_room_login_state(
+                pubkey, 'ok', f'admin={is_admin}',
+            )
             self.shared.load_room_history(pubkey)
+        self.shared.set_status("✅ Room login OK — messages arriving over RF…")
 
     # ── apply cache ───────────────────────────────────────────────
 

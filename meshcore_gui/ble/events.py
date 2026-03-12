@@ -77,6 +77,16 @@ class EventHandler:
                 names.append(h.upper())
         return names
 
+    @staticmethod
+    def _looks_like_hex_identifier(value: str) -> bool:
+        """Return True when *value* looks like a pubkey/hash prefix."""
+        if not value:
+            return False
+        probe = str(value).strip()
+        if len(probe) < 6:
+            return False
+        return all(ch in '0123456789abcdefABCDEF' for ch in probe)
+
     # ------------------------------------------------------------------
     # RX_LOG_DATA — the single source of truth for path info
     # ------------------------------------------------------------------
@@ -339,22 +349,33 @@ class EventHandler:
         is_room_message = txt_type == 2
 
         if is_room_message:
+            author = ''
+            explicit_name = (
+                payload.get('author')
+                or payload.get('sender_name')
+                or payload.get('name')
+                or ''
+            )
+            if explicit_name and not self._looks_like_hex_identifier(explicit_name):
+                author = explicit_name
+
+            sender_field = str(payload.get('sender') or '').strip()
+            if not author and sender_field and not self._looks_like_hex_identifier(sender_field):
+                author = sender_field
+
             author_key = (
                 signature
                 or payload.get('sender_pubkey')
-                or payload.get('sender')
                 or payload.get('author_pubkey')
+                or (sender_field if self._looks_like_hex_identifier(sender_field) else '')
                 or ''
             )
-            author = ''
-            if author_key:
+            if not author and author_key:
                 author = self._shared.get_contact_name_by_prefix(author_key)
             if not author:
                 author = (
-                    payload.get('author')
-                    or payload.get('name')
-                    or payload.get('sender_name')
-                    or payload.get('sender')
+                    explicit_name
+                    or sender_field
                     or (author_key[:8] if author_key else '')
                     or '?'
                 )

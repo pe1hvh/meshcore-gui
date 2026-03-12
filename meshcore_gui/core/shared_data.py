@@ -77,12 +77,6 @@ class SharedData:
         # Room Server login states: pubkey → {'state': 'ok'|'fail'|'pending'|'logged_out', 'detail': str}
         self.room_login_states: Dict[str, Dict] = {}
 
-        # Known room pubkeys/prefixes (normalised to 12 hex chars).
-        # This is a central, UI-independent registry used by the
-        # MessagesPanel to keep Room Server traffic out of All Messages,
-        # even when the room cards are not yet fully restored.
-        self._known_room_pubkeys: set[str] = set()
-
         # Room message cache: pubkey_prefix (12 hex) → List[Message]
         # Populated from archive on first access per room, then kept in
         # sync by add_message().
@@ -183,36 +177,8 @@ class SharedData:
             return self.device.name
 
     # ------------------------------------------------------------------
-    # Room Server login state / known room registry
+    # Room Server login state
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _normalise_room_pubkey(pubkey: str) -> str:
-        """Return a comparable room pubkey prefix.
-
-        Normalises a full Room Server pubkey or a shorter prefix to the
-        canonical 12-hex representation used throughout the room-cache
-        logic. Returns an empty string for falsey input.
-        """
-        return (pubkey or '').strip()[:12]
-
-    def register_room_pubkey(self, pubkey: str) -> None:
-        """Register a Room Server pubkey/prefix as known.
-
-        Keeps the registry small and stable by storing only the
-        canonical 12-hex prefix. Safe to call repeatedly.
-        """
-        norm = self._normalise_room_pubkey(pubkey)
-        if not norm:
-            return
-        with self.lock:
-            self._known_room_pubkeys.add(norm)
-
-    def get_known_room_pubkeys(self) -> set[str]:
-        """Return a copy of all centrally known Room Server keys."""
-        with self.lock:
-            return set(self._known_room_pubkeys)
-
 
     def set_room_login_state(
         self, pubkey_prefix: str, state: str, detail: str = "",
@@ -229,14 +195,9 @@ class SharedData:
             state:         One of 'pending', 'ok', 'fail', 'logged_out'.
             detail:        Human-readable detail string.
         """
-        norm = self._normalise_room_pubkey(pubkey_prefix)
-        if not norm:
-            return
-
         with self.lock:
-            self._known_room_pubkeys.add(norm)
-
             # Remove overlapping entries (different key length, same room)
+            norm = pubkey_prefix[:12]
             stale = [
                 k for k in self.room_login_states
                 if k != pubkey_prefix and k[:12] == norm
@@ -279,14 +240,10 @@ class SharedData:
         if not self.archive:
             return
 
-        norm = self._normalise_room_pubkey(pubkey)
-        if not norm:
-            return
-
+        norm = pubkey[:12]
         archived = self.archive.get_messages_by_sender_pubkey(norm, limit)
 
         with self.lock:
-            self._known_room_pubkeys.add(norm)
             messages = [Message.from_dict(d) for d in archived]
             self._room_msg_cache[norm] = messages
             debug_print(
@@ -302,9 +259,7 @@ class SharedData:
         Returns:
             List of Message objects (oldest first), or empty list.
         """
-        norm = self._normalise_room_pubkey(pubkey)
-        if not norm:
-            return []
+        norm = pubkey[:12]
         with self.lock:
             return list(self._room_msg_cache.get(norm, []))
 
@@ -604,8 +559,6 @@ class SharedData:
                 k: v.copy()
                 for k, v in self.room_login_states.items()
             },
-            # Centrally known room keys (UI-independent)
-            'known_room_pubkeys': set(self._known_room_pubkeys),
             # Room message cache (archived + live)
             'room_messages': {
                 k: list(v)
@@ -640,28 +593,58 @@ class SharedData:
         return None
 
     def get_contact_name_by_prefix(self, pubkey_prefix: str) -> str:
-        """Resolve a pubkey/prefix to a display name.
+        """Resolve a pubkey/prefix to the best available display name.
 
-        Accepts either a short prefix or a longer/full public key and
-        returns the best-known human-readable name. This keeps room
-        messages readable when the room server reports the author as a
-        full hash instead of the shorter contact key used elsewhere.
+        The room server may report the author using different key fields:
+        a short prefix, a full public key, or a value copied into another
+        payload field. To keep sender display stable, match against both
+        the contact dict key and common pubkey-like fields stored inside
+        each contact record.
         """
         if not pubkey_prefix:
             return ""
 
-        probe = pubkey_prefix.lower()
+        probe = str(pubkey_prefix).strip().lower()
+        if not probe:
+            return ""
+
+        def _candidate_keys(contact_key: str, contact: Dict) -> List[str]:
+            values = [contact_key]
+            for field in (
+                'public_key',
+                'pubkey',
+                'pub_key',
+                'publicKey',
+                'sender_pubkey',
+                'author_pubkey',
+                'receiver_pubkey',
+                'pubkey_prefix',
+                'signature',
+            ):
+                value = contact.get(field)
+                if isinstance(value, str) and value.strip():
+                    values.append(value.strip())
+            return values
+
         with self.lock:
-            device_key = (self.device.public_key or '').lower()
-            if device_key and (device_key.startswith(probe) or probe.startswith(device_key)):
+            device_key = (self.device.public_key or '').strip().lower()
+            if device_key and (
+                device_key.startswith(probe)
+                or probe.startswith(device_key)
+            ):
                 return self.device.name or 'Me'
 
             for key, contact in self.contacts.items():
-                key_lower = key.lower()
-                if key_lower.startswith(probe) or probe.startswith(key_lower):
-                    name = contact.get('adv_name', '')
-                    if name:
-                        return name
+                for candidate in _candidate_keys(key, contact):
+                    candidate_lower = candidate.lower()
+                    if (
+                        candidate_lower.startswith(probe)
+                        or probe.startswith(candidate_lower)
+                    ):
+                        name = str(contact.get('adv_name', '') or '').strip()
+                        if name:
+                            return name
+
         return pubkey_prefix[:8]
 
     def get_contact_by_name(self, name: str) -> Optional[Tuple[str, Dict]]:

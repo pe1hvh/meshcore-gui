@@ -260,6 +260,11 @@ class _BaseWorker(abc.ABC):
     def _on_login_success(self, event) -> None:
         """Handle Room Server login confirmation.
 
+        This worker callback is the *only* definitive success path for room
+        login.  The command layer sends the login request and leaves the final
+        transition to ``ok`` to this subscriber so there is no competing
+        timeout/success logic elsewhere.
+
         The device event may expose the room key under different fields.
         Update both the generic status line and the per-room login state,
         then refresh archived room history for the matched room.
@@ -279,8 +284,12 @@ class _BaseWorker(abc.ABC):
         )
         self.shared.set_status("✅ Room login OK — messages arriving over RF…")
         if pubkey:
-            self.shared.set_room_login_state(pubkey, 'ok', 'Server confirmed login')
+            self.shared.set_room_login_state(
+                pubkey, 'ok', f'Server confirmed login (admin={is_admin})',
+            )
             self.shared.load_room_history(pubkey)
+        else:
+            debug_print('LOGIN_SUCCESS received without identifiable room pubkey')
 
     # ── apply cache ───────────────────────────────────────────────
 

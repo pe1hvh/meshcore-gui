@@ -330,13 +330,17 @@ class CommandHandler:
             debug_print(f"set_device_name exception: {exc}")
 
     async def _cmd_login_room(self, cmd: Dict) -> None:
-        """Login to a Room Server.
+        """Send a Room Server login request.
 
-        Follows the reference implementation (meshcore-cli):
-        1. ``send_login()`` → wait for ``MSG_SENT`` (companion radio sent LoRa packet)
-        2. ``wait_for_event(LOGIN_SUCCESS)`` → wait for room server confirmation
-        3. After LOGIN_SUCCESS, the room server starts pushing historical
-           messages over RF.  ``auto_message_fetching`` handles those.
+        This command handler owns only the *send* side of the login flow:
+        it queues archived room history for immediate UI display, marks the
+        room state as ``pending`` and sends the login packet to the companion
+        radio.
+
+        The definitive ``LOGIN_SUCCESS`` handling is intentionally centralised
+        in :mod:`meshcore_gui.ble.worker`, which already subscribes to the
+        MeshCore event stream.  Keeping the success path in one place avoids a
+        second competing wait/timeout path here in the command layer.
 
         Expected command dict::
 
@@ -355,19 +359,27 @@ class CommandHandler:
             self._shared.set_status("⚠️ Room login: no pubkey")
             return
 
-        # Load archived room messages so the panel shows history
-        # while we wait for the LoRa login handshake.
+        # Show archived room messages immediately while the radio/login path
+        # continues asynchronously.
         self._shared.load_room_history(pubkey)
-
-        # Mark pending in SharedData so the panel can update
         self._shared.set_room_login_state(pubkey, 'pending', 'Sending login…')
 
         try:
-            # Step 1: Send login request to companion radio
-            self._shared.set_status(
-                f"🔄 Sending login to {room_name}…"
-            )
+            self._shared.set_status(f"🔄 Sending login to {room_name}…")
             r = await self._mc.commands.send_login(pubkey, password)
+
+            if r is None:
+                self._shared.set_room_login_state(
+                    pubkey, 'fail', 'Login send returned no response',
+                )
+                self._shared.set_status(
+                    f"⚠️ Room login failed: {room_name}"
+                )
+                debug_print(
+                    f"login_room: send_login returned None for {room_name} "
+                    f"({pubkey[:16]})"
+                )
+                return
 
             if r.type == EventType.ERROR:
                 self._shared.set_room_login_state(
@@ -382,70 +394,20 @@ class CommandHandler:
                 )
                 return
 
-            # Step 2: Wait for LOGIN_SUCCESS from room server via LoRa
-            # Use suggested_timeout from companion radio if available,
-            # otherwise default to 120 seconds (LoRa can be slow).
             suggested = (r.payload or {}).get('suggested_timeout', 96000)
             timeout_secs = max(suggested / 800, 30.0)
-
             self._shared.set_status(
                 f"⏳ Waiting for room server response ({room_name})…"
             )
             debug_print(
-                f"login_room: MSG_SENT OK, waiting for LOGIN_SUCCESS "
-                f"(timeout={timeout_secs:.0f}s)"
+                f"login_room: login packet accepted for {room_name}; "
+                f"worker owns LOGIN_SUCCESS handling "
+                f"(suggested timeout {timeout_secs:.0f}s)"
             )
-
-            login_event = await self._mc.wait_for_event(
-                EventType.LOGIN_SUCCESS, timeout=timeout_secs,
-            )
-
-            if login_event and login_event.type == EventType.LOGIN_SUCCESS:
-                is_admin = (login_event.payload or {}).get('is_admin', False)
-                self._shared.set_room_login_state(
-                    pubkey, 'ok',
-                    f"admin={is_admin}",
-                )
-                self._shared.set_status(
-                    f"✅ Room login OK: {room_name} — "
-                    f"history arriving over RF…"
-                )
-                debug_print(
-                    f"login_room: LOGIN_SUCCESS for {room_name} "
-                    f"(admin={is_admin})"
-                )
-
-                # Defensive: trigger one get_msg() to check for any
-                # messages already waiting in the companion radio's
-                # offline queue.  auto_message_fetching handles the
-                # rest via MESSAGES_WAITING events.
-                try:
-                    await self._mc.commands.get_msg()
-                    debug_print("login_room: defensive get_msg() done")
-                except Exception as exc:
-                    debug_print(f"login_room: defensive get_msg() error: {exc}")
-
-            else:
-                self._shared.set_room_login_state(
-                    pubkey, 'fail',
-                    'Timeout — no response from room server',
-                )
-                self._shared.set_status(
-                    f"⚠️ Room login timeout: {room_name} "
-                    f"(no response after {timeout_secs:.0f}s)"
-                )
-                debug_print(
-                    f"login_room: LOGIN_SUCCESS timeout for "
-                    f"{room_name} ({pubkey[:16]})"
-                )
 
         except Exception as exc:
-            self._shared.set_room_login_state(
-                pubkey, 'fail', str(exc),
-            )
-            self._shared.set_status(
-                f"⚠️ Room login error: {exc}"
-            )
+            self._shared.set_room_login_state(pubkey, 'fail', str(exc))
+            self._shared.set_status(f"⚠️ Room login error: {exc}")
             debug_print(f"login_room exception: {exc}")
 
     async def _cmd_logout_room(self, cmd: Dict) -> None:

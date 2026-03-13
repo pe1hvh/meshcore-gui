@@ -593,14 +593,58 @@ class SharedData:
         return None
 
     def get_contact_name_by_prefix(self, pubkey_prefix: str) -> str:
+        """Resolve a pubkey/prefix to the best available display name.
+
+        The room server may report the author using different key fields:
+        a short prefix, a full public key, or a value copied into another
+        payload field. To keep sender display stable, match against both
+        the contact dict key and common pubkey-like fields stored inside
+        each contact record.
+        """
         if not pubkey_prefix:
             return ""
+
+        probe = str(pubkey_prefix).strip().lower()
+        if not probe:
+            return ""
+
+        def _candidate_keys(contact_key: str, contact: Dict) -> List[str]:
+            values = [contact_key]
+            for field in (
+                'public_key',
+                'pubkey',
+                'pub_key',
+                'publicKey',
+                'sender_pubkey',
+                'author_pubkey',
+                'receiver_pubkey',
+                'pubkey_prefix',
+                'signature',
+            ):
+                value = contact.get(field)
+                if isinstance(value, str) and value.strip():
+                    values.append(value.strip())
+            return values
+
         with self.lock:
+            device_key = (self.device.public_key or '').strip().lower()
+            if device_key and (
+                device_key.startswith(probe)
+                or probe.startswith(device_key)
+            ):
+                return self.device.name or 'Me'
+
             for key, contact in self.contacts.items():
-                if key.lower().startswith(pubkey_prefix.lower()):
-                    name = contact.get('adv_name', '')
-                    if name:
-                        return name
+                for candidate in _candidate_keys(key, contact):
+                    candidate_lower = candidate.lower()
+                    if (
+                        candidate_lower.startswith(probe)
+                        or probe.startswith(candidate_lower)
+                    ):
+                        name = str(contact.get('adv_name', '') or '').strip()
+                        if name:
+                            return name
+
         return pubkey_prefix[:8]
 
     def get_contact_by_name(self, name: str) -> Optional[Tuple[str, Dict]]:

@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.13.2"
+VERSION: str = "1.13.4"
 
 
 # ==============================================================================
@@ -293,7 +293,7 @@ CHANNEL_CACHE_ENABLED: bool = False
 
 # Fixed device name applied when the BOT checkbox is enabled.
 # The original device name is saved and restored when BOT is disabled.
-BOT_DEVICE_NAME: str = "NL-OV-ZWL-STDSHGN-WKC Bot"
+BOT_DEVICE_NAME: str = "ZwolsBotje"
 
 # Default device name used as fallback when restoring from BOT mode
 # and no original name was saved (e.g. after a restart).

@@ -79,9 +79,8 @@ _ROUTE_MAP_ASSETS = r"""
   ensureStylesheet('meshcore-leaflet-panel-css', '/static/leaflet_map_panel.css');
 
   ensureScript('meshcore-leaflet-vendor-js', 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', function () {
-    ensureScript('meshcore-leaflet-markercluster-js', 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js', function () {
-      ensureScript('meshcore-leaflet-panel-js', '/static/leaflet_map_panel.js');
-    });
+    ensureScript('meshcore-leaflet-panel-js', '/static/leaflet_map_panel.js');
+    ensureScript('meshcore-leaflet-markercluster-js', 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js');
   });
 })();
 </script>
@@ -250,9 +249,9 @@ class RoutePage:
                 ).classes('text-xs text-gray-400 italic px-2 pt-2')
 
             container_id = f'route-map-{uuid4().hex}'
-            ui.html(
-                f'<div id="{container_id}" style="width:100%;height:24rem;border-radius:0.5rem;overflow:hidden;"></div>'
-            ).classes('w-full').style('height: 24rem')
+            ui.element('div').props(f'id={container_id}').classes(
+                'w-full'
+            ).style('height:24rem;border-radius:0.5rem;overflow:hidden;')
 
             boot_script = (
                 '(function bootRouteMap(retries){'

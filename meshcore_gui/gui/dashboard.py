@@ -680,30 +680,12 @@ class DashboardPage:
         # Apply channel filter to messages panel
         if panel_id == 'messages' and self._messages:
             self._messages.set_active_channel(channel)
-            # Force immediate rebuild so the panel is populated the
-            # moment it becomes visible, instead of waiting for the
-            # next 500 ms timer tick (which caused the "empty on first
-            # click, populated on second click" symptom).
-            data = self._shared.get_snapshot()
-            self._messages.update(
-                data,
-                self._messages.channel_filters,
-                self._messages.last_channels,
-                room_pubkeys=(
-                    self._room_server.get_room_pubkeys()
-                    if self._room_server else None
-                ),
-            )
 
         # Apply channel filter to archive panel
         if panel_id == 'archive' and self._archive_page:
             self._archive_page.set_channel_filter(channel)
 
-        # Force map recenter when opening map panel (Leaflet may be hidden on load)
-        if panel_id == 'map' and self._map:
-            data = self._shared.get_snapshot()
-            data['force_center'] = True
-            self._map.update(data)
+        self._refresh_active_panel_now(force_map_center=(panel_id == 'map'))
 
         # Update active menu highlight (standalone buttons only)
         for pid, btn in self._menu_buttons.items():
@@ -715,6 +697,44 @@ class DashboardPage:
         # Close drawer after selection
         if self._drawer:
             self._drawer.hide()
+
+    def _refresh_active_panel_now(self, force_map_center: bool = False) -> None:
+        """Refresh only the currently visible panel.
+
+        This is used directly after a panel switch so the user does not
+        need to wait for the next 500 ms dashboard tick.
+        """
+        data = self._shared.get_snapshot()
+
+        if data.get('channels'):
+            self._messages.update_filters(data)
+            self._messages.update_channel_options(data['channels'])
+            self._update_submenus(data)
+
+        if self._active_panel == 'device':
+            self._device.update(data)
+        elif self._active_panel == 'map':
+            if force_map_center:
+                data['force_center'] = True
+            self._map.update(data)
+        elif self._active_panel == 'actions':
+            self._actions.update(data)
+        elif self._active_panel == 'contacts':
+            self._contacts.update(data)
+        elif self._active_panel == 'messages':
+            self._messages.update(
+                data,
+                self._messages.channel_filters,
+                self._messages.last_channels,
+                room_pubkeys=(
+                    self._room_server.get_room_pubkeys()
+                    if self._room_server else None
+                ),
+            )
+        elif self._active_panel == 'rooms':
+            self._room_server.update(data)
+        elif self._active_panel == 'rxlog':
+            self._rxlog.update(data)
 
     # ------------------------------------------------------------------
     # Room Server callback (from ContactsPanel)
@@ -753,56 +773,49 @@ class DashboardPage:
             # Always update status
             self._status_label.text = data['status']
 
-            # Device info
-            if data['device_updated'] or is_first:
-                self._device.update(data)
-
-            # Map: always send a snapshot while the panel is active.
-            # The JS runtime coalesces pending payloads — only the newest
-            # is ever applied — so calling update() on every tick is cheap.
-            # This ensures the Leaflet runtime always gets at least one
-            # valid snapshot after it finishes loading, regardless of
-            # whether device_updated or is_first happened to be True
-            # on the tick that fired before MeshCoreLeafletBoot was defined.
-            if self._active_panel == 'map':
-                self._map.update(data)
-
-            # Channel-dependent UI: always ensure consistency when
-            # channels exist.  Because a single DashboardPage instance
-            # is shared across browser sessions (render() is called on
-            # each new connection), the old session's timer can steal
-            # the is_first flag before the new timer fires.  Running
-            # these unconditionally is safe because each method has an
-            # internal fingerprint/equality check that prevents
-            # unnecessary DOM updates.
+            # Channel-dependent drawer/submenu state may stay global.
+            # The helpers below already contain equality checks, so this
+            # remains cheap while keeping navigation consistent.
             if data['channels']:
                 self._messages.update_filters(data)
                 self._messages.update_channel_options(data['channels'])
                 self._update_submenus(data)
 
-            # BOT checkbox state (only on actual change or first render
-            # to avoid overwriting user interaction mid-toggle)
-            if data['channels_updated'] or is_first:
-                self._actions.update(data)
+            if self._active_panel == 'device':
+                if data['device_updated'] or is_first:
+                    self._device.update(data)
 
-            # Contacts
-            if data['contacts_updated'] or is_first:
-                self._contacts.update(data)
+            elif self._active_panel == 'map':
+                # Keep sending snapshots while the map panel is active.
+                # The browser runtime coalesces pending payloads, so only
+                # the newest snapshot is applied.
+                self._map.update(data)
 
-            # Messages (always — for live filter changes)
-            self._messages.update(
-                data,
-                self._messages.channel_filters,
-                self._messages.last_channels,
-                room_pubkeys=self._room_server.get_room_pubkeys() if self._room_server else None,
-            )
+            elif self._active_panel == 'actions':
+                if data['channels_updated'] or is_first:
+                    self._actions.update(data)
 
-            # Room Server panels (always — for live messages + contact changes)
-            self._room_server.update(data)
+            elif self._active_panel == 'contacts':
+                if data['contacts_updated'] or is_first:
+                    self._contacts.update(data)
 
-            # RX Log
-            if data['rxlog_updated']:
-                self._rxlog.update(data)
+            elif self._active_panel == 'messages':
+                self._messages.update(
+                    data,
+                    self._messages.channel_filters,
+                    self._messages.last_channels,
+                    room_pubkeys=(
+                        self._room_server.get_room_pubkeys()
+                        if self._room_server else None
+                    ),
+                )
+
+            elif self._active_panel == 'rooms':
+                self._room_server.update(data)
+
+            elif self._active_panel == 'rxlog':
+                if data['rxlog_updated'] or is_first:
+                    self._rxlog.update(data)
 
             # Signal worker that GUI is ready for data
             if is_first and data['channels'] and data['contacts']:

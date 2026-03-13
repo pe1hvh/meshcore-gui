@@ -1,6 +1,6 @@
 """Messages panel — filtered message display with channel selection and message input."""
 
-from typing import Callable, Dict, List, Set
+from typing import Callable, Dict, Iterable, List, Set
 
 from nicegui import ui
 
@@ -154,11 +154,29 @@ class MessagesPanel:
     # -- Message display -----------------------------------------------
 
     @staticmethod
+    def _merge_room_pubkeys(
+        ui_room_pubkeys: Set[str] | None,
+        known_room_pubkeys: Iterable[str] | None,
+    ) -> Set[str]:
+        """Merge UI-tracked and centrally known Room Server keys.
+
+        The RoomServerPanel may not yet be fully restored when archived
+        messages are first shown.  The SharedData registry provides a
+        second, UI-independent source of truth for room key prefixes.
+        """
+        merged: Set[str] = set()
+        if ui_room_pubkeys:
+            merged.update(pk for pk in ui_room_pubkeys if pk)
+        if known_room_pubkeys:
+            merged.update(pk for pk in known_room_pubkeys if pk)
+        return merged
+
+    @staticmethod
     def _is_room_message(msg: Message, room_pubkeys: Set[str]) -> bool:
         """Return True if *msg* belongs to a Room Server.
 
         Matches when the message's ``sender_pubkey`` prefix-matches
-        any tracked room pubkey (same logic as RoomServerPanel).
+        any tracked or centrally known room pubkey.
         """
         if not msg.sender_pubkey or not room_pubkeys:
             return False
@@ -195,7 +213,10 @@ class MessagesPanel:
         if not self._container:
             return
 
-        room_pks = room_pubkeys or set()
+        room_pks = self._merge_room_pubkeys(
+            room_pubkeys,
+            data.get('known_room_pubkeys'),
+        )
         channel_names = {ch['idx']: ch['name'] for ch in last_channels}
         contacts = data.get('contacts', {})
         messages: List[Message] = data['messages']

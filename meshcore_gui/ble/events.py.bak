@@ -77,16 +77,6 @@ class EventHandler:
                 names.append(h.upper())
         return names
 
-    @staticmethod
-    def _looks_like_hex_identifier(value: str) -> bool:
-        """Return True when *value* looks like a pubkey/hash prefix."""
-        if not value:
-            return False
-        probe = str(value).strip()
-        if len(probe) < 6:
-            return False
-        return all(ch in '0123456789abcdefABCDEF' for ch in probe)
-
     # ------------------------------------------------------------------
     # RX_LOG_DATA — the single source of truth for path info
     # ------------------------------------------------------------------
@@ -302,83 +292,38 @@ class EventHandler:
     def on_contact_msg(self, event) -> None:
         """Handle direct message and room message events.
 
-        Room Server traffic also arrives as ``CONTACT_MSG_RECV``.
-        In practice the payload is not stable enough to rely only on
-        ``signature`` + ``pubkey_prefix``.  Incoming room messages from
-        *other* participants may omit ``signature`` and may carry the
-        room key in receiver-style fields instead of ``pubkey_prefix``.
-
-        To keep the rest of the GUI unchanged, room messages are stored
-        with ``sender`` = actual author name and ``sender_pubkey`` = room
-        public key.  The Room Server panel already filters on
-        ``sender_pubkey`` to decide to which room a message belongs.
+        Room Server messages arrive as ``CONTACT_MSG_RECV`` with
+        ``txt_type == 2``.  The ``pubkey_prefix`` is the Room Server's
+        key and the ``signature`` field contains the original author's
+        pubkey prefix.  We resolve the author name from ``signature``
+        so the UI shows who actually wrote the message.
         """
-        payload = event.payload or {}
+        payload = event.payload
         pubkey = payload.get('pubkey_prefix', '')
         txt_type = payload.get('txt_type', 0)
         signature = payload.get('signature', '')
 
-        debug_print(
-            "DM payload keys: "
-            f"{list(payload.keys())}; txt_type={txt_type}; "
-            f"pubkey_prefix={pubkey[:12]}; "
-            f"receiver={(payload.get('receiver') or '')[:12]}; "
-            f"room_pubkey={(payload.get('room_pubkey') or '')[:12]}; "
-            f"signature={(signature or '')[:12]}"
-        )
+        debug_print(f"DM payload keys: {list(payload.keys())}")
 
         # Common fields for both Room and DM messages
         msg_hash = payload.get('message_hash', '')
         path_hashes = self._path_cache.pop(msg_hash, []) if msg_hash else []
         path_names = self._resolve_path_names(path_hashes)
 
+        # DM payloads may report path_len=255 (0xFF) meaning "unknown";
+        # treat as 0 when no actual path data is available.
         raw_path_len = payload.get('path_len', 0)
         path_len = raw_path_len if raw_path_len < 255 else 0
         if path_hashes:
+            # Trust actual decoded hashes over the raw header value
             path_len = len(path_hashes)
 
-        room_pubkey = (
-            payload.get('room_pubkey')
-            or payload.get('receiver')
-            or payload.get('receiver_pubkey')
-            or payload.get('receiver_pubkey_prefix')
-            or pubkey
-            or ''
-        )
-
-        is_room_message = txt_type == 2
-
-        if is_room_message:
-            author = ''
-            explicit_name = (
-                payload.get('author')
-                or payload.get('sender_name')
-                or payload.get('name')
-                or ''
-            )
-            if explicit_name and not self._looks_like_hex_identifier(explicit_name):
-                author = explicit_name
-
-            sender_field = str(payload.get('sender') or '').strip()
-            if not author and sender_field and not self._looks_like_hex_identifier(sender_field):
-                author = sender_field
-
-            author_key = (
-                signature
-                or payload.get('sender_pubkey')
-                or payload.get('author_pubkey')
-                or (sender_field if self._looks_like_hex_identifier(sender_field) else '')
-                or ''
-            )
-            if not author and author_key:
-                author = self._shared.get_contact_name_by_prefix(author_key)
+        # --- Room Server message (txt_type 2) ---
+        if txt_type == 2 and signature:
+            # Resolve actual author from signature (author pubkey prefix)
+            author = self._shared.get_contact_name_by_prefix(signature)
             if not author:
-                author = (
-                    explicit_name
-                    or sender_field
-                    or (author_key[:8] if author_key else '')
-                    or '?'
-                )
+                author = signature[:8] if signature else '?'
 
             self._shared.add_message(Message.incoming(
                 author,
@@ -386,14 +331,14 @@ class EventHandler:
                 None,
                 snr=self._extract_snr(payload),
                 path_len=path_len,
-                sender_pubkey=room_pubkey,
+                sender_pubkey=pubkey,
                 path_hashes=path_hashes,
                 path_names=path_names,
                 message_hash=msg_hash,
             ))
             debug_print(
-                f"Room msg from {author} via room {room_pubkey[:12]} "
-                f"(sig={signature[:12] if signature else '-'}): "
+                f"Room msg from {author} (sig={signature}) "
+                f"via room {pubkey[:12]}: "
                 f"{payload.get('text', '')[:30]}"
             )
             return
@@ -403,11 +348,7 @@ class EventHandler:
         if pubkey:
             sender = self._shared.get_contact_name_by_prefix(pubkey)
         if not sender:
-            sender = (
-                payload.get('name')
-                or payload.get('sender')
-                or (pubkey[:8] if pubkey else '')
-            )
+            sender = pubkey[:8] if pubkey else ''
 
         self._shared.add_message(Message.incoming(
             sender,

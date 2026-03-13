@@ -1,3 +1,35 @@
+
+
+# CHANGELOG
+
+<!-- CHANGED: Title changed from "CHANGELOG: Message & Metadata Persistence" to "CHANGELOG" — 
+     a root-level CHANGELOG.md should be project-wide, not feature-specific. -->
+
+All notable changes to MeshCore GUI are documented in this file.
+Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
+
+
+---
+
+> **📈 Performance note — v1.13.1 through v1.13.4**
+> Although versions 1.13.1–1.13.4 were released as targeted bugfix releases, the
+> cumulative effect of the fixes delivered a significant performance improvement:
+>
+> - **v1.13.1** — Bot non-response fix eliminated a silent failure path that caused
+>   repeated dedup-marked command re-evaluation on every message tick.
+> - **v1.13.2** — Map display fixes prevented Leaflet from being initialized on hidden
+>   zero-size containers, removing a source of repeated failed bootstrap retries and
+>   associated DOM churn.
+> - **v1.13.3** — Active panel timer gating reduced the 500 ms dashboard update work to
+>   only the currently visible panel, cutting unnecessary UI updates and background
+>   redraw load substantially — especially noticeable over VPN or on slower hardware.
+> - **v1.13.4** — Room Server event classification fix and sender name resolution removed
+>   redundant fallback processing paths and reduced per-tick contact lookup overhead.
+>
+> Users upgrading from v1.12.x or earlier will notice noticeably faster panel switching,
+> lower CPU usage during idle operation, and more stable map rendering.
+
+---
 ## [1.13.4] - 2026-03-12 — Room Server message classification fix
 
 ### Fixed
@@ -17,17 +49,7 @@
 - No intended behavioural change for ordinary DMs or channel messages.
 
 ---
-
-# CHANGELOG
-
-<!-- CHANGED: Title changed from "CHANGELOG: Message & Metadata Persistence" to "CHANGELOG" — 
-     a root-level CHANGELOG.md should be project-wide, not feature-specific. -->
-
-All notable changes to MeshCore GUI are documented in this file.
-Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
-
 ---
-<<<<<<< HEAD
 ## [1.13.3] - 2026-03-12 — Active Panel Timer Gating
 
 ### Changed
@@ -87,7 +109,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 - No breaking changes outside the three files listed above
 
 ---
->>>>>>> b76eacf1119026c49c25d2811a6d713da8f8e01b
 ## [1.13.0] - 2026-03-09 — Leaflet Map Runtime Stabilization
 
 ### Added

@@ -116,12 +116,10 @@ class RoomServerPanel:
         room_messages: Dict = data.get('room_messages', {})
         # Live messages from current session's rolling buffer
         live_messages: List[Message] = data.get('messages', [])
-        # Contact dict for live sender-name resolution
-        contacts: Dict = data.get('contacts', {})
 
         for pubkey, card_state in self._room_cards.items():
             self._update_room_messages(
-                pubkey, card_state, room_messages, live_messages, contacts,
+                pubkey, card_state, room_messages, live_messages,
             )
 
     # ------------------------------------------------------------------
@@ -392,41 +390,6 @@ class RoomServerPanel:
             self._container.remove(card_state['card'])
 
     # ------------------------------------------------------------------
-    # Internal — sender name resolution
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _resolve_sender_name(sender: str, contacts: Dict) -> str:
-        """Resolve a sender field to a display name when possible.
-
-        When ``msg.sender`` was stored as a raw hex prefix (because the
-        contact was not yet known at archive time), this method attempts
-        a live lookup against the current contacts snapshot so the UI
-        always shows a human-readable name instead of a hex code.
-
-        Args:
-            sender:   Value from ``Message.sender`` — may be a name or a hex string.
-            contacts: Current contacts snapshot from ``SharedData.get_snapshot()``.
-
-        Returns:
-            Resolved display name, or the original sender value if no
-            match is found, or ``'?'`` when sender is empty.
-        """
-        if not sender:
-            return '?'
-        probe = sender.strip().lower()
-        # Only resolve when the field looks like a hex identifier (6–64 hex chars)
-        if not (6 <= len(probe) <= 64 and all(ch in '0123456789abcdef' for ch in probe)):
-            return sender
-        for key, contact in contacts.items():
-            candidate = key.strip().lower()
-            if candidate.startswith(probe) or probe.startswith(candidate[:len(probe)]):
-                name = str(contact.get('adv_name', '') or '').strip()
-                if name:
-                    return name
-        return sender
-
-    # ------------------------------------------------------------------
     # Internal — message display
     # ------------------------------------------------------------------
 
@@ -436,7 +399,6 @@ class RoomServerPanel:
         card_state: Dict,
         room_messages: Dict,
         live_messages: List[Message],
-        contacts: Dict,
     ) -> None:
         """Update the message display for a single room card.
 
@@ -450,7 +412,6 @@ class RoomServerPanel:
             card_state:     UI state dict for this room card.
             room_messages:  ``{12-char-prefix: [Message, …]}`` from archive cache.
             live_messages:  Current session's rolling message buffer.
-            contacts:       Current contacts snapshot for live name resolution.
         """
         msg_container = card_state.get('msg_container')
         if not msg_container:
@@ -494,7 +455,7 @@ class RoomServerPanel:
         with msg_container:
             for msg in display:
                 direction = '→' if msg.direction == 'out' else '←'
-                sender = self._resolve_sender_name(msg.sender or '', contacts)
+                sender = msg.sender or '?'
                 line = f"{msg.time} {direction} {sender}: {msg.text}"
 
                 ui.label(line).classes(

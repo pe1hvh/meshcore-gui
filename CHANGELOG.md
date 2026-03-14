@@ -30,32 +30,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 > lower CPU usage during idle operation, and more stable map rendering.
 
 ---
-## [1.14.0] - 2026-03-14 — Offline BBS (Bulletin Board System)
+## [1.14.0] - 2026-03-14 — BBS (Bulletin Board System)
 
 ### Added
-- 🆕 **`meshcore_gui/services/bbs_config_store.py`** — `BbsBoard` dataclass + `BbsConfigStore`. Beheert `~/.meshcore-gui/bbs/bbs_config.json` (config v2). Automatische migratie van v1. Thread-safe, atomische schrijfoperaties. Een board groepeert een of meerdere channel-indices tot één bulletin board. Methoden: `get_boards()`, `get_board()`, `get_board_for_channel()`, `set_board()`, `delete_board()`, `board_id_exists()`.
-- 🆕 **`meshcore_gui/services/bbs_service.py`** — SQLite-backed BBS persistence layer. `BbsMessage` dataclass. `BbsService.get_messages()` en `get_all_messages()` queryen via `WHERE channel IN (...)` zodat één board meerdere channels kan omvatten. WAL-mode + busy_timeout=3s voor veilig gebruik door meerdere processen. Database op `~/.meshcore-gui/bbs/bbs_messages.db`. `BbsCommandHandler` zoekt het board op via `get_board_for_channel()`.
-- 🆕 **`meshcore_gui/gui/panels/bbs_panel.py`** — BBS panel voor het dashboard.
-  - Board-selector (knoppen per geconfigureerd board).
-  - Regio- en categorie-filter (regio alleen zichtbaar als board regio's heeft).
-  - Scrollbare berichtenlijst over alle channels van het actieve board.
-  - Post-formulier: post op het eerste channel van het board.
-  - **Settings-sectie**: boards aanmaken (naam → Create), per board channels toewijzen via checkboxes (dynamisch gevuld vanuit device channels), categorieën, regio's, retentie, whitelist, Save en Delete.
+
+- 🆕 **BBS — Bulletin Board System** — offline berichtenbord voor mesh-netwerken.
+  - Één node beheert één board op één channel. Alle commando's via **Direct Message** aan de node; het channel blijft schoon.
+  - Korte syntax: `!p <cat> <tekst>` (post) en `!r [cat]` (lezen). Categorie-afkortingen automatisch berekend als kortste unieke prefix (bijv. `U=URGENT M=MEDICAL`). `!r` zonder args toont de afkortingstabel altijd mee.
+  - Volledige syntax behouden: `!bbs post`, `!bbs read`, `!bbs help`.
+  - Optioneel regio-filter (`!p Zwolle U hulp nodig`) en sender-whitelist.
+  - Settings-pagina (`/bbs-settings`): één channel-selector, categorieën, retentie (uur), en een ingeklapte Advanced-sectie voor regio's en allowed keys.
+  - Berichten opgeslagen in SQLite (`~/.meshcore-gui/bbs/bbs_messages.db`, WAL-mode).
 
 ### Changed
-- 🔄 **`meshcore_gui/services/bot.py`** — `MeshBot` accepteert optionele `bbs_handler`; `!bbs` commando's worden doorgesluisd naar `BbsCommandHandler`.
-- 🔄 **`meshcore_gui/config.py`** — `BBS_CHANNELS` verwijderd; versie `1.14.0`.
-- 🔄 **`meshcore_gui/gui/dashboard.py`** — `BbsConfigStore` en `BbsService` instanties; `BbsPanel` geregistreerd; `📋 BBS` drawer-item.
-- 🔄 **`meshcore_gui/gui/panels/__init__.py`** — `BbsPanel` re-exported.
+
+- 🔄 **`ble/events.py`** — DMs die beginnen met `!` worden direct verwerkt door `BbsCommandHandler`, volledig los van `MeshBot`.
+- 🔄 **`services/bot.py`** — `MeshBot` is weer een pure keyword/channel responder; BBS-routing verwijderd.
+- 🔄 **`services/bbs_config_store.py`** — `get_single_board()`, `set_single_board()`, `clear_single_board()` toegevoegd.
+- 🔄 **`gui/dashboard.py`** — `BbsPanel` geregistreerd, `📋 BBS` drawer-item toegevoegd.
 
 ### Storage
 ```
-~/.meshcore-gui/bbs/bbs_config.json   -- board configuratie (v2)
-~/.meshcore-gui/bbs/bbs_messages.db   -- SQLite berichtenopslag
+~/.meshcore-gui/bbs/bbs_config.json   — board configuratie
+~/.meshcore-gui/bbs/bbs_messages.db   — SQLite berichtenopslag
 ```
-
-### Not changed
-- BLE-laag, SharedData, core/models, route_page, map_panel, message_archive, alle overige services en panels.
 
 ---
 

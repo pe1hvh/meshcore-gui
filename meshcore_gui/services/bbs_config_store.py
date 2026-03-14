@@ -4,12 +4,15 @@ BBS board configuration store for MeshCore GUI.
 Persists BBS board configuration to
 ``~/.meshcore-gui/bbs/bbs_config.json``.
 
-A **board** groups one or more MeshCore channel indices into a single
-bulletin board.  Messages posted on any of the board's channels are
-visible in the board view.  This supports two usage patterns:
+Design (v1.14.0 redesign)
+~~~~~~~~~~~~~~~~~~~~~~~~~
+One node = one board.  The settings UI exposes a single channel selector;
+the board id is always ``ch{channel_idx}`` and the name is taken from the
+device channel.  There is no Create/Delete UI — the board is saved or
+cleared through :meth:`set_single_board` / :meth:`clear_single_board`.
 
-- One board per channel  (classic per-channel BBS)
-- One board spanning multiple channels (shared bulletin board)
+Multiple-board storage is retained internally so that the storage layer
+(``bbs_service.py``) and :meth:`get_board_for_channel` remain unchanged.
 
 Config version history
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -300,3 +303,70 @@ class BbsConfigStore:
         """
         with self._lock:
             return any(b.id == board_id for b in self._boards)
+
+    # ------------------------------------------------------------------
+    # Single-board convenience API (v1.14.0 redesign)
+    # ------------------------------------------------------------------
+
+    def get_single_board(self) -> Optional[BbsBoard]:
+        """Return the one configured board, or ``None`` if none exists.
+
+        This is the primary accessor for the simplified single-board UI.
+
+        Returns:
+            The first ``BbsBoard`` in the store, or ``None``.
+        """
+        with self._lock:
+            if self._boards:
+                return BbsBoard.from_dict(self._boards[0].to_dict())
+        return None
+
+    def set_single_board(
+        self,
+        channel_idx: int,
+        channel_name: str,
+        categories: List[str],
+        retention_hours: int = DEFAULT_RETENTION_HOURS,
+        regions: Optional[List[str]] = None,
+        allowed_keys: Optional[List[str]] = None,
+    ) -> None:
+        """Replace the single board with a fresh config derived from one channel.
+
+        The board id is always ``ch{channel_idx}`` and the board name is
+        taken from *channel_name*.  Any previously stored boards are
+        discarded so the store always holds at most one board.
+
+        Args:
+            channel_idx:     MeshCore channel index to assign to this board.
+            channel_name:    Human-readable name of the channel (display only).
+            categories:      Category tag list.
+            retention_hours: Message retention period in hours.
+            regions:         Optional region tags (``None`` → empty list).
+            allowed_keys:    Sender public key whitelist (``None`` → all allowed).
+        """
+        board = BbsBoard(
+            id=f"ch{channel_idx}",
+            name=channel_name,
+            channels=[channel_idx],
+            categories=list(categories),
+            regions=list(regions) if regions else [],
+            retention_hours=retention_hours,
+            allowed_keys=list(allowed_keys) if allowed_keys else [],
+        )
+        with self._lock:
+            self._boards = [board]
+            self._save_unlocked()
+            debug_print(
+                f"BBS config: single board set → ch{channel_idx} '{channel_name}'"
+            )
+
+    def clear_single_board(self) -> None:
+        """Remove the configured board (disable BBS on this node).
+
+        After this call :meth:`get_single_board` returns ``None`` and
+        the BBS command handler will not respond to any channel.
+        """
+        with self._lock:
+            self._boards = []
+            self._save_unlocked()
+            debug_print("BBS config: single board cleared")

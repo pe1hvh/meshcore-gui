@@ -11,20 +11,19 @@ New keywords are added via ``BotConfig.keywords`` (data) without
 modifying the ``MeshBot`` class (code).  Custom matching strategies
 can be implemented by subclassing and overriding ``_match_keyword``.
 
-BBS integration
-~~~~~~~~~~~~~~~
-``MeshBot.check_and_reply`` delegates ``!bbs`` commands to a
-:class:`~meshcore_gui.services.bbs_service.BbsCommandHandler` when one
-is injected via the ``bbs_handler`` parameter.  When ``bbs_handler`` is
-``None`` (default), BBS routing is simply skipped.
+BBS separation
+~~~~~~~~~~~~~~
+BBS commands (``!bbs``, ``!p``, ``!r``) are handled by
+:class:`~meshcore_gui.services.bbs_service.BbsCommandHandler` which is
+wired directly into
+:class:`~meshcore_gui.ble.events.EventHandler`.  They never pass
+through ``MeshBot`` — the bot is a pure keyword/channel-message
+responder only.
 """
 
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable, Dict, List, Optional
-
-if TYPE_CHECKING:
-    from meshcore_gui.services.bbs_service import BbsCommandHandler
+from typing import Callable, Dict, List, Optional
 
 from meshcore_gui.config import debug_print
 
@@ -91,13 +90,11 @@ class MeshBot:
         config: BotConfig,
         command_sink: Callable[[Dict], None],
         enabled_check: Callable[[], bool],
-        bbs_handler: Optional["BbsCommandHandler"] = None,
     ) -> None:
         self._config = config
         self._sink = command_sink
         self._enabled = enabled_check
         self._last_reply: float = 0.0
-        self._bbs_handler = bbs_handler
 
     def check_and_reply(
         self,
@@ -108,7 +105,7 @@ class MeshBot:
         path_len: int,
         path_hashes: Optional[List[str]] = None,
     ) -> None:
-        """Evaluate an incoming message and queue a reply if appropriate.
+        """Evaluate an incoming channel message and queue a reply if appropriate.
 
         Guards (in order):
             1. Bot is enabled (checkbox in GUI).
@@ -117,6 +114,10 @@ class MeshBot:
             4. Sender name does not end with ``'Bot'`` (prevent loops).
             5. Cooldown period has elapsed.
             6. Message text contains a recognised keyword.
+
+        Note: BBS commands (``!bbs``, ``!p``, ``!r``) are NOT handled here.
+        They arrive as DMs and are handled by ``BbsCommandHandler`` directly
+        inside ``EventHandler.on_contact_msg``.
         """
         # Guard 1: enabled?
         if not self._enabled():
@@ -140,27 +141,6 @@ class MeshBot:
         if now - self._last_reply < self._config.cooldown_seconds:
             debug_print("BOT: cooldown active, skipping")
             return
-
-        # BBS routing: delegate !bbs commands to BbsCommandHandler
-        if self._bbs_handler is not None:
-            text_stripped = (text or "").strip()
-            if text_stripped.lower().startswith("!bbs"):
-                bbs_reply = self._bbs_handler.handle(
-                    channel_idx=channel_idx,
-                    sender=sender,
-                    sender_key="",  # sender_key not available at this call-site
-                    text=text_stripped,
-                )
-                if bbs_reply is not None:
-                    self._last_reply = now
-                    self._sink({
-                        "action": "send_message",
-                        "channel": channel_idx,
-                        "text": bbs_reply,
-                        "_bot": True,
-                    })
-                    debug_print(f"BOT: BBS reply to '{sender}': {bbs_reply[:60]}")
-                return  # Do not fall through to keyword matching
 
         # Guard 6: keyword match
         template = self._match_keyword(text)

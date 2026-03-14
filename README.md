@@ -1184,11 +1184,105 @@ meshcore-gui/
 └── README.md
 ```
 
-## 15. Roadmap
+## 15. BBS — Bulletin Board System
+
+MeshCore GUI includes an offline BBS that lets mesh nodes exchange structured messages by category, with optional region tagging.
+
+### Design
+
+One node manages one board. Multiple boards require multiple nodes. All BBS commands are sent as a **Direct Message to the BBS node** — the channel stays clean and replies are private to the sender.
+
+```
+User  ──DM──▶  BBS node (public key)
+               processes command
+User  ◀──DM──  reply (only visible to sender)
+```
+
+Channel commands remain available as a fallback, but DM is the primary interface.
+
+### Settings
+
+Open the BBS settings via the gear icon (⚙) in the BBS panel, or navigate to `/bbs-settings`.
+
+```
+BBS Settings
+─────────────────────────────────────────────
+Channel:     [2] NoodNet Zwolle  ▼
+Categories:  URGENT, MEDICAL, LOGISTICS, STATUS, GENERAL
+Retain:      48 hours
+[Save]
+
+▶ Advanced
+  Regions (comma-separated)
+  Allowed keys (empty = everyone on the channel)
+```
+
+- **Channel** — select which device channel this node's board listens on.
+- **Categories** — comma-separated list of valid category tags.
+- **Retain** — message retention in hours (default 48).
+- **Advanced → Regions** — optional region tags for geographic filtering.
+- **Advanced → Allowed keys** — sender public key whitelist; empty = all senders allowed.
+
+### Command syntax
+
+#### Short syntax
+
+| Command | Description |
+|---|---|
+| `!p <cat> <text>` | Post a message |
+| `!p <region> <cat> <text>` | Post with region |
+| `!r` | Read 5 most recent (all categories) |
+| `!r <cat>` | Read filtered by category |
+| `!r <region> <cat>` | Read filtered by region and category |
+
+Category abbreviations are computed automatically as the shortest unique prefix within the configured category list. Example with `URGENT, MEDICAL, LOGISTICS, STATUS, GENERAL`:
+
+```
+U=URGENT  M=MEDICAL  L=LOGISTICS  S=STATUS  G=GENERAL
+```
+
+If two categories share the same leading letters (e.g. `MEDICAL` and `MISSING`), the node calculates longer prefixes automatically: `ME` and `MI`. The `!r` and `!bbs help` replies always include the current abbreviation table.
+
+#### Full syntax
+
+| Command | Description |
+|---|---|
+| `!bbs help` | Show commands and abbreviation table |
+| `!bbs post <category> <text>` | Post a message |
+| `!bbs post <region> <category> <text>` | Post with region |
+| `!bbs read` | Read 5 most recent |
+| `!bbs read <category>` | Read filtered by category |
+| `!bbs read <region> <category>` | Read filtered by region and category |
+
+#### Example help reply
+
+```
+BBS [NoodNet Zwolle] | !p [cat] [text] | !r [cat] | U=URGENT M=MEDICAL L=LOGISTICS S=STATUS G=GENERAL
+```
+
+### Error handling
+
+| Situation | Reply |
+|---|---|
+| Unknown category | Lists valid categories and abbreviations |
+| Ambiguous abbreviation | Lists all matching categories |
+| Sender not on whitelist | Silent drop — no reply |
+
+### Storage
+
+```
+~/.meshcore-gui/bbs/bbs_messages.db    — SQLite message store (WAL mode)
+~/.meshcore-gui/bbs/bbs_config.json    — Board configuration (v2 format)
+```
+
+---
+
+## 16. Roadmap
 
 This project is under active development. The most common features from the official MeshCore Companion apps are being implemented gradually. Planned additions include:
 
 - [x] **Cross-frequency bridge** — standalone daemon connecting two devices on different frequencies via configurable channel forwarding (see [11. Cross-Frequency Bridge](#11-cross-frequency-bridge))
+- [x] **BBS — Bulletin Board System** — offline message board with DM-based commands, category/region filtering and automatic abbreviations (see [15. BBS](#15-bbs--bulletin-board-system))
 - [ ] **Observer mode** — passively monitor mesh traffic without transmitting, useful for network analysis, coverage mapping and long-term logging
 - [ ] **Room Server administration** — authenticate as admin to manage Room Server settings and users directly from the GUI
 - [ ] **Repeater management** — connect to repeater nodes to view status and adjust configuration

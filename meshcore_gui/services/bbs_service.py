@@ -281,11 +281,34 @@ class BbsService:
 # ---------------------------------------------------------------------------
 
 class BbsCommandHandler:
-    """Parses ``!bbs`` mesh commands and delegates to :class:`BbsService`.
+    """Parses BBS commands arriving as DMs and delegates to :class:`BbsService`.
 
-    Looks up the board for the incoming channel via ``BbsConfigStore``
-    so that a single board spanning multiple channels handles commands
-    from all of them.
+    Entry point
+    ~~~~~~~~~~~
+    All BBS commands arrive as **Direct Messages** addressed to the node's
+    own public key.  :meth:`handle_dm` is the sole public entry point and is
+    called directly from
+    :class:`~meshcore_gui.ble.events.EventHandler.on_contact_msg`.
+    It is completely independent of :class:`~meshcore_gui.services.bot.MeshBot`.
+
+    Command syntax
+    ~~~~~~~~~~~~~~
+    Both styles are accepted:
+
+    Short syntax::
+
+        !p [region] <abbrev> <text>   — post a message
+        !r [region] [abbrev]          — read (5 most recent)
+
+    Full syntax::
+
+        !bbs post [region] <category> <text>
+        !bbs read [region] [category]
+        !bbs help
+
+    Category abbreviations are computed automatically as the shortest unique
+    prefix per category within the configured list.  ``!r`` and ``!bbs help``
+    always include the abbreviation table in the reply.
 
     Args:
         service:      Shared ``BbsService`` instance.
@@ -299,99 +322,179 @@ class BbsCommandHandler:
         self._config_store = config_store
 
     # ------------------------------------------------------------------
-    # Public entry point
+    # Public entry point — called from EventHandler.on_contact_msg
     # ------------------------------------------------------------------
 
-    def handle(
+    def handle_dm(
         self,
-        channel_idx: int,
         sender: str,
         sender_key: str,
         text: str,
     ) -> Optional[str]:
-        """Parse an incoming message and return a reply string (or ``None``).
+        """Parse a DM addressed to this node and return a reply (or ``None``).
+
+        This is the **only** entry point for BBS commands.  It is called
+        directly by ``EventHandler.on_contact_msg`` when a DM arrives whose
+        text starts with ``!``.  The bot is never involved.
+
+        The board is looked up from the single configured board via
+        ``BbsConfigStore.get_single_board()``.
 
         Args:
-            channel_idx: MeshCore channel index the message arrived on.
-            sender:      Display name of the sender.
-            sender_key:  Public key of the sender (hex string).
-            text:        Raw message text.
+            sender:     Display name of the DM sender.
+            sender_key: Public key of the sender (hex string).
+            text:       Raw DM text.
 
         Returns:
-            Reply string, or ``None`` if no reply should be sent.
+            Reply string to send back as DM, or ``None`` for silent drop.
         """
         text = (text or "").strip()
-        if not text.lower().startswith("!bbs"):
+        first = text.split()[0].lower() if text else ""
+        if not first.startswith("!"):
             return None
 
-        board = self._config_store.get_board_for_channel(channel_idx)
+        board = self._config_store.get_single_board()
         if board is None:
+            debug_print("BBS: no board configured, ignoring DM")
             return None
 
         # Whitelist check
         if board.allowed_keys and sender_key not in board.allowed_keys:
             debug_print(
-                f"BBS: silently dropping msg from {sender} "
+                f"BBS: silently dropping DM from {sender} "
                 f"(key not in whitelist for board '{board.id}')"
             )
             return None
 
-        parts = text.split(None, 1)
-        args = parts[1].strip() if len(parts) > 1 else ""
-        return self._dispatch(board, channel_idx, sender, sender_key, args)
+        # Channel for storing posted messages
+        channel_idx = board.channels[0] if board.channels else 0
+
+        # Route by command prefix
+        if first in ("!p",):
+            rest = text[len(first):].strip()
+            return self._handle_post_short(board, channel_idx, sender, sender_key, rest)
+
+        if first in ("!r",):
+            rest = text[len(first):].strip()
+            return self._handle_read_short(board, rest)
+
+        if first == "!bbs":
+            parts = text.split(None, 2)
+            sub = parts[1].lower() if len(parts) > 1 else ""
+            rest = parts[2] if len(parts) > 2 else ""
+            if sub == "post":
+                return self._handle_post(board, channel_idx, sender, sender_key, rest)
+            if sub == "read":
+                return self._handle_read(board, rest)
+            if sub == "help" or not sub:
+                return self._handle_help(board)
+            return f"Unknown subcommand '{sub}'. " + self._handle_help(board)
+
+        # Unknown !-command starting with something else
+        return None
 
     # ------------------------------------------------------------------
-    # Dispatch
+    # Abbreviation helpers
     # ------------------------------------------------------------------
 
-    def _dispatch(self, board, channel_idx, sender, sender_key, args):
-        sub = args.split(None, 1)[0].lower() if args else ""
-        rest = args.split(None, 1)[1] if len(args.split(None, 1)) > 1 else ""
-        if sub == "post":
-            return self._handle_post(board, channel_idx, sender, sender_key, rest)
-        if sub == "read":
-            return self._handle_read(board, rest)
-        if sub == "help" or not sub:
-            return self._handle_help(board)
-        return f"Unknown command '{sub}'. {self._handle_help(board)}"
+    @staticmethod
+    def compute_abbreviations(categories: List[str]) -> Dict[str, str]:
+        """Compute shortest unique prefix for each category.
+
+        Returns a dict mapping ``abbrev.upper()`` → ``category``.
+
+        Examples::
+
+            ["URGENT", "MEDICAL", "LOGISTICS", "STATUS", "GENERAL"]
+            → {"U": "URGENT", "M": "MEDICAL", "L": "LOGISTICS",
+               "S": "STATUS", "G": "GENERAL"}
+
+            ["MEDICAL", "MISSING"]
+            → {"ME": "MEDICAL", "MI": "MISSING"}
+        """
+        abbrevs: Dict[str, str] = {}
+        cats_upper = [c.upper() for c in categories]
+        for cat in cats_upper:
+            for length in range(1, len(cat) + 1):
+                prefix = cat[:length]
+                # Unique if no other category starts with this prefix
+                if sum(1 for c in cats_upper if c.startswith(prefix)) == 1:
+                    abbrevs[prefix] = cat
+                    break
+        return abbrevs
+
+    def _abbrev_table(self, categories: List[str]) -> str:
+        """Return a compact abbreviation table string, e.g. ``U=URGENT M=MEDICAL``."""
+        abbrevs = self.compute_abbreviations(categories)
+        # abbrevs maps prefix → full name; invert for display
+        inv = {v: k for k, v in abbrevs.items()}
+        return " ".join(f"{inv[c]}={c}" for c in [cu.upper() for cu in categories] if cu.upper() in inv)
+
+    def _resolve_category(self, token: str, categories: List[str]) -> Optional[str]:
+        """Resolve *token* to a category via exact match or abbreviation.
+
+        Returns the matching category string (original case from board
+        config), or ``None`` if unresolvable.
+        """
+        token_up = token.upper()
+        cats_upper = [c.upper() for c in categories]
+
+        # Exact match first
+        if token_up in cats_upper:
+            return categories[cats_upper.index(token_up)]
+
+        # Abbreviation match
+        abbrevs = self.compute_abbreviations(categories)
+        if token_up in abbrevs:
+            matched = abbrevs[token_up]
+            return categories[cats_upper.index(matched)]
+
+        return None
+
+    def _resolve_region(self, token: str, regions: List[str]) -> Optional[str]:
+        """Resolve *token* to a region via exact (case-insensitive) match."""
+        token_up = token.upper()
+        regs_upper = [r.upper() for r in regions]
+        if token_up in regs_upper:
+            return regions[regs_upper.index(token_up)]
+        return None
 
     # ------------------------------------------------------------------
-    # post
+    # Short syntax — !p and !r
     # ------------------------------------------------------------------
 
-    def _handle_post(self, board, channel_idx, sender, sender_key, args):
+    def _handle_post_short(self, board, channel_idx, sender, sender_key, args):
+        """Handle ``!p [region] <abbrev> <text>``."""
         regions = board.regions
         categories = board.categories
         tokens = args.split(None, 2) if args else []
 
-        if regions:
-            if len(tokens) < 3:
-                return (
-                    f"Usage: !bbs post [region] [category] [text] | "
-                    f"Regions: {', '.join(regions)} | "
-                    f"Categories: {', '.join(categories)}"
-                )
-            region, category, text = tokens[0], tokens[1], tokens[2]
-            valid_r = [r.upper() for r in regions]
-            if region.upper() not in valid_r:
-                return f"Invalid region '{region}'. Valid: {', '.join(regions)}"
-            region = regions[valid_r.index(region.upper())]
-            valid_c = [c.upper() for c in categories]
-            if category.upper() not in valid_c:
-                return f"Invalid category '{category}'. Valid: {', '.join(categories)}"
-            category = categories[valid_c.index(category.upper())]
-        else:
-            if len(tokens) < 2:
-                return (
-                    f"Usage: !bbs post [category] [text] | "
-                    f"Categories: {', '.join(categories)}"
-                )
-            region = ""
-            category, text = tokens[0], tokens[1]
-            valid_c = [c.upper() for c in categories]
-            if category.upper() not in valid_c:
-                return f"Invalid category '{category}'. Valid: {', '.join(categories)}"
-            category = categories[valid_c.index(category.upper())]
+        region = ""
+        if regions and tokens:
+            resolved_r = self._resolve_region(tokens[0], regions)
+            if resolved_r:
+                region = resolved_r
+                tokens = tokens[1:]  # consume region token
+
+        # Now tokens should be [abbrev, text]
+        if len(tokens) < 2:
+            abbr = self._abbrev_table(categories)
+            return (
+                f"Usage: !p [region] <cat> <text> | {abbr}"
+            )
+
+        cat_token, text = tokens[0], tokens[1] if len(tokens) >= 2 else ""
+        # Rebuild text in case split(None,2) on a shorter string
+        if len(args.split(None, 2 if not region else 3)) > (2 if not region else 3):
+            # re-split with region consumed
+            pass
+
+        category = self._resolve_category(cat_token, categories)
+        if category is None:
+            abbr = self._abbrev_table(categories)
+            return (
+                f"Unknown category '{cat_token}'. Valid: {abbr}"
+            )
 
         msg = BbsMessage(
             channel=channel_idx,
@@ -402,44 +505,107 @@ class BbsCommandHandler:
         region_label = f" [{region}]" if region else ""
         return f"Posted [{category}]{region_label}: {text[:60]}"
 
-    # ------------------------------------------------------------------
-    # read
-    # ------------------------------------------------------------------
+    def _handle_read_short(self, board, args):
+        """Handle ``!r [region] [abbrev]``.
 
-    def _handle_read(self, board, args):
+        With no arguments returns 5 most recent messages across all
+        categories and always includes the abbreviation table.
+        """
         regions = board.regions
         categories = board.categories
         tokens = args.split() if args else []
+
         region = None
         category = None
 
-        if regions:
-            valid_r = [r.upper() for r in regions]
-            valid_c = [c.upper() for c in categories]
-            if tokens:
-                if tokens[0].upper() in valid_r:
-                    region = regions[valid_r.index(tokens[0].upper())]
-                    if len(tokens) >= 2:
-                        if tokens[1].upper() in valid_c:
-                            category = categories[valid_c.index(tokens[1].upper())]
-                        else:
-                            return f"Invalid category '{tokens[1]}'. Valid: {', '.join(categories)}"
-                else:
-                    return f"Invalid region '{tokens[0]}'. Valid: {', '.join(regions)}"
-        else:
-            valid_c = [c.upper() for c in categories]
-            if tokens:
-                if tokens[0].upper() in valid_c:
-                    category = categories[valid_c.index(tokens[0].upper())]
-                else:
-                    return f"Invalid category '{tokens[0]}'. Valid: {', '.join(categories)}"
+        if tokens and regions:
+            resolved_r = self._resolve_region(tokens[0], regions)
+            if resolved_r:
+                region = resolved_r
+                tokens = tokens[1:]
 
+        if tokens:
+            category = self._resolve_category(tokens[0], categories)
+            if category is None:
+                abbr = self._abbrev_table(categories)
+                return f"Unknown category '{tokens[0]}'. Valid: {abbr}"
+
+        return self._format_messages(board, region, category, include_abbrevs=not args)
+
+    # ------------------------------------------------------------------
+    # Full syntax — !bbs post / read
+    # ------------------------------------------------------------------
+
+    def _handle_post(self, board, channel_idx, sender, sender_key, args):
+        """Handle ``!bbs post [region] <category> <text>``."""
+        regions = board.regions
+        categories = board.categories
+        tokens = args.split(None, 2) if args else []
+
+        region = ""
+        if regions and tokens:
+            resolved_r = self._resolve_region(tokens[0], regions)
+            if resolved_r:
+                region = resolved_r
+                tokens = tokens[1:]
+
+        if len(tokens) < 2:
+            abbr = self._abbrev_table(categories)
+            region_hint = f" [region]" if regions else ""
+            return f"Usage: !bbs post{region_hint} <cat> <text> | {abbr}"
+
+        cat_token, text = tokens[0], tokens[1]
+        category = self._resolve_category(cat_token, categories)
+        if category is None:
+            abbr = self._abbrev_table(categories)
+            return f"Unknown category '{cat_token}'. Valid: {abbr}"
+
+        msg = BbsMessage(
+            channel=channel_idx,
+            region=region, category=category,
+            sender=sender, sender_key=sender_key, text=text,
+        )
+        self._service.post_message(msg)
+        region_label = f" [{region}]" if region else ""
+        return f"Posted [{category}]{region_label}: {text[:60]}"
+
+    def _handle_read(self, board, args):
+        """Handle ``!bbs read [region] [category]``."""
+        regions = board.regions
+        categories = board.categories
+        tokens = args.split() if args else []
+
+        region = None
+        category = None
+
+        if tokens and regions:
+            resolved_r = self._resolve_region(tokens[0], regions)
+            if resolved_r:
+                region = resolved_r
+                tokens = tokens[1:]
+
+        if tokens:
+            category = self._resolve_category(tokens[0], categories)
+            if category is None:
+                abbr = self._abbrev_table(categories)
+                return f"Unknown category '{tokens[0]}'. Valid: {abbr}"
+
+        return self._format_messages(board, region, category, include_abbrevs=False)
+
+    # ------------------------------------------------------------------
+    # Shared message formatter
+    # ------------------------------------------------------------------
+
+    def _format_messages(self, board, region, category, include_abbrevs: bool) -> str:
         messages = self._service.get_messages(
             board.channels, region=region, category=category, limit=self.READ_LIMIT,
         )
-        if not messages:
-            return "BBS: no messages found."
         lines = []
+        if include_abbrevs:
+            lines.append(self._handle_help(board))
+        if not messages:
+            lines.append("BBS: no messages found.")
+            return "\n".join(lines)
         for m in messages:
             ts = m.timestamp[:16].replace("T", " ")
             region_label = f"[{m.region}] " if m.region else ""
@@ -447,22 +613,13 @@ class BbsCommandHandler:
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
-    # help
+    # Help
     # ------------------------------------------------------------------
 
     def _handle_help(self, board) -> str:
-        cats = ", ".join(board.categories)
+        abbr = self._abbrev_table(board.categories)
+        header = f"BBS [{board.name}] | !p [cat] [text] | !r [cat]"
         if board.regions:
             regs = ", ".join(board.regions)
-            return (
-                f"BBS [{board.name}] | "
-                f"!bbs post [region] [cat] [text] | "
-                f"!bbs read [region] [cat] | "
-                f"Regions: {regs} | Categories: {cats}"
-            )
-        return (
-            f"BBS [{board.name}] | "
-            f"!bbs post [cat] [text] | "
-            f"!bbs read [cat] | "
-            f"Categories: {cats}"
-        )
+            return f"{header} | Regions: {regs} | {abbr}"
+        return f"{header} | {abbr}"

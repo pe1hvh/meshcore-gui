@@ -30,6 +30,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 > lower CPU usage during idle operation, and more stable map rendering.
 
 ---
+## [1.13.5] - 2026-03-14 — Route back-button and map popup flicker fixes
+
+### Fixed
+- 🛠 **Route page back-button navigated to main menu regardless of origin** — the two fixed navigation buttons (`/` and `/archive`) are replaced by a single `arrow_back` button that calls `window.history.back()`, so the user is always returned to the screen that opened the route page.
+- 🛠 **Map marker popup flickered on every 500 ms update tick** — the periodic `applyContacts` / `applyDevice` calls in `leaflet_map_panel.js` invoked `setIcon()` and `setPopupContent()` on all existing markers unconditionally. `setIcon()` rebuilds the marker DOM element; when a popup was open this caused the popup anchor to detach and reattach, producing visible flickering. Both functions now check `marker.isPopupOpen()` and skip icon/content updates while the popup is visible.
+- 🛠 **Map marker popup appeared with a flicker/flash on first click (main map and route map)** — Leaflet's default `fadeAnimation: true` caused popups to fade in from opacity 0, which on the Raspberry Pi rendered as a visible flicker. Both `L.map()` initialisations (`ensureMap` and `MeshCoreRouteMapBoot`) now set `fadeAnimation: false` and `markerZoomAnimation: false` so popups appear immediately without animation artefacts.
+
+### Changed
+- 🔄 `meshcore_gui/gui/route_page.py` — Replaced two fixed-destination header buttons with a single `arrow_back` button using `window.history.back()`.
+- 🔄 `meshcore_gui/static/leaflet_map_panel.js` — `applyDevice` and `applyContacts` guard `setIcon` / `setPopupContent` behind `isPopupOpen()`. Both `L.map()` calls add `fadeAnimation: false, markerZoomAnimation: false`.
+- 🔄 `meshcore_gui/config.py` — Version bumped to `1.13.5`.
+
+### Impact
+- Back navigation from the route page now always returns to the correct origin screen.
+- Open marker popups are stable during map update ticks; content refreshes on next tick after the popup is closed.
+- Popup opening is instant on both maps; no animation artefacts on low-power hardware.
+
+---
 ## [1.13.4] - 2026-03-12 — Room Server message classification fix
 
 ### Fixed

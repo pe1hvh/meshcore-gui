@@ -143,12 +143,8 @@ class RoutePage:
         with ui.header().classes('items-center px-4 py-2 shadow-md'):
             ui.button(
                 icon='arrow_back',
-                on_click=lambda: ui.navigate.to('/'),
-            ).props('flat round dense color=white').tooltip('Back to Dashboard')
-            ui.button(
-                icon='history',
-                on_click=lambda: ui.navigate.to('/archive'),
-            ).props('flat round dense color=white').tooltip('Back to Archive')
+                on_click=lambda: ui.run_javascript('window.history.back()'),
+            ).props('flat round dense color=white').tooltip('Back')
             ui.label('🗺️ MeshCore Route').classes(
                 'text-lg font-bold domca-header-text'
             ).style("font-family: 'JetBrains Mono', monospace")

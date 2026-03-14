@@ -536,34 +536,32 @@ class BbsCommandHandler:
         """Handle ``!p [region] <abbrev> <text>``."""
         regions = board.regions
         categories = board.categories
-        tokens = args.split(None, 2) if args else []
+
+        # First token may be a region; split loosely to detect it
+        first_tokens = args.split(None, 1) if args else []
 
         region = ""
-        if regions and tokens:
-            resolved_r = self._resolve_region(tokens[0], regions)
+        remainder = args  # everything after optional region
+
+        if regions and first_tokens:
+            resolved_r = self._resolve_region(first_tokens[0], regions)
             if resolved_r:
                 region = resolved_r
-                tokens = tokens[1:]  # consume region token
+                remainder = first_tokens[1] if len(first_tokens) > 1 else ""
 
-        # Now tokens should be [abbrev, text]
-        if len(tokens) < 2:
+        # Split remainder into exactly [category/abbrev, full_text]
+        cat_and_text = remainder.split(None, 1) if remainder else []
+
+        if len(cat_and_text) < 2:
             abbr = self._abbrev_table(categories)
-            return (
-                f"Usage: !p [region] <cat> <text> | {abbr}"
-            )
+            return f"Usage: !p [region] <cat> <text> | {abbr}"
 
-        cat_token, text = tokens[0], tokens[1] if len(tokens) >= 2 else ""
-        # Rebuild text in case split(None,2) on a shorter string
-        if len(args.split(None, 2 if not region else 3)) > (2 if not region else 3):
-            # re-split with region consumed
-            pass
+        cat_token, text = cat_and_text[0], cat_and_text[1]
 
         category = self._resolve_category(cat_token, categories)
         if category is None:
             abbr = self._abbrev_table(categories)
-            return (
-                f"Unknown category '{cat_token}'. Valid: {abbr}"
-            )
+            return f"Unknown category '{cat_token}'. Valid: {abbr}"
 
         msg = BbsMessage(
             channel=channel_idx,
@@ -609,21 +607,28 @@ class BbsCommandHandler:
         """Handle ``!bbs post [region] <category> <text>``."""
         regions = board.regions
         categories = board.categories
-        tokens = args.split(None, 2) if args else []
+
+        # First token may be a region; split loosely to detect it
+        first_tokens = args.split(None, 1) if args else []
 
         region = ""
-        if regions and tokens:
-            resolved_r = self._resolve_region(tokens[0], regions)
+        remainder = args  # everything after optional region
+
+        if regions and first_tokens:
+            resolved_r = self._resolve_region(first_tokens[0], regions)
             if resolved_r:
                 region = resolved_r
-                tokens = tokens[1:]
+                remainder = first_tokens[1] if len(first_tokens) > 1 else ""
 
-        if len(tokens) < 2:
+        # Split remainder into exactly [category, full_text]
+        cat_and_text = remainder.split(None, 1) if remainder else []
+
+        if len(cat_and_text) < 2:
             abbr = self._abbrev_table(categories)
-            region_hint = f" [region]" if regions else ""
+            region_hint = " [region]" if regions else ""
             return f"Usage: !bbs post{region_hint} <cat> <text> | {abbr}"
 
-        cat_token, text = tokens[0], tokens[1]
+        cat_token, text = cat_and_text[0], cat_and_text[1]
         category = self._resolve_category(cat_token, categories)
         if category is None:
             abbr = self._abbrev_table(categories)

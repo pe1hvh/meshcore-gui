@@ -1188,22 +1188,22 @@ meshcore-gui/
 
 MeshCore GUI includes an offline BBS that lets mesh nodes exchange structured messages by category, with optional region tagging.
 
-### Toegangsmodel
+### Access model
 
-De beheerder koppelt één of meer channels aan het BBS. Iedereen die op zo'n channel een bericht stuurt wordt automatisch gewhitelist. Daarna kunnen zij commando's sturen via **Direct Message** aan de BBS-node — het channel zelf blijft schoon.
+The operator links one or more channels to the BBS. Anyone who sends a message on a configured BBS channel is automatically added to the whitelist. After that, they can send commands via **Direct Message** to the BBS node — the channel itself stays clean.
 
 ```
-Eerste contact:  !bbs help  op het channel
-                 → node ziet de public key → whitelist
-Daarna:          !p U hulp nodig  als DM naar de node
-                 → verwerkt, reply via DM terug
+First contact:  !bbs help  on the configured channel
+                → node sees the public key → whitelists it
+After that:     !p U need assistance  as DM to the node
+                → processed, reply sent back via DM
 ```
 
-Wie nooit iets heeft gestuurd op een geconfigureerd channel staat niet op de whitelist en wordt silently genegeerd.
+Anyone who has never sent a message on a configured channel is not on the whitelist and is silently ignored.
 
 ### Settings
 
-Open via het tandwiel (⚙) in het BBS-panel, of navigeer naar `/bbs-settings`.
+Open via the gear icon (⚙) in the BBS panel, or navigate to `/bbs-settings`.
 
 ```
 BBS Settings
@@ -1217,65 +1217,65 @@ Retain:      48 hours
 
 ▶ Advanced
   Regions (comma-separated)
-  Allowed keys (leeg = auto-geleerd via channel-activiteit)
+  Allowed keys (empty = auto-learned from channel activity)
 ```
 
-- **Channels** — vink alle channels aan waarvan deelnemers toegang krijgen tot het BBS.
-- **Categories** — komma-gescheiden lijst van geldige categorie-tags.
-- **Retain** — berichtretentie in uren (standaard 48).
-- **Advanced → Regions** — optionele regio-tags voor geografische filtering.
-- **Advanced → Allowed keys** — handmatige whitelist-override; leeg laten om alleen automatisch te leren.
+- **Channels** — check all channels whose participants should have access to the BBS. Multiple channels can be selected.
+- **Categories** — comma-separated list of valid category tags.
+- **Retain** — message retention in hours (default 48).
+- **Advanced → Regions** — optional region tags for geographic filtering.
+- **Advanced → Allowed keys** — manual whitelist override; leave empty to rely on auto-learned keys only.
 
-### Commando-syntax
+### Command syntax
 
-#### Korte syntax
+#### Short syntax
 
-| Commando | Beschrijving |
+| Command | Description |
 |---|---|
-| `!p <cat> <tekst>` | Bericht posten |
-| `!p <regio> <cat> <tekst>` | Posten met regio |
-| `!r` | Laatste 5 berichten lezen (alle categorieën) |
-| `!r <cat>` | Lezen gefilterd op categorie |
-| `!r <regio> <cat>` | Lezen gefilterd op regio en categorie |
+| `!p <cat> <text>` | Post a message |
+| `!p <region> <cat> <text>` | Post with region |
+| `!r` | Read 5 most recent messages (all categories) |
+| `!r <cat>` | Read filtered by category |
+| `!r <region> <cat>` | Read filtered by region and category |
 
-Categorie-afkortingen worden automatisch berekend als de kortste unieke prefix. Voorbeeld met `URGENT, MEDICAL, LOGISTICS, STATUS, GENERAL`:
+Category abbreviations are computed automatically as the shortest unique prefix within the configured list. Example with `URGENT, MEDICAL, LOGISTICS, STATUS, GENERAL`:
 
 ```
 U=URGENT  M=MEDICAL  L=LOGISTICS  S=STATUS  G=GENERAL
 ```
 
-`!r` zonder argumenten en `!bbs help` geven altijd de afkortingstabel mee.
+If two categories share the same leading letters (e.g. `MEDICAL` and `MISSING`), longer prefixes are calculated automatically: `ME` and `MI`. The `!r` (without arguments) and `!bbs help` replies always include the current abbreviation table.
 
-#### Volledige syntax
+#### Full syntax
 
-| Commando | Beschrijving |
+| Command | Description |
 |---|---|
-| `!bbs help` | Toon commando's en afkortingstabel |
-| `!bbs post <category> <tekst>` | Bericht posten |
-| `!bbs post <regio> <category> <tekst>` | Posten met regio |
-| `!bbs read` | Laatste 5 berichten |
-| `!bbs read <category>` | Gefilterd op categorie |
-| `!bbs read <regio> <category>` | Gefilterd op regio en categorie |
+| `!bbs help` | Show commands and abbreviation table |
+| `!bbs post <category> <text>` | Post a message |
+| `!bbs post <region> <category> <text>` | Post with region |
+| `!bbs read` | Read 5 most recent messages |
+| `!bbs read <category>` | Read filtered by category |
+| `!bbs read <region> <category>` | Read filtered by region and category |
 
-#### Voorbeeld help-reply
+#### Example help reply
 
 ```
 BBS [NoodNet Zwolle, NoodNet Dalfsen] | !p [cat] [text] | !r [cat] | U=URGENT M=MEDICAL L=LOGISTICS S=STATUS G=GENERAL
 ```
 
-### Foutafhandeling
+### Error handling
 
-| Situatie | Reply |
+| Situation | Reply |
 |---|---|
-| Onbekende categorie | Lijst met geldige categorieën en afkortingen |
-| Ambigue afkorting | Lijst met overeenkomende categorieën |
-| Sender niet op whitelist | Silent drop — geen reply |
+| Unknown category | Lists valid categories and abbreviations |
+| Ambiguous abbreviation | Lists all matching categories |
+| Sender not on whitelist | Silent drop — no reply |
 
 ### Storage
 
 ```
-~/.meshcore-gui/bbs/bbs_messages.db    — SQLite berichtenopslag (WAL-mode)
-~/.meshcore-gui/bbs/bbs_config.json    — Board-configuratie
+~/.meshcore-gui/bbs/bbs_messages.db    — SQLite message store (WAL mode)
+~/.meshcore-gui/bbs/bbs_config.json    — Board configuration
 ```
 
 ---

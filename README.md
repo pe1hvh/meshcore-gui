@@ -62,23 +62,23 @@ A graphical user interface for MeshCore mesh network devices with native USB ser
   - [11.2. Quick Start](#112-quick-start)
   - [11.3. Bridge Configuration](#113-bridge-configuration)
   - [11.4. systemd Service](#114-systemd-service)
-- [12. Known Limitations](#12-known-limitations)
-- [13. Troubleshooting](#13-troubleshooting)
-  - [13.1. Linux](#131-linux)
-    - [13.1.1. Serial Quick Fixes](#1311-serial-quick-fixes)
-    - [13.1.2. BLE Quick Fixes](#1312-ble-quick-fixes)
-  - [13.2. macOS](#132-macos)
-  - [13.3. Windows](#133-windows)
-  - [13.4. All Platforms](#134-all-platforms)
-- [14. Development](#14-development)
-  - [14.1. Debug Mode](#141-debug-mode)
-  - [14.2. Project Structure](#142-project-structure)
-- [15. Roadmap](#15-roadmap)
-- [16. Disclaimer](#16-disclaimer)
-- [17. License](#17-license)
-- [18. Author](#18-author)
-- [19. Acknowledgments](#19-acknowledgments)
-
+- [12. BBS — Bulletin Board System](#12-bbs--bulletin-board-system)
+- [13. Known Limitations](#13-known-limitations)
+- [14. Troubleshooting](#14-troubleshooting)
+  - [14.1. Linux](#141-linux)
+    - [14.1.1. Serial Quick Fixes](#1411-serial-quick-fixes)
+    - [14.1.2. BLE Quick Fixes](#1412-ble-quick-fixes)
+  - [14.2. macOS](#142-macos)
+  - [14.3. Windows](#143-windows)
+  - [14.4. All Platforms](#144-all-platforms)
+- [15. Development](#15-development)
+  - [15.1. Debug Mode](#151-debug-mode)
+  - [15.2. Project Structure](#152-project-structure)
+- [16. Roadmap](#16-roadmap)
+- [17. Disclaimer](#17-disclaimer)
+- [18. License](#18-license)
+- [19. Author](#19-author)
+- [20. Acknowledgments](#20-acknowledgments)
 ---
 
 ## 1. Why This Project Exists
@@ -176,7 +176,7 @@ sudo systemctl status bluetooth
 > - `org.bluez.Error.AuthenticationFailed` or `org.bluez.Error.ConnectionAttemptFailed` in the logs
 > - Repeated bond/unbond cycles without a stable connection
 >
-> **Workaround:** If you experience BLE instability, try downgrading BlueZ to 5.65 or pinning the package version. Alternatively, use **USB serial mode** which is not affected by BlueZ and provides the most reliable connection on all platforms. See [13.1.2. BLE Quick Fixes](#1312-ble-quick-fixes) for troubleshooting steps.
+> **Workaround:** If you experience BLE instability, try downgrading BlueZ to 5.65 or pinning the package version. Alternatively, use **USB serial mode** which is not affected by BlueZ and provides the most reliable connection on all platforms. See [14.1.2. BLE Quick Fixes](#1412-ble-quick-fixes) for troubleshooting steps.
 
 **Raspberry Pi (Raspberry Pi OS Lite) — Serial:**
 ```bash
@@ -665,7 +665,7 @@ Route data is resolved from two sources (in priority order):
 2. **Contact out_path** — Stored route from the sender's contact record (fallback)
 
 <!-- CHANGED: Self-contained route table data (v1.7.1) -->
-Route table data (path hashes, resolved repeater names and channel names) is captured at receive time and stored in the archive. This means route tables (names and IDs) remain correct even when contacts are renamed, removed or offline. Sender identity is resolved via pubkey lookup with an automatic name-based fallback when the pubkey lookup fails. Map visualization still depends on live contact GPS data — see [12. Known Limitations](#12-known-limitations).
+Route table data (path hashes, resolved repeater names and channel names) is captured at receive time and stored in the archive. This means route tables (names and IDs) remain correct even when contacts are renamed, removed or offline. Sender identity is resolved via pubkey lookup with an automatic name-based fallback when the pubkey lookup fails. Map visualization still depends on live contact GPS data — see [13. Known Limitations](#13-known-limitations).
 
 <!-- ADDED: Room Server section (v5.7.0) -->
 ### 9.7. Room Server
@@ -923,268 +923,7 @@ To uninstall: `sudo bash install_bridge.sh --uninstall`
 
 For full documentation including architecture details, troubleshooting and assumptions, see [BRIDGE.md](BRIDGE.md).
 
-## 12. Known Limitations
-
-1. **Channel discovery timing** — Dynamic channel discovery probes the device at startup; on very slow links (especially BLE), some channels may be missed on first attempt. Channels are retried in the background and cached for subsequent startups when `CHANNEL_CACHE_ENABLED = True`
-2. **Initial load time** — GUI waits for device data before the first render is complete (mitigated by cache: if cached data exists, the GUI populates instantly)
-3. **Archive route map visualization** — Route table names and IDs are now stored at receive time and display correctly regardless of current contacts. However, the route *map* still depends on GPS coordinates from contacts currently in memory; archived messages without recent contact data may show incomplete map markers
-<!-- CHANGED: Partially resolved in v1.7.1 — route table self-contained, map still depends on live GPS -->
-4. **Room Server message latency** — Room Server messages travel over LoRa RF and arrive asynchronously (10–75 seconds per message). With many logged-in clients, receiving all historical messages can take 10+ minutes due to the round-robin push protocol
-5. **BLE Linux only** — BLE mode requires Linux with BlueZ and D-Bus. macOS and Windows are not supported for BLE connections because the PIN agent relies on the D-Bus system bus
-6. **BlueZ 5.66+ instability** — Recent BlueZ versions (shipped with Ubuntu 24.04, Debian Bookworm, Raspberry Pi OS Bookworm) can cause BLE connection instability, pairing failures and unexpected disconnects. USB serial is not affected and is recommended as the most reliable transport
-
-## 13. Troubleshooting
-
-### 14.1. Linux
-
-For Linux troubleshooting, start by checking device permissions and that the correct device argument is used.
-
-#### 13.1.1. Serial Quick Fixes
-
-##### GUI remains empty / serial connection fails
-
-1. Check the service logs:
-   ```bash
-   journalctl -u meshcore-gui -n 50 --no-pager
-   ```
-2. Confirm the serial device exists and is readable:
-   ```bash
-   ls -l /dev/serial/by-id
-   ```
-3. Ensure your user has serial permissions (commonly `dialout` on Linux):
-   ```bash
-   sudo usermod -a -G dialout $USER
-   # Log out and back in
-   ```
-4. Kill any existing GUI instance and free the port:
-   ```bash
-   pkill -9 -f meshcore_gui
-   sleep 3
-   ```
-5. Restart the GUI:
-   ```bash
-   python meshcore_gui.py /dev/ttyUSB0
-   ```
-
-#### 13.1.2. BLE Quick Fixes
-
-##### GUI remains empty / BLE connection fails
-
-1. Verify Bluetooth is running:
-   ```bash
-   sudo systemctl status bluetooth
-   ```
-   If not running: `sudo systemctl start bluetooth`
-
-2. Check that the device is visible:
-   ```bash
-   bluetoothctl scan on
-   ```
-   Look for your device's MAC address. Press `Ctrl+C` to stop scanning.
-
-3. Verify the D-Bus policy is installed:
-   ```bash
-   ls -l /etc/dbus-1/system.d/meshcore-ble.conf
-   ```
-   If missing, see [5.1.1. D-Bus Policy for BLE](#511-d-bus-policy-for-ble-linux-only).
-
-4. Remove stale BLE bond (if the device was previously paired):
-   ```bash
-   bluetoothctl remove AA:BB:CC:DD:EE:FF
-   ```
-
-5. Kill any existing GUI instance:
-   ```bash
-   pkill -9 -f meshcore_gui
-   sleep 3
-   ```
-
-6. Restart the GUI:
-   ```bash
-   python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --debug-on
-   ```
-   Check the debug output for D-Bus or pairing errors.
-
-##### BLE PIN agent errors
-
-If you see `org.freedesktop.DBus.Error.AccessDenied` in the logs, the D-Bus policy is missing or incorrect. Reinstall it per [5.1.1](#511-d-bus-policy-for-ble-linux-only) and reload D-Bus:
-
-```bash
-sudo systemctl reload dbus
-```
-
-##### BLE reconnect issues
-
-If the connection drops and does not recover, the BLE bond may be stale. The application includes automatic bond cleanup and reconnect logic, but in some cases a manual bond removal is needed:
-
-```bash
-bluetoothctl remove AA:BB:CC:DD:EE:FF
-sudo systemctl restart meshcore-gui
-```
-
-##### BlueZ 5.66+ driver instability
-
-If BLE connections are consistently unreliable (frequent disconnects, pairing loops, authentication errors), the issue is likely caused by changes in BlueZ 5.66+. Check your BlueZ version:
-
-```bash
-bluetoothctl --version
-```
-
-If the version is 5.66 or higher, you have several options:
-
-1. **Switch to USB serial** (recommended) — the most reliable workaround. Connect your device via USB and use serial mode instead:
-   ```bash
-   python meshcore_gui.py /dev/ttyACM0
-   ```
-
-2. **Downgrade BlueZ** — on Debian/Ubuntu, you can pin an older version:
-   ```bash
-   sudo apt install bluez=5.65-0ubuntu1
-   sudo apt-mark hold bluez
-   ```
-   Note: exact package versions vary by distribution.
-
-3. **Disable LE Privacy and Secure Connections** — in some cases, adding these options to `/etc/bluetooth/main.conf` can help:
-   ```ini
-   [General]
-   Privacy = off
-
-   [LE]
-   MinConnectionInterval=6
-   MaxConnectionInterval=9
-   ConnectionLatency=0
-   ```
-   Restart Bluetooth after editing: `sudo systemctl restart bluetooth`
-
-### 14.2. macOS
-
-- Ensure the device shows up under `/dev/tty.usb*`, `/dev/tty.usbserial*`, or `/dev/tty.usbmodem*`
-- Close any other app that might be using the serial port
-
-### 13.3. Windows
-
-- Confirm the COM port in Device Manager → Ports (COM & LPT)
-- Close any other app that might be using the COM port
-
-### 13.4. All Platforms
-
-#### 13.4.1. Device Not Found
-
-**Serial:** Make sure the MeshCore device is powered on, running Serial Companion firmware, and the correct serial port is selected.
-
-**BLE:** Ensure the device is powered on and discoverable (`bluetoothctl scan on`). Check that the MAC address is correct and that the BLE PIN matches (default: `123456`). On Linux, verify D-Bus permissions — see `docs/ble/BLE_ARCHITECTURE.md` for details.
-
-#### 13.4.2. Messages Not Arriving
-
-- Check if your channels are correctly configured
-- Use `meshcli` to verify that messages are arriving
-
-#### 13.4.3. Clearing the Cache
-
-If cached data causes issues (e.g. stale contacts), delete the cache file:
-
-```bash
-rm ~/.meshcore-gui/cache/*.json
-```
-
-The cache will be recreated on the next successful serial connection.
-
-## 14. Development
-
-### 14.1. Debug Mode
-
-Enable via command line flag:
-
-```bash
-python meshcore_gui.py /dev/ttyUSB0 --debug-on
-```
-
-Or set `DEBUG = True` in `meshcore_gui/config.py`.
-
-Debug output is written to both stdout and a per-device rotating log file at `~/.meshcore-gui/logs/<ADDRESS>_meshcore_gui.log` (e.g. `F0_9E_9E_75_A3_01_meshcore_gui.log`).
-
-### 14.2. Project Structure
-
-<!-- CHANGED: Project structure updated — added archive_page.py and message_archive.py -->
-
-```
-meshcore-gui/
-├── meshcore_gui.py                  # Entry point (auto-detects Serial or BLE)
-├── install_ble_stable.sh            # BLE installer (systemd service for BLE connections)
-├── install_serial.sh                # Serial installer (systemd service for serial connections)
-├── meshcore_gui/                    # Application package
-│   ├── __init__.py
-│   ├── __main__.py                  # Alternative entry: python -m meshcore_gui
-│   ├── config.py                    # OPERATOR_CALLSIGN, LANDING_SVG_PATH, DEBUG flag, channel discovery settings (MAX_CHANNELS, CHANNEL_CACHE_ENABLED), SERIAL_* defaults, BLE_PIN, TRANSPORT mode, RECONNECT_* settings, refresh interval, retention settings, BOT_DEVICE_NAME, per-device log file naming
-│   ├── ble/                         # Connection layer (serial + BLE transport)
-│   │   ├── __init__.py
-│   │   ├── worker.py                # _BaseWorker + SerialWorker + BLEWorker + create_worker() factory; thread lifecycle, cache-first startup, disconnect detection, auto-reconnect, background key retry
-│   │   ├── ble_agent.py             # BlueZ D-Bus PIN agent for BLE pairing (Linux only, lazy-loaded)
-│   │   ├── ble_reconnect.py         # BLE bond cleanup and reconnect loop via D-Bus (lazy-loaded)
-│   │   ├── commands.py              # Command execution (send, refresh, advert)
-│   │   ├── events.py                # Event callbacks (messages, RX log) with path hash caching and name resolution at receive time
-│   │   └── packet_decoder.py        # Raw LoRa packet decoding via meshcoredecoder
-│   ├── core/                        # Domain models and shared state
-│   │   ├── __init__.py
-│   │   ├── models.py                # Dataclasses: Message, Contact, DeviceInfo, RxLogEntry, RouteNode
-│   │   ├── shared_data.py           # Thread-safe shared data store
-│   │   └── protocols.py             # Protocol interfaces (ISP/DIP)
-│   ├── gui/                         # NiceGUI web interface
-│   │   ├── __init__.py
-│   │   ├── constants.py             # UI display constants
-│   │   ├── dashboard.py             # Main dashboard page orchestrator, loads landing SVG from config.LANDING_SVG_PATH
-│   │   ├── route_page.py            # Message route visualization page
-│   │   ├── archive_page.py          # Message archive viewer with filters and pagination
-│   │   └── panels/                  # Modular UI panels
-│   │       ├── __init__.py
-│   │       ├── device_panel.py      # Device info display
-│   │       ├── contacts_panel.py    # Contacts list with DM, pin/unpin, bulk delete, auto-add toggle
-│   │       ├── map_panel.py         # Leaflet map
-│   │       ├── input_panel.py       # Message input and channel select
-│   │       ├── filter_panel.py      # Channel filters and bot toggle
-│   │       ├── messages_panel.py    # Filtered message display with archive button
-│   │       ├── actions_panel.py     # Refresh and advert buttons
-│   │       ├── room_server_panel.py # Per-room-server card with login/logout and messages
-│   │       └── rxlog_panel.py       # RX log table
-│   └── services/                    # Business logic
-│       ├── __init__.py
-│       ├── bot.py                   # Keyword-triggered auto-reply bot
-│       ├── cache.py                 # Local JSON cache per device
-│       ├── contact_cleaner.py       # Bulk-delete logic for unpinned contacts
-│       ├── dedup.py                 # Message deduplication
-│       ├── message_archive.py       # Persistent message and RX log archive
-│       ├── pin_store.py             # Persistent pin state storage per device
-│       ├── room_password_store.py   # Persistent Room Server password storage per device
-│       └── route_builder.py         # Route data construction
-├── docs/
-│   ├── TROUBLESHOOTING.md           # BLE troubleshooting guide (detailed)
-│   ├── MeshCore_GUI_Design.docx     # Design document
-│   ├── ble_capture_workflow_t_1000_e_explanation.md
-│   └── ble_capture_workflow_t_1000_e_uitleg.md
-├── meshcore_bridge.py               # Bridge entry point
-├── meshcore_bridge/                  # Bridge daemon package
-│   ├── __init__.py
-│   ├── __main__.py                  # CLI, dual-worker setup, NiceGUI server
-│   ├── config.py                    # YAML config loading (BridgeConfig dataclass)
-│   ├── bridge_engine.py             # Core bridge logic: poll, forward, dedup, loop prevention
-│   └── gui/                         # Bridge dashboard (DOMCA themed)
-│       ├── __init__.py
-│       ├── dashboard.py             # Bridge status dashboard page
-│       └── panels/
-│           ├── __init__.py
-│           ├── status_panel.py      # Device A/B connection status + statistics
-│           └── log_panel.py         # Forwarded message log
-├── bridge_config.yaml               # Bridge configuration template (YAML)
-├── install_bridge.sh                # Bridge systemd service installer
-├── BRIDGE.md                        # Bridge documentation
-├── .gitattributes
-├── .gitignore
-├── LICENSE
-├── CHANGELOG.md
-└── README.md
-```
-
-## 15. BBS — Bulletin Board System
+## 12. BBS — Bulletin Board System
 
 MeshCore GUI includes an offline BBS that lets mesh nodes exchange structured messages by category, with optional region tagging.
 
@@ -1300,31 +1039,292 @@ BBS [NoodNet Zwolle, NoodNet Dalfsen] | !p [cat] [text] | !r [cat] [1-5] | !s [c
 
 ---
 
+## 13. Known Limitations
+
+1. **Channel discovery timing** — Dynamic channel discovery probes the device at startup; on very slow links (especially BLE), some channels may be missed on first attempt. Channels are retried in the background and cached for subsequent startups when `CHANNEL_CACHE_ENABLED = True`
+2. **Initial load time** — GUI waits for device data before the first render is complete (mitigated by cache: if cached data exists, the GUI populates instantly)
+3. **Archive route map visualization** — Route table names and IDs are now stored at receive time and display correctly regardless of current contacts. However, the route *map* still depends on GPS coordinates from contacts currently in memory; archived messages without recent contact data may show incomplete map markers
+<!-- CHANGED: Partially resolved in v1.7.1 — route table self-contained, map still depends on live GPS -->
+4. **Room Server message latency** — Room Server messages travel over LoRa RF and arrive asynchronously (10–75 seconds per message). With many logged-in clients, receiving all historical messages can take 10+ minutes due to the round-robin push protocol
+5. **BLE Linux only** — BLE mode requires Linux with BlueZ and D-Bus. macOS and Windows are not supported for BLE connections because the PIN agent relies on the D-Bus system bus
+6. **BlueZ 5.66+ instability** — Recent BlueZ versions (shipped with Ubuntu 24.04, Debian Bookworm, Raspberry Pi OS Bookworm) can cause BLE connection instability, pairing failures and unexpected disconnects. USB serial is not affected and is recommended as the most reliable transport
+
+## 14. Troubleshooting
+
+### 14.1. Linux
+
+For Linux troubleshooting, start by checking device permissions and that the correct device argument is used.
+
+#### 14.1.1. Serial Quick Fixes
+
+##### GUI remains empty / serial connection fails
+
+1. Check the service logs:
+   ```bash
+   journalctl -u meshcore-gui -n 50 --no-pager
+   ```
+2. Confirm the serial device exists and is readable:
+   ```bash
+   ls -l /dev/serial/by-id
+   ```
+3. Ensure your user has serial permissions (commonly `dialout` on Linux):
+   ```bash
+   sudo usermod -a -G dialout $USER
+   # Log out and back in
+   ```
+4. Kill any existing GUI instance and free the port:
+   ```bash
+   pkill -9 -f meshcore_gui
+   sleep 3
+   ```
+5. Restart the GUI:
+   ```bash
+   python meshcore_gui.py /dev/ttyUSB0
+   ```
+
+#### 14.1.2. BLE Quick Fixes
+
+##### GUI remains empty / BLE connection fails
+
+1. Verify Bluetooth is running:
+   ```bash
+   sudo systemctl status bluetooth
+   ```
+   If not running: `sudo systemctl start bluetooth`
+
+2. Check that the device is visible:
+   ```bash
+   bluetoothctl scan on
+   ```
+   Look for your device's MAC address. Press `Ctrl+C` to stop scanning.
+
+3. Verify the D-Bus policy is installed:
+   ```bash
+   ls -l /etc/dbus-1/system.d/meshcore-ble.conf
+   ```
+   If missing, see [5.1.1. D-Bus Policy for BLE](#511-d-bus-policy-for-ble-linux-only).
+
+4. Remove stale BLE bond (if the device was previously paired):
+   ```bash
+   bluetoothctl remove AA:BB:CC:DD:EE:FF
+   ```
+
+5. Kill any existing GUI instance:
+   ```bash
+   pkill -9 -f meshcore_gui
+   sleep 3
+   ```
+
+6. Restart the GUI:
+   ```bash
+   python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --debug-on
+   ```
+   Check the debug output for D-Bus or pairing errors.
+
+##### BLE PIN agent errors
+
+If you see `org.freedesktop.DBus.Error.AccessDenied` in the logs, the D-Bus policy is missing or incorrect. Reinstall it per [5.1.1](#511-d-bus-policy-for-ble-linux-only) and reload D-Bus:
+
+```bash
+sudo systemctl reload dbus
+```
+
+##### BLE reconnect issues
+
+If the connection drops and does not recover, the BLE bond may be stale. The application includes automatic bond cleanup and reconnect logic, but in some cases a manual bond removal is needed:
+
+```bash
+bluetoothctl remove AA:BB:CC:DD:EE:FF
+sudo systemctl restart meshcore-gui
+```
+
+##### BlueZ 5.66+ driver instability
+
+If BLE connections are consistently unreliable (frequent disconnects, pairing loops, authentication errors), the issue is likely caused by changes in BlueZ 5.66+. Check your BlueZ version:
+
+```bash
+bluetoothctl --version
+```
+
+If the version is 5.66 or higher, you have several options:
+
+1. **Switch to USB serial** (recommended) — the most reliable workaround. Connect your device via USB and use serial mode instead:
+   ```bash
+   python meshcore_gui.py /dev/ttyACM0
+   ```
+
+2. **Downgrade BlueZ** — on Debian/Ubuntu, you can pin an older version:
+   ```bash
+   sudo apt install bluez=5.65-0ubuntu1
+   sudo apt-mark hold bluez
+   ```
+   Note: exact package versions vary by distribution.
+
+3. **Disable LE Privacy and Secure Connections** — in some cases, adding these options to `/etc/bluetooth/main.conf` can help:
+   ```ini
+   [General]
+   Privacy = off
+
+   [LE]
+   MinConnectionInterval=6
+   MaxConnectionInterval=9
+   ConnectionLatency=0
+   ```
+   Restart Bluetooth after editing: `sudo systemctl restart bluetooth`
+
+### 14.2. macOS
+
+- Ensure the device shows up under `/dev/tty.usb*`, `/dev/tty.usbserial*`, or `/dev/tty.usbmodem*`
+- Close any other app that might be using the serial port
+
+### 14.3. Windows
+
+- Confirm the COM port in Device Manager → Ports (COM & LPT)
+- Close any other app that might be using the COM port
+
+### 14.4. All Platforms
+
+#### 14.4.1. Device Not Found
+
+**Serial:** Make sure the MeshCore device is powered on, running Serial Companion firmware, and the correct serial port is selected.
+
+**BLE:** Ensure the device is powered on and discoverable (`bluetoothctl scan on`). Check that the MAC address is correct and that the BLE PIN matches (default: `123456`). On Linux, verify D-Bus permissions — see `docs/ble/BLE_ARCHITECTURE.md` for details.
+
+#### 14.4.2. Messages Not Arriving
+
+- Check if your channels are correctly configured
+- Use `meshcli` to verify that messages are arriving
+
+#### 14.4.3. Clearing the Cache
+
+If cached data causes issues (e.g. stale contacts), delete the cache file:
+
+```bash
+rm ~/.meshcore-gui/cache/*.json
+```
+
+The cache will be recreated on the next successful serial connection.
+
+## 15. Development
+
+### 15.1. Debug Mode
+
+Enable via command line flag:
+
+```bash
+python meshcore_gui.py /dev/ttyUSB0 --debug-on
+```
+
+Or set `DEBUG = True` in `meshcore_gui/config.py`.
+
+Debug output is written to both stdout and a per-device rotating log file at `~/.meshcore-gui/logs/<ADDRESS>_meshcore_gui.log` (e.g. `F0_9E_9E_75_A3_01_meshcore_gui.log`).
+
+### 15.2. Project Structure
+
+<!-- CHANGED: Project structure updated — added archive_page.py and message_archive.py -->
+
+```
+meshcore-gui/
+├── meshcore_gui.py                  # Entry point (auto-detects Serial or BLE)
+├── install_ble_stable.sh            # BLE installer (systemd service for BLE connections)
+├── install_serial.sh                # Serial installer (systemd service for serial connections)
+├── meshcore_gui/                    # Application package
+│   ├── __init__.py
+│   ├── __main__.py                  # Alternative entry: python -m meshcore_gui
+│   ├── config.py                    # OPERATOR_CALLSIGN, LANDING_SVG_PATH, DEBUG flag, channel discovery settings (MAX_CHANNELS, CHANNEL_CACHE_ENABLED), SERIAL_* defaults, BLE_PIN, TRANSPORT mode, RECONNECT_* settings, refresh interval, retention settings, BOT_DEVICE_NAME, per-device log file naming
+│   ├── ble/                         # Connection layer (serial + BLE transport)
+│   │   ├── __init__.py
+│   │   ├── worker.py                # _BaseWorker + SerialWorker + BLEWorker + create_worker() factory; thread lifecycle, cache-first startup, disconnect detection, auto-reconnect, background key retry
+│   │   ├── ble_agent.py             # BlueZ D-Bus PIN agent for BLE pairing (Linux only, lazy-loaded)
+│   │   ├── ble_reconnect.py         # BLE bond cleanup and reconnect loop via D-Bus (lazy-loaded)
+│   │   ├── commands.py              # Command execution (send, refresh, advert)
+│   │   ├── events.py                # Event callbacks (messages, RX log) with path hash caching and name resolution at receive time
+│   │   └── packet_decoder.py        # Raw LoRa packet decoding via meshcoredecoder
+│   ├── core/                        # Domain models and shared state
+│   │   ├── __init__.py
+│   │   ├── models.py                # Dataclasses: Message, Contact, DeviceInfo, RxLogEntry, RouteNode
+│   │   ├── shared_data.py           # Thread-safe shared data store
+│   │   └── protocols.py             # Protocol interfaces (ISP/DIP)
+│   ├── gui/                         # NiceGUI web interface
+│   │   ├── __init__.py
+│   │   ├── constants.py             # UI display constants
+│   │   ├── dashboard.py             # Main dashboard page orchestrator, loads landing SVG from config.LANDING_SVG_PATH
+│   │   ├── route_page.py            # Message route visualization page
+│   │   ├── archive_page.py          # Message archive viewer with filters and pagination
+│   │   └── panels/                  # Modular UI panels
+│   │       ├── __init__.py
+│   │       ├── device_panel.py      # Device info display
+│   │       ├── contacts_panel.py    # Contacts list with DM, pin/unpin, bulk delete, auto-add toggle
+│   │       ├── map_panel.py         # Leaflet map
+│   │       ├── input_panel.py       # Message input and channel select
+│   │       ├── filter_panel.py      # Channel filters and bot toggle
+│   │       ├── messages_panel.py    # Filtered message display with archive button
+│   │       ├── actions_panel.py     # Refresh and advert buttons
+│   │       ├── room_server_panel.py # Per-room-server card with login/logout and messages
+│   │       └── rxlog_panel.py       # RX log table
+│   └── services/                    # Business logic
+│       ├── __init__.py
+│       ├── bot.py                   # Keyword-triggered auto-reply bot
+│       ├── cache.py                 # Local JSON cache per device
+│       ├── contact_cleaner.py       # Bulk-delete logic for unpinned contacts
+│       ├── dedup.py                 # Message deduplication
+│       ├── message_archive.py       # Persistent message and RX log archive
+│       ├── pin_store.py             # Persistent pin state storage per device
+│       ├── room_password_store.py   # Persistent Room Server password storage per device
+│       └── route_builder.py         # Route data construction
+├── docs/
+│   ├── TROUBLESHOOTING.md           # BLE troubleshooting guide (detailed)
+│   ├── MeshCore_GUI_Design.docx     # Design document
+│   ├── ble_capture_workflow_t_1000_e_explanation.md
+│   └── ble_capture_workflow_t_1000_e_uitleg.md
+├── meshcore_bridge.py               # Bridge entry point
+├── meshcore_bridge/                  # Bridge daemon package
+│   ├── __init__.py
+│   ├── __main__.py                  # CLI, dual-worker setup, NiceGUI server
+│   ├── config.py                    # YAML config loading (BridgeConfig dataclass)
+│   ├── bridge_engine.py             # Core bridge logic: poll, forward, dedup, loop prevention
+│   └── gui/                         # Bridge dashboard (DOMCA themed)
+│       ├── __init__.py
+│       ├── dashboard.py             # Bridge status dashboard page
+│       └── panels/
+│           ├── __init__.py
+│           ├── status_panel.py      # Device A/B connection status + statistics
+│           └── log_panel.py         # Forwarded message log
+├── bridge_config.yaml               # Bridge configuration template (YAML)
+├── install_bridge.sh                # Bridge systemd service installer
+├── BRIDGE.md                        # Bridge documentation
+├── .gitattributes
+├── .gitignore
+├── LICENSE
+├── CHANGELOG.md
+└── README.md
+```
+
 ## 16. Roadmap
 
 This project is under active development. The most common features from the official MeshCore Companion apps are being implemented gradually. Planned additions include:
 
 - [x] **Cross-frequency bridge** — standalone daemon connecting two devices on different frequencies via configurable channel forwarding (see [11. Cross-Frequency Bridge](#11-cross-frequency-bridge))
-- [x] **BBS — Bulletin Board System** — offline message board with DM-based commands, category/region filtering and automatic abbreviations (see [15. BBS](#15-bbs--bulletin-board-system))
+- [x] **BBS — Bulletin Board System** — offline message board with DM-based commands, category/region filtering and automatic abbreviations (see [12. BBS](#12-bbs--bulletin-board-system))
 - [ ] **Observer mode** — passively monitor mesh traffic without transmitting, useful for network analysis, coverage mapping and long-term logging
 - [ ] **Room Server administration** — authenticate as admin to manage Room Server settings and users directly from the GUI
 - [ ] **Repeater management** — connect to repeater nodes to view status and adjust configuration
 
 Have a feature request or want to contribute? Open an issue or submit a pull request.
 
-## 16. Disclaimer
+## 17. Disclaimer
 
 This is an **independent community project** and is not affiliated with or endorsed by the official [MeshCore](https://github.com/meshcore-dev) development team. It is built on top of the open-source `meshcore` Python library.
 
-## 17. License
+## 18. License
 
 MIT License - see LICENSE file
 
-## 18. Author
+## 19. Author
 
 **PE1HVH** — [GitHub](https://github.com/pe1hvh)
 
-## 19. Acknowledgments
+## 20. Acknowledgments
 
 - [MeshCore](https://github.com/meshcore-dev) — Mesh networking firmware and protocol
 - [meshcore_py](https://github.com/meshcore-dev/meshcore_py) — Python bindings for MeshCore

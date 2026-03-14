@@ -146,7 +146,7 @@ class BbsPanel:
 
             self._boards_settings_container = ui.column().classes('w-full gap-3')
             with self._boards_settings_container:
-                ui.label('Verbind het apparaat om kanalen te zien.').classes(
+                ui.label('Connect device to see channels.').classes(
                     'text-xs text-gray-400 italic'
                 )
 
@@ -167,7 +167,7 @@ class BbsPanel:
         with self._board_btn_row:
             ui.label('Board:').classes('text-sm text-gray-600')
             if not boards:
-                ui.label('Geen actieve boards.').classes(
+                ui.label('No active boards.').classes(
                     'text-xs text-gray-400 italic'
                 )
                 return
@@ -238,10 +238,10 @@ class BbsPanel:
         self._msg_list_container.clear()
         with self._msg_list_container:
             if self._active_board is None:
-                ui.label('Selecteer een board hierboven.').classes('text-xs text-gray-400 italic')
+                ui.label('Select a board above.').classes('text-xs text-gray-400 italic')
                 return
             if not self._active_board.channels:
-                ui.label('Geen kanalen gekoppeld aan dit board.').classes(
+                ui.label('No channels assigned to this board.').classes(
                     'text-xs text-gray-400 italic'
                 )
                 return
@@ -251,7 +251,7 @@ class BbsPanel:
                 category=self._active_category,
             )
             if not messages:
-                ui.label('Geen berichten.').classes('text-xs text-gray-400 italic')
+                ui.label('No messages.').classes('text-xs text-gray-400 italic')
                 return
             for msg in messages:
                 self._render_message_row(msg)
@@ -270,15 +270,15 @@ class BbsPanel:
 
     def _on_post(self) -> None:
         if self._active_board is None:
-            ui.notify('Selecteer eerst een board.', type='warning')
+            ui.notify('Select a board first.', type='warning')
             return
         if not self._active_board.channels:
-            ui.notify('Geen kanalen gekoppeld aan dit board.', type='warning')
+            ui.notify('No channels assigned to this board.', type='warning')
             return
 
         text = (self._text_input.value or '').strip() if self._text_input else ''
         if not text:
-            ui.notify('Berichttekst mag niet leeg zijn.', type='warning')
+            ui.notify('Message text cannot be empty.', type='warning')
             return
 
         category = (
@@ -286,7 +286,7 @@ class BbsPanel:
             else (self._active_board.categories[0] if self._active_board.categories else '')
         )
         if not category:
-            ui.notify('Selecteer een categorie.', type='warning')
+            ui.notify('Please select a category.', type='warning')
             return
 
         region = ''
@@ -318,7 +318,7 @@ class BbsPanel:
         if self._text_input:
             self._text_input.value = ''
         self._refresh_messages()
-        ui.notify('Bericht geplaatst.', type='positive')
+        ui.notify('Message posted.', type='positive')
 
     # ------------------------------------------------------------------
     # Settings -- channel list (standard view)
@@ -331,7 +331,7 @@ class BbsPanel:
         self._boards_settings_container.clear()
         with self._boards_settings_container:
             if not self._device_channels:
-                ui.label('Verbind het apparaat om kanalen te zien.').classes(
+                ui.label('Connect device to see channels.').classes(
                     'text-xs text-gray-400 italic'
                 )
                 return
@@ -343,8 +343,8 @@ class BbsPanel:
             ui.separator()
 
             # Advanced section (collapsed)
-            with ui.expansion('Geavanceerd', value=False).classes('w-full').props('dense'):
-                ui.label("Regio's en sleutellijst per kanaal").classes(
+            with ui.expansion('Advanced', value=False).classes('w-full').props('dense'):
+                ui.label('Regions and key list per channel').classes(
                     'text-xs text-gray-500 pb-1'
                 )
                 advanced_any = False
@@ -356,7 +356,7 @@ class BbsPanel:
                         advanced_any = True
                 if not advanced_any:
                     ui.label(
-                        'Zet minimaal één kanaal op Actief om geavanceerde opties te zien.'
+                        'Enable at least one channel to see advanced options.'
                     ).classes('text-xs text-gray-400 italic')
 
     def _render_channel_settings_row(self, ch: Dict) -> None:
@@ -381,22 +381,22 @@ class BbsPanel:
             with ui.row().classes('w-full items-center justify-between'):
                 ui.label(f'[{idx}] {ch_name}').classes('text-sm font-medium')
                 active_toggle = ui.toggle(
-                    {True: '● Actief', False: '○ Uit'},
+                    {True: '● Active', False: '○ Off'},
                     value=is_active,
                 ).classes('text-xs')
 
             # Categories
             with ui.row().classes('w-full items-center gap-2 mt-1'):
-                ui.label('Categorieën:').classes('text-xs text-gray-600 w-24 shrink-0')
+                ui.label('Categories:').classes('text-xs text-gray-600 w-24 shrink-0')
                 cats_input = ui.input(value=cats_value).classes('text-xs flex-grow')
 
             # Retention
             with ui.row().classes('w-full items-center gap-2 mt-1'):
-                ui.label('Bewaar:').classes('text-xs text-gray-600 w-24 shrink-0')
+                ui.label('Retain:').classes('text-xs text-gray-600 w-24 shrink-0')
                 retention_input = ui.input(value=retention_value).classes('text-xs').style(
                     'max-width: 80px'
                 )
-                ui.label('uur').classes('text-xs text-gray-600')
+                ui.label('hrs').classes('text-xs text-gray-600')
 
             def _save(
                 bid=board_id,
@@ -431,18 +431,18 @@ class BbsPanel:
                         allowed_keys=existing.allowed_keys if existing else [],
                     )
                     self._config_store.set_board(updated)
-                    debug_print(f'BBS settings: kanaal {bid} opgeslagen')
-                    ui.notify(f'{bname} opgeslagen.', type='positive')
+                    debug_print(f'BBS settings: channel {bid} saved')
+                    ui.notify(f'{bname} saved.', type='positive')
                 else:
                     self._config_store.delete_board(bid)
                     if self._active_board and self._active_board.id == bid:
                         self._active_board = None
-                    debug_print(f'BBS settings: kanaal {bid} uitgeschakeld')
-                    ui.notify(f'{bname} uitgeschakeld.', type='warning')
+                    debug_print(f'BBS settings: channel {bid} disabled')
+                    ui.notify(f'{bname} disabled.', type='warning')
                 self._rebuild_board_buttons()
                 self._rebuild_boards_settings()
 
-            ui.button('Opslaan', on_click=_save).props('no-caps').classes('text-xs mt-1')
+            ui.button('Save', on_click=_save).props('no-caps').classes('text-xs mt-1')
 
     # ------------------------------------------------------------------
     # Settings -- advanced section (collapsed)
@@ -465,12 +465,12 @@ class BbsPanel:
             ui.label(f'[{idx}] {ch_name}').classes('text-sm font-medium')
 
             regions_input = ui.input(
-                label="Regio's (komma-gescheiden)",
+                label="Regions (comma-separated)",
                 value=', '.join(board.regions),
             ).classes('w-full text-xs')
 
             wl_input = ui.input(
-                label='Toegestane sleutels (leeg = iedereen op het kanaal)',
+                label='Allowed keys (empty = everyone on the channel)',
                 value=', '.join(board.allowed_keys),
             ).classes('w-full text-xs')
 
@@ -481,7 +481,7 @@ class BbsPanel:
             ]
             ch_checks: Dict[int, object] = {}
             if other_channels:
-                ui.label('Combineer met kanalen:').classes('text-xs text-gray-600 mt-1')
+                ui.label('Combine with channels:').classes('text-xs text-gray-600 mt-1')
                 with ui.row().classes('flex-wrap gap-2'):
                     for other_ch in other_channels:
                         other_idx = other_ch.get('idx', other_ch.get('index', 0))
@@ -502,7 +502,7 @@ class BbsPanel:
             ) -> None:
                 existing = self._config_store.get_board(bid)
                 if existing is None:
-                    ui.notify('Zet het kanaal eerst op Actief.', type='warning')
+                    ui.notify('Enable this channel first.', type='warning')
                     return
                 regions = [
                     r.strip() for r in (ri.value or '').split(',') if r.strip()
@@ -521,12 +521,12 @@ class BbsPanel:
                     allowed_keys=allowed_keys,
                 )
                 self._config_store.set_board(updated)
-                debug_print(f'BBS settings (geavanceerd): {bid} opgeslagen')
-                ui.notify(f'{bname} opgeslagen.', type='positive')
+                debug_print(f'BBS settings (advanced): {bid} saved')
+                ui.notify(f'{bname} saved.', type='positive')
                 self._rebuild_board_buttons()
                 self._rebuild_boards_settings()
 
-            ui.button('Opslaan', on_click=_save_adv).props('no-caps').classes('text-xs mt-1')
+            ui.button('Save', on_click=_save_adv).props('no-caps').classes('text-xs mt-1')
             ui.separator()
 
     # ------------------------------------------------------------------

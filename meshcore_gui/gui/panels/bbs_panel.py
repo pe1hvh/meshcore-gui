@@ -30,9 +30,10 @@ def _slug(name: str) -> str:
 class BbsPanel:
     """BBS panel: board selector, filters, message list, post form and settings.
 
-    The settings section lets users create, configure and delete boards.
-    Each board can span one or more device channels (from SharedData).
-    Configuration is persisted via BbsConfigStore.
+    The settings section automatically derives one board per device channel.
+    Boards are enabled/disabled per channel; no manual board creation needed.
+    Advanced options (regions, allowed keys, channel combining) are hidden
+    in a collapsible section for administrator use.
 
     Args:
         put_command:  Callable to enqueue a command dict for the worker.
@@ -68,8 +69,6 @@ class BbsPanel:
 
         # UI refs -- settings
         self._boards_settings_container = None
-        self._new_board_name_input = None
-        self._new_board_channel_checks: Dict[int, object] = {}
 
         # Cached device channels (updated by update())
         self._device_channels: List[Dict] = []
@@ -143,26 +142,11 @@ class BbsPanel:
         # ---- Settings card ------------------------------------------
         with ui.card().classes('w-full'):
             ui.label('BBS Settings').classes('font-bold text-gray-600')
-            ui.label(
-                'Create boards and assign device channels. '
-                'One board can cover multiple channels.'
-            ).classes('text-xs text-gray-500')
             ui.separator()
 
-            # New board form
-            with ui.row().classes('w-full items-center gap-2 flex-wrap'):
-                ui.label('New board:').classes('text-sm text-gray-600')
-                self._new_board_name_input = ui.input(
-                    placeholder='Board name...',
-                ).classes('text-xs').style('min-width: 160px')
-                ui.button(
-                    'Create', on_click=self._on_create_board,
-                ).props('no-caps').classes('text-xs')
-
-            ui.separator()
             self._boards_settings_container = ui.column().classes('w-full gap-3')
             with self._boards_settings_container:
-                ui.label('No boards configured yet.').classes(
+                ui.label('Verbind het apparaat om kanalen te zien.').classes(
                     'text-xs text-gray-400 italic'
                 )
 
@@ -183,7 +167,7 @@ class BbsPanel:
         with self._board_btn_row:
             ui.label('Board:').classes('text-sm text-gray-600')
             if not boards:
-                ui.label('No boards configured.').classes(
+                ui.label('Geen actieve boards.').classes(
                     'text-xs text-gray-400 italic'
                 )
                 return
@@ -254,10 +238,10 @@ class BbsPanel:
         self._msg_list_container.clear()
         with self._msg_list_container:
             if self._active_board is None:
-                ui.label('Select a board above.').classes('text-xs text-gray-400 italic')
+                ui.label('Selecteer een board hierboven.').classes('text-xs text-gray-400 italic')
                 return
             if not self._active_board.channels:
-                ui.label('No channels assigned to this board.').classes(
+                ui.label('Geen kanalen gekoppeld aan dit board.').classes(
                     'text-xs text-gray-400 italic'
                 )
                 return
@@ -267,7 +251,7 @@ class BbsPanel:
                 category=self._active_category,
             )
             if not messages:
-                ui.label('No messages.').classes('text-xs text-gray-400 italic')
+                ui.label('Geen berichten.').classes('text-xs text-gray-400 italic')
                 return
             for msg in messages:
                 self._render_message_row(msg)
@@ -286,15 +270,15 @@ class BbsPanel:
 
     def _on_post(self) -> None:
         if self._active_board is None:
-            ui.notify('Select a board first.', type='warning')
+            ui.notify('Selecteer eerst een board.', type='warning')
             return
         if not self._active_board.channels:
-            ui.notify('No channels assigned to this board.', type='warning')
+            ui.notify('Geen kanalen gekoppeld aan dit board.', type='warning')
             return
 
         text = (self._text_input.value or '').strip() if self._text_input else ''
         if not text:
-            ui.notify('Message text cannot be empty.', type='warning')
+            ui.notify('Berichttekst mag niet leeg zijn.', type='warning')
             return
 
         category = (
@@ -302,7 +286,7 @@ class BbsPanel:
             else (self._active_board.categories[0] if self._active_board.categories else '')
         )
         if not category:
-            ui.notify('Please select a category.', type='warning')
+            ui.notify('Selecteer een categorie.', type='warning')
             return
 
         region = ''
@@ -334,183 +318,216 @@ class BbsPanel:
         if self._text_input:
             self._text_input.value = ''
         self._refresh_messages()
-        ui.notify('Message posted.', type='positive')
+        ui.notify('Bericht geplaatst.', type='positive')
 
     # ------------------------------------------------------------------
-    # Settings -- board list
+    # Settings -- channel list (standard view)
     # ------------------------------------------------------------------
 
     def _rebuild_boards_settings(self) -> None:
-        """Rebuild the settings section for all configured boards."""
+        """Rebuild settings: one row per device channel + collapsed advanced section."""
         if not self._boards_settings_container:
             return
         self._boards_settings_container.clear()
-        boards = self._config_store.get_boards()
         with self._boards_settings_container:
-            if not boards:
-                ui.label('No boards configured yet.').classes(
+            if not self._device_channels:
+                ui.label('Verbind het apparaat om kanalen te zien.').classes(
                     'text-xs text-gray-400 italic'
                 )
                 return
-            for board in boards:
-                self._render_board_settings_row(board)
 
-    def _render_board_settings_row(self, board: BbsBoard) -> None:
-        """Render one settings expansion for a single board.
+            # Standard view: one row per channel
+            for ch in self._device_channels:
+                self._render_channel_settings_row(ch)
+
+            ui.separator()
+
+            # Advanced section (collapsed)
+            with ui.expansion('Geavanceerd', value=False).classes('w-full').props('dense'):
+                ui.label("Regio's en sleutellijst per kanaal").classes(
+                    'text-xs text-gray-500 pb-1'
+                )
+                advanced_any = False
+                for ch in self._device_channels:
+                    idx = ch.get('idx', ch.get('index', 0))
+                    board = self._config_store.get_board(f'ch{idx}')
+                    if board is not None:
+                        self._render_channel_advanced_row(ch, board)
+                        advanced_any = True
+                if not advanced_any:
+                    ui.label(
+                        'Zet minimaal één kanaal op Actief om geavanceerde opties te zien.'
+                    ).classes('text-xs text-gray-400 italic')
+
+    def _render_channel_settings_row(self, ch: Dict) -> None:
+        """Render the standard settings row for a single device channel.
+
+        Shows enable toggle, categories, retention and a Save button.
 
         Args:
-            board: Board to render.
+            ch: Device channel dict with 'idx'/'index' and 'name' keys.
         """
-        with ui.expansion(
-            board.name, value=False,
-        ).classes('w-full').props('dense'):
-            with ui.column().classes('w-full gap-2 p-2'):
+        idx = ch.get('idx', ch.get('index', 0))
+        ch_name = ch.get('name', f'Ch {idx}')
+        board_id = f'ch{idx}'
+        board = self._config_store.get_board(board_id)
 
-                # Name
-                name_input = ui.input(
-                    label='Board name', value=board.name,
-                ).classes('w-full text-xs')
+        is_active = board is not None
+        cats_value = ', '.join(board.categories) if board else ', '.join(DEFAULT_CATEGORIES)
+        retention_value = str(board.retention_hours) if board else str(DEFAULT_RETENTION_HOURS)
 
-                # Channel assignment
-                ui.label('Channels (select which device channels belong to this board):').classes(
-                    'text-xs text-gray-600'
+        with ui.card().classes('w-full p-2'):
+            # Header row: channel name + active toggle
+            with ui.row().classes('w-full items-center justify-between'):
+                ui.label(f'[{idx}] {ch_name}').classes('text-sm font-medium')
+                active_toggle = ui.toggle(
+                    {True: '● Actief', False: '○ Uit'},
+                    value=is_active,
+                ).classes('text-xs')
+
+            # Categories
+            with ui.row().classes('w-full items-center gap-2 mt-1'):
+                ui.label('Categorieën:').classes('text-xs text-gray-600 w-24 shrink-0')
+                cats_input = ui.input(value=cats_value).classes('text-xs flex-grow')
+
+            # Retention
+            with ui.row().classes('w-full items-center gap-2 mt-1'):
+                ui.label('Bewaar:').classes('text-xs text-gray-600 w-24 shrink-0')
+                retention_input = ui.input(value=retention_value).classes('text-xs').style(
+                    'max-width: 80px'
                 )
-                ch_checks: Dict[int, object] = {}
+                ui.label('uur').classes('text-xs text-gray-600')
+
+            def _save(
+                bid=board_id,
+                bname=ch_name,
+                bidx=idx,
+                tog=active_toggle,
+                ci=cats_input,
+                ri=retention_input,
+            ) -> None:
+                if tog.value:
+                    existing = self._config_store.get_board(bid)
+                    categories = [
+                        c.strip().upper()
+                        for c in (ci.value or '').split(',') if c.strip()
+                    ] or list(DEFAULT_CATEGORIES)
+                    try:
+                        ret_hours = int(ri.value or DEFAULT_RETENTION_HOURS)
+                    except ValueError:
+                        ret_hours = DEFAULT_RETENTION_HOURS
+                    # Preserve extra combined channels and advanced fields if board existed
+                    extra_channels = (
+                        [c for c in existing.channels if c != bidx]
+                        if existing else []
+                    )
+                    updated = BbsBoard(
+                        id=bid,
+                        name=bname,
+                        channels=[bidx] + extra_channels,
+                        categories=categories,
+                        regions=existing.regions if existing else [],
+                        retention_hours=ret_hours,
+                        allowed_keys=existing.allowed_keys if existing else [],
+                    )
+                    self._config_store.set_board(updated)
+                    debug_print(f'BBS settings: kanaal {bid} opgeslagen')
+                    ui.notify(f'{bname} opgeslagen.', type='positive')
+                else:
+                    self._config_store.delete_board(bid)
+                    if self._active_board and self._active_board.id == bid:
+                        self._active_board = None
+                    debug_print(f'BBS settings: kanaal {bid} uitgeschakeld')
+                    ui.notify(f'{bname} uitgeschakeld.', type='warning')
+                self._rebuild_board_buttons()
+                self._rebuild_boards_settings()
+
+            ui.button('Opslaan', on_click=_save).props('no-caps').classes('text-xs mt-1')
+
+    # ------------------------------------------------------------------
+    # Settings -- advanced section (collapsed)
+    # ------------------------------------------------------------------
+
+    def _render_channel_advanced_row(self, ch: Dict, board: BbsBoard) -> None:
+        """Render the advanced settings block for a single active channel.
+
+        Shows regions, allowed keys and optional channel combining.
+
+        Args:
+            ch:    Device channel dict.
+            board: Existing BbsBoard for this channel.
+        """
+        idx = ch.get('idx', ch.get('index', 0))
+        ch_name = ch.get('name', f'Ch {idx}')
+        board_id = f'ch{idx}'
+
+        with ui.column().classes('w-full gap-1 py-2'):
+            ui.label(f'[{idx}] {ch_name}').classes('text-sm font-medium')
+
+            regions_input = ui.input(
+                label="Regio's (komma-gescheiden)",
+                value=', '.join(board.regions),
+            ).classes('w-full text-xs')
+
+            wl_input = ui.input(
+                label='Toegestane sleutels (leeg = iedereen op het kanaal)',
+                value=', '.join(board.allowed_keys),
+            ).classes('w-full text-xs')
+
+            # Combine with other channels
+            other_channels = [
+                c for c in self._device_channels
+                if c.get('idx', c.get('index', 0)) != idx
+            ]
+            ch_checks: Dict[int, object] = {}
+            if other_channels:
+                ui.label('Combineer met kanalen:').classes('text-xs text-gray-600 mt-1')
                 with ui.row().classes('flex-wrap gap-2'):
-                    if not self._device_channels:
-                        ui.label('No device channels known yet.').classes(
-                            'text-xs text-gray-400 italic'
-                        )
-                    for ch in self._device_channels:
-                        idx = ch.get('idx', ch.get('index', 0))
-                        ch_name = ch.get('name', f'Ch {idx}')
+                    for other_ch in other_channels:
+                        other_idx = other_ch.get('idx', other_ch.get('index', 0))
+                        other_name = other_ch.get('name', f'Ch {other_idx}')
                         cb = ui.checkbox(
-                            f'[{idx}] {ch_name}',
-                            value=idx in board.channels,
+                            f'[{other_idx}] {other_name}',
+                            value=other_idx in board.channels,
                         ).classes('text-xs')
-                        ch_checks[idx] = cb
+                        ch_checks[other_idx] = cb
 
-                # Categories
-                cats_input = ui.input(
-                    label='Categories (comma-separated)',
-                    value=', '.join(board.categories),
-                ).classes('w-full text-xs')
+            def _save_adv(
+                bid=board_id,
+                bidx=idx,
+                bname=ch_name,
+                ri=regions_input,
+                wli=wl_input,
+                cc=ch_checks,
+            ) -> None:
+                existing = self._config_store.get_board(bid)
+                if existing is None:
+                    ui.notify('Zet het kanaal eerst op Actief.', type='warning')
+                    return
+                regions = [
+                    r.strip() for r in (ri.value or '').split(',') if r.strip()
+                ]
+                allowed_keys = [
+                    k.strip() for k in (wli.value or '').split(',') if k.strip()
+                ]
+                combined = [bidx] + [oidx for oidx, cb in cc.items() if cb.value]
+                updated = BbsBoard(
+                    id=bid,
+                    name=bname,
+                    channels=combined,
+                    categories=existing.categories,
+                    regions=regions,
+                    retention_hours=existing.retention_hours,
+                    allowed_keys=allowed_keys,
+                )
+                self._config_store.set_board(updated)
+                debug_print(f'BBS settings (geavanceerd): {bid} opgeslagen')
+                ui.notify(f'{bname} opgeslagen.', type='positive')
+                self._rebuild_board_buttons()
+                self._rebuild_boards_settings()
 
-                # Regions
-                regions_input = ui.input(
-                    label='Regions (comma-separated, leave empty for none)',
-                    value=', '.join(board.regions),
-                ).classes('w-full text-xs')
-
-                # Retention
-                retention_input = ui.input(
-                    label='Retention (hours)',
-                    value=str(board.retention_hours),
-                ).classes('text-xs').style('max-width: 160px')
-
-                # Whitelist
-                wl_input = ui.input(
-                    label='Allowed keys (comma-separated hex, empty = all)',
-                    value=', '.join(board.allowed_keys),
-                ).classes('w-full text-xs')
-
-                with ui.row().classes('gap-2'):
-                    def _save(
-                        bid=board.id,
-                        ni=name_input,
-                        cc=ch_checks,
-                        ci=cats_input,
-                        ri=regions_input,
-                        ret=retention_input,
-                        wli=wl_input,
-                    ) -> None:
-                        new_name = (ni.value or '').strip() or bid
-                        selected_channels = [
-                            idx for idx, cb in cc.items() if cb.value
-                        ]
-                        categories = [
-                            c.strip().upper()
-                            for c in (ci.value or '').split(',') if c.strip()
-                        ] or list(DEFAULT_CATEGORIES)
-                        regions = [
-                            r.strip()
-                            for r in (ri.value or '').split(',') if r.strip()
-                        ]
-                        try:
-                            retention_hours = int(ret.value or DEFAULT_RETENTION_HOURS)
-                        except ValueError:
-                            retention_hours = DEFAULT_RETENTION_HOURS
-                        allowed_keys = [
-                            k.strip()
-                            for k in (wli.value or '').split(',') if k.strip()
-                        ]
-                        updated = BbsBoard(
-                            id=bid,
-                            name=new_name,
-                            channels=selected_channels,
-                            categories=categories,
-                            regions=regions,
-                            retention_hours=retention_hours,
-                            allowed_keys=allowed_keys,
-                        )
-                        self._config_store.set_board(updated)
-                        debug_print(
-                            f'BBS settings: saved board {bid} '
-                            f'channels={selected_channels}'
-                        )
-                        ui.notify(f'Board "{new_name}" saved.', type='positive')
-                        self._rebuild_board_buttons()
-                        self._rebuild_boards_settings()
-
-                    def _delete(bid=board.id, bname=board.name) -> None:
-                        self._config_store.delete_board(bid)
-                        if self._active_board and self._active_board.id == bid:
-                            self._active_board = None
-                        debug_print(f'BBS settings: deleted board {bid}')
-                        ui.notify(f'Board "{bname}" deleted.', type='warning')
-                        self._rebuild_board_buttons()
-                        self._rebuild_boards_settings()
-
-                    ui.button('Save', on_click=_save).props('no-caps').classes('text-xs')
-                    ui.button(
-                        'Delete', on_click=_delete,
-                    ).props('no-caps flat color=negative').classes('text-xs')
-
-    # ------------------------------------------------------------------
-    # Settings -- create new board
-    # ------------------------------------------------------------------
-
-    def _on_create_board(self) -> None:
-        """Handle the Create button for a new board."""
-        name = (self._new_board_name_input.value or '').strip() if self._new_board_name_input else ''
-        if not name:
-            ui.notify('Enter a board name first.', type='warning')
-            return
-
-        board_id = _slug(name)
-        # Make id unique if needed
-        base_id = board_id
-        counter = 2
-        while self._config_store.board_id_exists(board_id):
-            board_id = f'{base_id}_{counter}'
-            counter += 1
-
-        board = BbsBoard(
-            id=board_id,
-            name=name,
-            channels=[],
-            categories=list(DEFAULT_CATEGORIES),
-            regions=[],
-            retention_hours=DEFAULT_RETENTION_HOURS,
-            allowed_keys=[],
-        )
-        self._config_store.set_board(board)
-        debug_print(f'BBS settings: created board {board_id}')
-        if self._new_board_name_input:
-            self._new_board_name_input.value = ''
-        ui.notify(f'Board "{name}" created. Assign channels in the settings below.', type='positive')
-        self._rebuild_board_buttons()
-        self._rebuild_boards_settings()
+            ui.button('Opslaan', on_click=_save_adv).props('no-caps').classes('text-xs mt-1')
+            ui.separator()
 
     # ------------------------------------------------------------------
     # External update hook
@@ -519,8 +536,8 @@ class BbsPanel:
     def update(self, data: Dict) -> None:
         """Called by the dashboard timer with the SharedData snapshot.
 
-        Rebuilds the settings channel checkboxes when the device channel
-        list changes.
+        Rebuilds the settings channel list when the device channel list
+        changes.
 
         Args:
             data: SharedData snapshot dict.

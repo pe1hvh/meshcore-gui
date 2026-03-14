@@ -35,18 +35,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ### Added
 
 - 🆕 **BBS — Bulletin Board System** — offline berichtenbord voor mesh-netwerken.
-  - Één node beheert één board op één channel. Alle commando's via **Direct Message** aan de node; het channel blijft schoon.
-  - Korte syntax: `!p <cat> <tekst>` (post) en `!r [cat]` (lezen). Categorie-afkortingen automatisch berekend als kortste unieke prefix (bijv. `U=URGENT M=MEDICAL`). `!r` zonder args toont de afkortingstabel altijd mee.
+  - **Toegangsmodel:** de beheerder selecteert één of meer channels in de settings. Iedereen die op een van die channels een bericht stuurt, wordt automatisch gewhitelist en kan daarna commando's sturen via **Direct Message** aan de node. Het channel blijft schoon; alleen de eerste interactie verloopt via het channel.
+  - Korte syntax: `!p <cat> <tekst>` (post) en `!r [cat]` (lezen). Categorie-afkortingen automatisch berekend als kortste unieke prefix (bijv. `U=URGENT M=MEDICAL`).
   - Volledige syntax behouden: `!bbs post`, `!bbs read`, `!bbs help`.
-  - Optioneel regio-filter (`!p Zwolle U hulp nodig`) en sender-whitelist.
-  - Settings-pagina (`/bbs-settings`): één channel-selector, categorieën, retentie (uur), en een ingeklapte Advanced-sectie voor regio's en allowed keys.
+  - Optioneel regio-filter en handmatige allowed-keys override in Advanced.
+  - Settings-pagina (`/bbs-settings`): checkboxes per channel, categorieën, retentie, Advanced voor regio's en handmatige keys.
   - Berichten opgeslagen in SQLite (`~/.meshcore-gui/bbs/bbs_messages.db`, WAL-mode).
 
 ### Changed
 
-- 🔄 **`ble/events.py`** — DMs die beginnen met `!` worden direct verwerkt door `BbsCommandHandler`, volledig los van `MeshBot`.
+- 🔄 **`ble/events.py`** — `on_channel_msg` roept `BbsCommandHandler.handle_channel_msg()` aan op geconfigureerde BBS-channels: auto-whitelist + bootstrap reply. `on_contact_msg` stuurt `!`-DMs direct naar `handle_dm()`. Beide paden volledig los van `MeshBot`.
 - 🔄 **`services/bot.py`** — `MeshBot` is weer een pure keyword/channel responder; BBS-routing verwijderd.
-- 🔄 **`services/bbs_config_store.py`** — `get_single_board()`, `set_single_board()`, `clear_single_board()` toegevoegd.
+- 🔄 **`services/bbs_config_store.py`** — `configure_board()` (multi-channel), `add_allowed_key()` (auto-whitelist), `clear_board()`.
 - 🔄 **`gui/dashboard.py`** — `BbsPanel` geregistreerd, `📋 BBS` drawer-item toegevoegd.
 
 ### Storage

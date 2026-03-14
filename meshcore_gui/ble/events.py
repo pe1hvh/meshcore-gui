@@ -301,6 +301,23 @@ class EventHandler:
             message_hash=msg_hash,
         ))
 
+        # BBS channel hook: auto-whitelist sender + bootstrap reply for !-commands.
+        # Runs on every message on a configured BBS channel, independent of the bot.
+        if self._bbs_handler is not None and self._command_sink is not None:
+            bbs_reply = self._bbs_handler.handle_channel_msg(
+                channel_idx=ch_idx,
+                sender=sender,
+                sender_key=sender_pubkey,
+                text=msg_text,
+            )
+            if bbs_reply is not None:
+                debug_print(f"BBS channel reply on ch{ch_idx} to {sender!r}: {bbs_reply[:60]}")
+                self._command_sink({
+                    "action": "send_message",
+                    "channel": ch_idx,
+                    "text": bbs_reply,
+                })
+
         self._bot.check_and_reply(
             sender=sender,
             text=msg_text,

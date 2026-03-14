@@ -9,7 +9,7 @@ Design (v1.14.0 redesign)
 One node = one board.  The settings UI exposes a single channel selector;
 the board id is always ``ch{channel_idx}`` and the name is taken from the
 device channel.  There is no Create/Delete UI — the board is saved or
-cleared through :meth:`set_single_board` / :meth:`clear_single_board`.
+cleared through :meth:`configure_board` / :meth:`clear_board`.
 
 Multiple-board storage is retained internally so that the storage layer
 (``bbs_service.py``) and :meth:`get_board_for_channel` remain unchanged.
@@ -305,13 +305,11 @@ class BbsConfigStore:
             return any(b.id == board_id for b in self._boards)
 
     # ------------------------------------------------------------------
-    # Single-board convenience API (v1.14.0 redesign)
+    # Board API (v1.14.0 redesign)
     # ------------------------------------------------------------------
 
     def get_single_board(self) -> Optional[BbsBoard]:
-        """Return the one configured board, or ``None`` if none exists.
-
-        This is the primary accessor for the simplified single-board UI.
+        """Return the configured board, or ``None`` if none exists.
 
         Returns:
             The first ``BbsBoard`` in the store, or ``None``.
@@ -321,52 +319,89 @@ class BbsConfigStore:
                 return BbsBoard.from_dict(self._boards[0].to_dict())
         return None
 
-    def set_single_board(
+    def configure_board(
         self,
-        channel_idx: int,
-        channel_name: str,
+        channel_indices: List[int],
+        channel_names: Dict[int, str],
         categories: List[str],
         retention_hours: int = DEFAULT_RETENTION_HOURS,
         regions: Optional[List[str]] = None,
         allowed_keys: Optional[List[str]] = None,
     ) -> None:
-        """Replace the single board with a fresh config derived from one channel.
+        """Save the board configuration.
 
-        The board id is always ``ch{channel_idx}`` and the board name is
-        taken from *channel_name*.  Any previously stored boards are
-        discarded so the store always holds at most one board.
+        Multiple channels can be assigned.  Every sender seen on any of
+        these channels is automatically eligible for DM access (the
+        worker calls :meth:`add_allowed_key` when it sees them).
+
+        The board id is always ``'bbs_board'``.  The board name is built
+        from the channel names in *channel_names*.
 
         Args:
-            channel_idx:     MeshCore channel index to assign to this board.
-            channel_name:    Human-readable name of the channel (display only).
+            channel_indices: MeshCore channel indices to assign.
+            channel_names:   Mapping ``idx → display name`` for labelling.
             categories:      Category tag list.
             retention_hours: Message retention period in hours.
-            regions:         Optional region tags (``None`` → empty list).
-            allowed_keys:    Sender public key whitelist (``None`` → all allowed).
+            regions:         Optional region tags.
+            allowed_keys:    Manual sender key whitelist seed (auto-learned
+                             keys are added via :meth:`add_allowed_key`).
         """
+        name = ", ".join(
+            channel_names.get(i, f"Ch {i}") for i in sorted(channel_indices)
+        ) or "BBS"
+
+        # Preserve existing auto-learned keys unless caller supplies a new list
+        existing = self.get_single_board()
+        merged_keys = list(allowed_keys) if allowed_keys is not None else (
+            existing.allowed_keys if existing else []
+        )
+
         board = BbsBoard(
-            id=f"ch{channel_idx}",
-            name=channel_name,
-            channels=[channel_idx],
+            id="bbs_board",
+            name=name,
+            channels=sorted(channel_indices),
             categories=list(categories),
             regions=list(regions) if regions else [],
             retention_hours=retention_hours,
-            allowed_keys=list(allowed_keys) if allowed_keys else [],
+            allowed_keys=merged_keys,
         )
         with self._lock:
             self._boards = [board]
             self._save_unlocked()
             debug_print(
-                f"BBS config: single board set → ch{channel_idx} '{channel_name}'"
+                f"BBS config: board configured → channels={sorted(channel_indices)} "
+                f"name='{name}'"
             )
 
-    def clear_single_board(self) -> None:
-        """Remove the configured board (disable BBS on this node).
-
-        After this call :meth:`get_single_board` returns ``None`` and
-        the BBS command handler will not respond to any channel.
-        """
+    def clear_board(self) -> None:
+        """Remove the configured board (disable BBS on this node)."""
         with self._lock:
             self._boards = []
             self._save_unlocked()
-            debug_print("BBS config: single board cleared")
+            debug_print("BBS config: board cleared")
+
+    def add_allowed_key(self, sender_key: str) -> bool:
+        """Add *sender_key* to the board's allowed_keys whitelist.
+
+        Called automatically by the worker whenever a sender is seen on
+        a configured BBS channel.  No-op if the key is already present
+        or if no board is configured.
+
+        Args:
+            sender_key: Public key hex string of the sender.
+
+        Returns:
+            ``True`` if the key was newly added, ``False`` otherwise.
+        """
+        if not sender_key:
+            return False
+        with self._lock:
+            if not self._boards:
+                return False
+            board = self._boards[0]
+            if sender_key in board.allowed_keys:
+                return False
+            board.allowed_keys.append(sender_key)
+            self._save_unlocked()
+            debug_print(f"BBS config: auto-whitelisted key {sender_key[:12]}…")
+            return True

@@ -427,20 +427,9 @@ class BbsSettingsPage:
     # ------------------------------------------------------------------
 
     def _render_settings(self) -> None:
-        """Render the single-board settings block."""
+        """Render the board settings block."""
         board = self._config_store.get_single_board()
-
-        # Build channel options: {idx: "[idx] name"}
-        ch_options = {
-            ch.get('idx', ch.get('index', 0)):
-                f"[{ch.get('idx', ch.get('index', 0))}] {ch.get('name', '?')}"
-            for ch in self._device_channels
-        }
-
-        current_idx = (
-            board.channels[0] if board and board.channels
-            else next(iter(ch_options), 0)
-        )
+        active_channels = set(board.channels) if board else set()
         cats_value = (
             ', '.join(board.categories) if board
             else ', '.join(DEFAULT_CATEGORIES)
@@ -452,25 +441,31 @@ class BbsSettingsPage:
         adv_regions_value = ', '.join(board.regions) if board else ''
         adv_keys_value = ', '.join(board.allowed_keys) if board else ''
 
-        # ── Main block ───────────────────────────────────────────────
-        with ui.column().classes('w-full gap-2'):
-            with ui.row().classes('w-full items-center gap-2'):
-                ui.label('Channel:').classes('text-xs text-gray-600 w-24 shrink-0')
-                ch_select = ui.select(
-                    options=ch_options,
-                    value=current_idx,
-                ).classes('text-xs flex-grow')
+        # ── Channel checkboxes ───────────────────────────────────────
+        ch_checks: Dict[int, object] = {}
+        with ui.column().classes('w-full gap-1'):
+            ui.label('Channels:').classes('text-xs text-gray-600')
+            with ui.column().classes('w-full gap-1 pl-2'):
+                for ch in self._device_channels:
+                    idx = ch.get('idx', ch.get('index', 0))
+                    name = ch.get('name', f'Ch {idx}')
+                    cb = ui.checkbox(
+                        f'[{idx}] {name}',
+                        value=idx in active_channels,
+                    ).classes('text-xs')
+                    ch_checks[idx] = cb
 
-            with ui.row().classes('w-full items-center gap-2'):
-                ui.label('Categories:').classes('text-xs text-gray-600 w-24 shrink-0')
-                cats_input = ui.input(value=cats_value).classes('text-xs flex-grow')
+        # ── Categories + retention ───────────────────────────────────
+        with ui.row().classes('w-full items-center gap-2 mt-1'):
+            ui.label('Categories:').classes('text-xs text-gray-600 w-24 shrink-0')
+            cats_input = ui.input(value=cats_value).classes('text-xs flex-grow')
 
-            with ui.row().classes('w-full items-center gap-2'):
-                ui.label('Retain:').classes('text-xs text-gray-600 w-24 shrink-0')
-                retention_input = ui.input(
-                    value=retention_value,
-                ).classes('text-xs').style('max-width: 80px')
-                ui.label('hours').classes('text-xs text-gray-600')
+        with ui.row().classes('w-full items-center gap-2'):
+            ui.label('Retain:').classes('text-xs text-gray-600 w-24 shrink-0')
+            retention_input = ui.input(
+                value=retention_value,
+            ).classes('text-xs').style('max-width: 80px')
+            ui.label('hours').classes('text-xs text-gray-600')
 
         # ── Advanced (collapsed) ─────────────────────────────────────
         with ui.expansion('Advanced', value=False).classes('w-full mt-2').props('dense'):
@@ -482,20 +477,27 @@ class BbsSettingsPage:
             ).classes('w-full text-xs')
 
             keys_input = ui.input(
-                label='Allowed keys (empty = everyone on the channel)',
+                label='Allowed keys (empty = auto-learned from channel activity)',
                 value=adv_keys_value,
             ).classes('w-full text-xs')
 
         # ── Save ─────────────────────────────────────────────────────
         def _save(
-            cs=ch_select,
+            cc=ch_checks,
             ci=cats_input,
             ri=retention_input,
             rgi=regions_input,
             ki=keys_input,
         ) -> None:
-            idx = cs.value
-            ch_name = ch_options.get(idx, f'Ch {idx}')
+            selected = [idx for idx, cb in cc.items() if cb.value]
+            if not selected:
+                ui.notify('Select at least one channel.', type='warning')
+                return
+
+            ch_names = {
+                ch.get('idx', ch.get('index', 0)): ch.get('name', '?')
+                for ch in self._device_channels
+            }
             categories = [
                 c.strip().upper()
                 for c in (ci.value or '').split(',') if c.strip()
@@ -505,18 +507,22 @@ class BbsSettingsPage:
             except ValueError:
                 ret_hours = DEFAULT_RETENTION_HOURS
             regions = [r.strip() for r in (rgi.value or '').split(',') if r.strip()]
-            allowed_keys = [k.strip() for k in (ki.value or '').split(',') if k.strip()]
+            # Only pass allowed_keys if the field was explicitly filled;
+            # empty field means "keep auto-learned keys"
+            raw_keys = [k.strip() for k in (ki.value or '').split(',') if k.strip()]
+            allowed_keys = raw_keys if raw_keys else None
 
-            self._config_store.set_single_board(
-                channel_idx=idx,
-                channel_name=ch_name,
+            self._config_store.configure_board(
+                channel_indices=selected,
+                channel_names=ch_names,
                 categories=categories,
                 retention_hours=ret_hours,
                 regions=regions,
                 allowed_keys=allowed_keys,
             )
-            debug_print(f'BBS settings: saved ch{idx} {ch_name}')
-            ui.notify(f'BBS saved — {ch_name}.', type='positive')
+            ch_labels = ', '.join(f"[{i}] {ch_names.get(i, '?')}" for i in sorted(selected))
+            debug_print(f'BBS settings: configured channels {ch_labels}')
+            ui.notify(f'BBS saved — {ch_labels}.', type='positive')
             self._rebuild()
 
         ui.button('Save', on_click=_save).props('no-caps').classes('text-xs mt-2')

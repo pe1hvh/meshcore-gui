@@ -322,7 +322,76 @@ class BbsCommandHandler:
         self._config_store = config_store
 
     # ------------------------------------------------------------------
-    # Public entry point — called from EventHandler.on_contact_msg
+    # Public entry points
+    # ------------------------------------------------------------------
+
+    def handle_channel_msg(
+        self,
+        channel_idx: int,
+        sender: str,
+        sender_key: str,
+        text: str,
+    ) -> Optional[str]:
+        """Handle a channel message on a configured BBS channel.
+
+        Called from ``EventHandler.on_channel_msg`` **after** the message
+        has been stored.  Two responsibilities:
+
+        1. **Auto-whitelist**: every sender seen on a BBS channel gets their
+           key added to ``allowed_keys`` so they can use DMs afterwards.
+        2. **Bootstrap reply**: if the message starts with ``!``, reply on
+           the channel so the sender knows the BBS is active and receives
+           the abbreviation table.
+
+        Args:
+            channel_idx: MeshCore channel index the message arrived on.
+            sender:      Display name of the sender.
+            sender_key:  Public key of the sender (hex string).
+            text:        Raw message text.
+
+        Returns:
+            Reply string to post on the channel, or ``None``.
+        """
+        board = self._config_store.get_single_board()
+        if board is None:
+            return None
+        if channel_idx not in board.channels:
+            return None
+
+        # Auto-whitelist: register this sender so they can use DMs
+        if sender_key:
+            self._config_store.add_allowed_key(sender_key)
+
+        # Bootstrap reply only for !-commands
+        text = (text or "").strip()
+        if not text.startswith("!"):
+            return None
+
+        first = text.split()[0].lower()
+        channel_for_post = channel_idx
+
+        if first == "!p":
+            rest = text[len(first):].strip()
+            return self._handle_post_short(board, channel_for_post, sender, sender_key, rest)
+
+        if first == "!r":
+            rest = text[len(first):].strip()
+            return self._handle_read_short(board, rest)
+
+        if first == "!bbs":
+            parts = text.split(None, 2)
+            sub = parts[1].lower() if len(parts) > 1 else ""
+            rest = parts[2] if len(parts) > 2 else ""
+            if sub == "post":
+                return self._handle_post(board, channel_for_post, sender, sender_key, rest)
+            if sub == "read":
+                return self._handle_read(board, rest)
+            if sub == "help" or not sub:
+                return self._handle_help(board)
+            return f"Unknown subcommand '{sub}'. " + self._handle_help(board)
+
+        return None
+
     # ------------------------------------------------------------------
 
     def handle_dm(

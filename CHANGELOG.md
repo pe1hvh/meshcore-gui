@@ -33,25 +33,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ## [1.14.0] - 2026-03-14 — Offline BBS (Bulletin Board System)
 
 ### Added
+- 🆕 **`meshcore_gui/services/bbs_config_store.py`** — `BbsConfigStore`: beheert `~/.meshcore-gui/bbs/bbs_config.json`. Thread-safe, atomische schrijfoperaties. Wordt aangemaakt bij eerste start. Methoden: `get_channels()`, `get_enabled_channels()`, `get_channel()`, `set_channel()`, `enable_channel()`, `disable_channel()`, `update_channel_field()`.
 - 🆕 **`meshcore_gui/services/bbs_service.py`** — SQLite-backed BBS persistence layer.
   - `BbsMessage` dataclass: channel, region, category, sender, sender_key, text, timestamp.
-  - `BbsService`: `post_message()`, `get_messages()`, `get_all_messages()`, `purge_expired()`, `purge_all_expired()`.  Thread-safe via `threading.Lock`.  Database at `~/.meshcore-gui/bbs/bbs_messages.db`.
-  - `BbsCommandHandler`: parses `!bbs post`, `!bbs read`, `!bbs help` mesh commands.  Whitelist enforcement (silent drop on unknown sender key).  Per-channel region/category validation with error reply.
-- 🆕 **`meshcore_gui/gui/panels/bbs_panel.py`** — BBS panel for the dashboard.
-  - Channel selector (NoodNet Zwolle / NoodNet OV / Dalfsen).
-  - Region filter (shown only when the active channel has regions configured).
-  - Category filter (all or specific).
-  - Scrollable message list with timestamp, sender, category and optional region tag.
-  - Post form: region select (conditional), category select, text input, Send button.
-  - Send broadcasts `!bbs post …` on the mesh channel so other nodes receive it.
-- 🔄 **`meshcore_gui/config.py`** — `BBS_CHANNELS` configuration block added; version bumped to `1.14.0`.
-- 🔄 **`meshcore_gui/services/bot.py`** — `MeshBot` accepts optional `bbs_handler` parameter.  Incoming `!bbs` messages are routed to `BbsCommandHandler` before keyword matching; replies are sent on the originating channel.
-- 🔄 **`meshcore_gui/gui/dashboard.py`** — `BbsPanel` registered as standalone panel `'bbs'`; menu item `📋 BBS` added to the drawer.
+  - `BbsService`: `post_message()`, `get_messages()`, `get_all_messages()`, `purge_expired()`, `purge_all_expired()`. Thread-safe via `threading.Lock`. WAL-mode + busy_timeout=3s voor veilig gebruik door meerdere processen (bijv. 800 MHz + 433 MHz gelijktijdig). Database op `~/.meshcore-gui/bbs/bbs_messages.db`.
+  - `BbsCommandHandler`: parst `!bbs post`, `!bbs read`, `!bbs help` mesh commando's. Leest channel-config live uit `BbsConfigStore`. Whitelist-controle (stille drop bij onbekende sender key). Per-channel regio/categorie-validatie met foutmelding.
+- 🆕 **`meshcore_gui/gui/panels/bbs_panel.py`** — BBS panel voor het dashboard.
+  - Channel-selector (alleen enabled BBS channels).
+  - Regio-filter (alleen zichtbaar als channel regio's heeft).
+  - Categorie-filter.
+  - Scrollbare berichtenlijst met timestamp, afzender, categorie en optioneel regio-label.
+  - Post-formulier: regio-select (conditioneel), categorie-select, tekstinvoer, Send-knop.
+  - Send verstuurt ook `!bbs post …` op het mesh-kanaal zodat andere nodes het ontvangen.
+  - **Settings-sectie**: per device channel een inklapbaar blok met enable-toggle, categorie-invoer, regio-invoer, retentie-invoer en whitelist-invoer. Opslaan via `BbsConfigStore`; channel-selector wordt direct bijgewerkt.
+
+### Changed
+- 🔄 **`meshcore_gui/services/bot.py`** — `MeshBot` accepteert optionele `bbs_handler` parameter. Inkomende `!bbs` berichten worden doorgesluisd naar `BbsCommandHandler` vóór keyword-matching; antwoorden worden teruggestuurd op hetzelfde kanaal.
+- 🔄 **`meshcore_gui/config.py`** — `BBS_CHANNELS` verwijderd (config leeft nu in `bbs_config.json`). Versie naar `1.14.0`.
+- 🔄 **`meshcore_gui/gui/dashboard.py`** — `BbsConfigStore` en `BbsService` instanties toegevoegd; `BbsPanel` geregistreerd als standalone panel `'bbs'`; menu-item `📋 BBS` toegevoegd aan de drawer.
 - 🔄 **`meshcore_gui/gui/panels/__init__.py`** — `BbsPanel` re-exported.
 
 ### Not changed
-- BLE layer, SharedData, core/models, route_page, map_panel, message_archive, all other services.
-- All existing bot keyword behaviour, room server flow, archive page, contacts, map, device, actions, rxlog panels.
+- BLE-laag, SharedData, core/models, route_page, map_panel, message_archive, alle overige services.
+- Bestaande bot keyword-logica, room server flow, archive page, contacts, map, device, actions, rxlog panels.
 
 ---
 

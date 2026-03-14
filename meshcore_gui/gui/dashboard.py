@@ -25,6 +25,7 @@ from meshcore_gui.gui.panels import (
     RxLogPanel,
 )
 from meshcore_gui.gui.archive_page import ArchivePage
+from meshcore_gui.services.bbs_config_store import BbsConfigStore
 from meshcore_gui.services.bbs_service import BbsCommandHandler, BbsService
 from meshcore_gui.services.pin_store import PinStore
 from meshcore_gui.services.room_password_store import RoomPasswordStore
@@ -298,11 +299,11 @@ class DashboardPage:
         self._pin_store = pin_store
         self._room_password_store = room_password_store
 
-        # BBS service (singleton, shared with bot routing)
-        from meshcore_gui import config as _cfg
+        # BBS service and config store (singletons shared with bot routing)
+        self._bbs_config_store = BbsConfigStore()
         self._bbs_service = BbsService()
         self._bbs_handler = BbsCommandHandler(
-            self._bbs_service, _cfg.BBS_CHANNELS
+            self._bbs_service, self._bbs_config_store
         )
 
         # Panels (created fresh on each render)
@@ -360,8 +361,7 @@ class DashboardPage:
         self._actions = ActionsPanel(put_cmd, self._shared.set_bot_enabled)
         self._rxlog = RxLogPanel()
         self._room_server = RoomServerPanel(put_cmd, self._room_password_store)
-        from meshcore_gui import config as _cfg
-        self._bbs = BbsPanel(put_cmd, self._bbs_service, _cfg.BBS_CHANNELS)
+        self._bbs = BbsPanel(put_cmd, self._bbs_service, self._bbs_config_store)
 
         # Inject DOMCA theme (fonts + CSS variables)
         ui.add_head_html(_DOMCA_HEAD)

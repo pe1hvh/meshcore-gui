@@ -2,7 +2,9 @@
 Offline Bulletin Board System (BBS) service for MeshCore GUI.
 
 Stores BBS messages in a local SQLite database, one table per channel.
-Each channel is configured via ``BBS_CHANNELS`` in ``config.py``.
+Channel configuration is managed by
+:class:`~meshcore_gui.services.bbs_config_store.BbsConfigStore` and
+persisted to ``~/.meshcore-gui/bbs/bbs_config.json``.
 
 Architecture
 ~~~~~~~~~~~~
@@ -19,6 +21,7 @@ so it is safe to call from both the GUI thread and the worker thread.
 Storage location
 ~~~~~~~~~~~~~~~~
 ``~/.meshcore-gui/bbs/bbs_messages.db`` (SQLite, stdlib).
+``~/.meshcore-gui/bbs/bbs_config.json`` (via BbsConfigStore).
 """
 
 import sqlite3
@@ -94,6 +97,8 @@ class BbsService:
         """Create the database directory and schema if not present."""
         BBS_DIR.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=3000")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS bbs_messages (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -182,7 +187,10 @@ class BbsService:
         Returns:
             List of ``BbsMessage`` objects, newest first.
         """
-        query = "SELECT id, channel, region, category, sender, sender_key, text, timestamp FROM bbs_messages WHERE channel = ?"
+        query = (
+            "SELECT id, channel, region, category, sender, sender_key, text, timestamp "
+            "FROM bbs_messages WHERE channel = ?"
+        )
         params: list = [channel]
 
         if region:
@@ -199,19 +207,7 @@ class BbsService:
             with self._connect() as conn:
                 rows = conn.execute(query, params).fetchall()
 
-        return [
-            BbsMessage(
-                id=row[0],
-                channel=row[1],
-                region=row[2],
-                category=row[3],
-                sender=row[4],
-                sender_key=row[5],
-                text=row[6],
-                timestamp=row[7],
-            )
-            for row in rows
-        ]
+        return [self._row_to_msg(row) for row in rows]
 
     def get_all_messages(
         self,
@@ -229,7 +225,10 @@ class BbsService:
         Returns:
             List of ``BbsMessage`` objects, oldest first.
         """
-        query = "SELECT id, channel, region, category, sender, sender_key, text, timestamp FROM bbs_messages WHERE channel = ?"
+        query = (
+            "SELECT id, channel, region, category, sender, sender_key, text, timestamp "
+            "FROM bbs_messages WHERE channel = ?"
+        )
         params: list = [channel]
 
         if region:
@@ -245,19 +244,20 @@ class BbsService:
             with self._connect() as conn:
                 rows = conn.execute(query, params).fetchall()
 
-        return [
-            BbsMessage(
-                id=row[0],
-                channel=row[1],
-                region=row[2],
-                category=row[3],
-                sender=row[4],
-                sender_key=row[5],
-                text=row[6],
-                timestamp=row[7],
-            )
-            for row in rows
-        ]
+        return [self._row_to_msg(row) for row in rows]
+
+    @staticmethod
+    def _row_to_msg(row: tuple) -> BbsMessage:
+        return BbsMessage(
+            id=row[0],
+            channel=row[1],
+            region=row[2],
+            category=row[3],
+            sender=row[4],
+            sender_key=row[5],
+            text=row[6],
+            timestamp=row[7],
+        )
 
     # ------------------------------------------------------------------
     # Retention
@@ -295,7 +295,7 @@ class BbsService:
         """Run retention cleanup for all configured channels.
 
         Args:
-            channels_config: List of channel config dicts from ``BBS_CHANNELS``.
+            channels_config: List of channel config dicts.
         """
         for cfg in channels_config:
             self.purge_expired(cfg["channel"], cfg["retention_hours"])
@@ -308,27 +308,28 @@ class BbsService:
 class BbsCommandHandler:
     """Parses ``!bbs`` mesh commands and delegates to :class:`BbsService`.
 
-    One handler is shared across all configured channels.  Channel context
-    is passed per call so the handler is stateless.
+    Channel configuration is read live from the supplied
+    :class:`~meshcore_gui.services.bbs_config_store.BbsConfigStore`
+    so that changes made in the GUI take effect immediately without
+    restarting the application.
 
     Args:
-        service:         Shared ``BbsService`` instance.
-        channels_config: ``BBS_CHANNELS`` list from ``config.py``.
+        service:      Shared ``BbsService`` instance.
+        config_store: ``BbsConfigStore`` instance for live channel config.
     """
 
-    # Maximum messages returned per !bbs read call
     READ_LIMIT: int = 5
 
-    def __init__(
-        self,
-        service: BbsService,
-        channels_config: List[Dict],
-    ) -> None:
+    def __init__(self, service: BbsService, config_store) -> None:
         self._service = service
-        # Index by channel number for O(1) lookup
-        self._channels: Dict[int, Dict] = {
-            cfg["channel"]: cfg for cfg in channels_config
-        }
+        self._config_store = config_store
+
+    def _get_cfg(self, channel_idx: int) -> Optional[Dict]:
+        """Return enabled channel config, or ``None``."""
+        cfg = self._config_store.get_channel(channel_idx)
+        if cfg and cfg.get("enabled", False):
+            return cfg
+        return None
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -343,9 +344,6 @@ class BbsCommandHandler:
     ) -> Optional[str]:
         """Parse an incoming message and return a reply string (or ``None``).
 
-        Returns ``None`` when the message is not a BBS command, the channel
-        is not configured, or the sender fails the whitelist check.
-
         Args:
             channel_idx: MeshCore channel index the message arrived on.
             sender:      Display name of the sender.
@@ -359,9 +357,9 @@ class BbsCommandHandler:
         if not text.lower().startswith("!bbs"):
             return None
 
-        cfg = self._channels.get(channel_idx)
+        cfg = self._get_cfg(channel_idx)
         if cfg is None:
-            return None  # Channel not configured — ignore
+            return None
 
         # Whitelist check
         allowed = cfg.get("allowed_keys", [])
@@ -370,35 +368,17 @@ class BbsCommandHandler:
                 f"BBS: silently dropping msg from {sender} "
                 f"(key not in whitelist for ch={channel_idx})"
             )
-            return None  # Silent drop — no error reply
+            return None
 
         parts = text.split(None, 1)
         args = parts[1].strip() if len(parts) > 1 else ""
-
         return self._dispatch(cfg, sender, sender_key, args)
 
     # ------------------------------------------------------------------
     # Dispatch
     # ------------------------------------------------------------------
 
-    def _dispatch(
-        self,
-        cfg: Dict,
-        sender: str,
-        sender_key: str,
-        args: str,
-    ) -> str:
-        """Route to the appropriate sub-command handler.
-
-        Args:
-            cfg:        Channel configuration dict.
-            sender:     Display name of the sender.
-            sender_key: Public key of the sender.
-            args:       Everything after ``!bbs ``.
-
-        Returns:
-            Reply string (always non-empty).
-        """
+    def _dispatch(self, cfg: Dict, sender: str, sender_key: str, args: str) -> str:
         sub = args.split(None, 1)[0].lower() if args else ""
         rest = args.split(None, 1)[1] if len(args.split(None, 1)) > 1 else ""
 
@@ -408,42 +388,18 @@ class BbsCommandHandler:
             return self._handle_read(cfg, rest)
         if sub == "help" or not sub:
             return self._handle_help(cfg)
-
         return f"Unknown command '{sub}'. {self._handle_help(cfg)}"
 
     # ------------------------------------------------------------------
     # Sub-command: post
     # ------------------------------------------------------------------
 
-    def _handle_post(
-        self,
-        cfg: Dict,
-        sender: str,
-        sender_key: str,
-        args: str,
-    ) -> str:
-        """Handle ``!bbs post [region] [category] [text]``.
-
-        When the channel has regions, the first token is the region,
-        the second is the category, and the remainder is the text.
-        Without regions, the first token is the category and the
-        remainder is the text.
-
-        Args:
-            cfg:        Channel configuration dict.
-            sender:     Display name of the sender.
-            sender_key: Public key of the sender.
-            args:       Everything after ``!bbs post ``.
-
-        Returns:
-            Confirmation or error message string.
-        """
+    def _handle_post(self, cfg: Dict, sender: str, sender_key: str, args: str) -> str:
         regions: List[str] = cfg.get("regions", [])
         categories: List[str] = cfg["categories"]
         tokens = args.split(None, 2) if args else []
 
         if regions:
-            # Syntax: !bbs post [region] [category] [text]
             if len(tokens) < 3:
                 return (
                     f"Usage: !bbs post [region] [category] [text] | "
@@ -451,27 +407,17 @@ class BbsCommandHandler:
                     f"Categories: {', '.join(categories)}"
                 )
             region, category, text = tokens[0], tokens[1], tokens[2]
-
             region_upper = region.upper()
             valid_regions = [r.upper() for r in regions]
             if region_upper not in valid_regions:
-                return (
-                    f"Invalid region '{region}'. "
-                    f"Valid: {', '.join(regions)}"
-                )
-            # Normalise to configured casing
+                return f"Invalid region '{region}'. Valid: {', '.join(regions)}"
             region = regions[valid_regions.index(region_upper)]
-
             category_upper = category.upper()
             valid_cats = [c.upper() for c in categories]
             if category_upper not in valid_cats:
-                return (
-                    f"Invalid category '{category}'. "
-                    f"Valid: {', '.join(categories)}"
-                )
+                return f"Invalid category '{category}'. Valid: {', '.join(categories)}"
             category = categories[valid_cats.index(category_upper)]
         else:
-            # Syntax: !bbs post [category] [text]
             if len(tokens) < 2:
                 return (
                     f"Usage: !bbs post [category] [text] | "
@@ -479,14 +425,10 @@ class BbsCommandHandler:
                 )
             region = ""
             category, text = tokens[0], tokens[1]
-
             category_upper = category.upper()
             valid_cats = [c.upper() for c in categories]
             if category_upper not in valid_cats:
-                return (
-                    f"Invalid category '{category}'. "
-                    f"Valid: {', '.join(categories)}"
-                )
+                return f"Invalid category '{category}'. Valid: {', '.join(categories)}"
             category = categories[valid_cats.index(category_upper)]
 
         msg = BbsMessage(
@@ -506,19 +448,6 @@ class BbsCommandHandler:
     # ------------------------------------------------------------------
 
     def _handle_read(self, cfg: Dict, args: str) -> str:
-        """Handle ``!bbs read [region] [category]``.
-
-        With regions:    ``!bbs read`` / ``!bbs read [region]`` /
-                         ``!bbs read [region] [category]``
-        Without regions: ``!bbs read`` / ``!bbs read [category]``
-
-        Args:
-            cfg:  Channel configuration dict.
-            args: Everything after ``!bbs read ``.
-
-        Returns:
-            Formatted message list or error string.
-        """
         regions: List[str] = cfg.get("regions", [])
         categories: List[str] = cfg["categories"]
         tokens = args.split() if args else []
@@ -529,7 +458,6 @@ class BbsCommandHandler:
         if regions:
             valid_regions_upper = [r.upper() for r in regions]
             valid_cats_upper = [c.upper() for c in categories]
-
             if len(tokens) >= 1:
                 tok0 = tokens[0].upper()
                 if tok0 in valid_regions_upper:
@@ -539,15 +467,9 @@ class BbsCommandHandler:
                         if tok1 in valid_cats_upper:
                             category = categories[valid_cats_upper.index(tok1)]
                         else:
-                            return (
-                                f"Invalid category '{tokens[1]}'. "
-                                f"Valid: {', '.join(categories)}"
-                            )
+                            return f"Invalid category '{tokens[1]}'. Valid: {', '.join(categories)}"
                 else:
-                    return (
-                        f"Invalid region '{tokens[0]}'. "
-                        f"Valid: {', '.join(regions)}"
-                    )
+                    return f"Invalid region '{tokens[0]}'. Valid: {', '.join(regions)}"
         else:
             valid_cats_upper = [c.upper() for c in categories]
             if len(tokens) >= 1:
@@ -555,14 +477,10 @@ class BbsCommandHandler:
                 if tok0 in valid_cats_upper:
                     category = categories[valid_cats_upper.index(tok0)]
                 else:
-                    return (
-                        f"Invalid category '{tokens[0]}'. "
-                        f"Valid: {', '.join(categories)}"
-                    )
+                    return f"Invalid category '{tokens[0]}'. Valid: {', '.join(categories)}"
 
         messages = self._service.get_messages(
-            cfg["channel"], region=region, category=category,
-            limit=self.READ_LIMIT,
+            cfg["channel"], region=region, category=category, limit=self.READ_LIMIT,
         )
 
         if not messages:
@@ -570,11 +488,9 @@ class BbsCommandHandler:
 
         lines = []
         for m in messages:
-            ts = m.timestamp[:16].replace("T", " ")  # YYYY-MM-DD HH:MM
+            ts = m.timestamp[:16].replace("T", " ")
             region_label = f"[{m.region}] " if m.region else ""
-            lines.append(
-                f"{ts} {m.sender} [{m.category}] {region_label}{m.text}"
-            )
+            lines.append(f"{ts} {m.sender} [{m.category}] {region_label}{m.text}")
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -582,18 +498,9 @@ class BbsCommandHandler:
     # ------------------------------------------------------------------
 
     def _handle_help(self, cfg: Dict) -> str:
-        """Return a compact command reference for this channel.
-
-        Args:
-            cfg: Channel configuration dict.
-
-        Returns:
-            Help string (single line).
-        """
         regions: List[str] = cfg.get("regions", [])
         categories: List[str] = cfg["categories"]
         name = cfg.get("name", f"ch{cfg['channel']}")
-
         if regions:
             return (
                 f"BBS [{name}] | "
@@ -608,3 +515,4 @@ class BbsCommandHandler:
             f"!bbs read [cat] | "
             f"Categories: {', '.join(categories)}"
         )
+

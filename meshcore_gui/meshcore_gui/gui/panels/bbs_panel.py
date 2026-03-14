@@ -13,6 +13,7 @@ from meshcore_gui.services.bbs_config_store import (
     DEFAULT_RETENTION_HOURS,
 )
 from meshcore_gui.services.bbs_service import BbsMessage, BbsService
+from meshcore_gui.core.protocols import SharedDataReadAndLookup
 
 
 def _slug(name: str) -> str:
@@ -27,13 +28,15 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "board"
 
 
-class BbsPanel:
-    """BBS panel: board selector, filters, message list, post form and settings.
+# ---------------------------------------------------------------------------
+# Main BBS panel (message view only — settings live on /bbs-settings)
+# ---------------------------------------------------------------------------
 
-    The settings section automatically derives one board per device channel.
-    Boards are enabled/disabled per channel; no manual board creation needed.
-    Advanced options (regions, allowed keys, channel combining) are hidden
-    in a collapsible section for administrator use.
+class BbsPanel:
+    """BBS panel: board selector, filters, message list and post form.
+
+    Settings are on a separate page (/bbs-settings), reachable via the
+    gear icon in the panel header.
 
     Args:
         put_command:  Callable to enqueue a command dict for the worker.
@@ -67,9 +70,6 @@ class BbsPanel:
         self._post_category_select = None
         self._msg_list_container = None
 
-        # UI refs -- settings
-        self._boards_settings_container = None
-
         # Cached device channels (updated by update())
         self._device_channels: List[Dict] = []
         self._last_ch_fingerprint: tuple = ()
@@ -79,10 +79,15 @@ class BbsPanel:
     # ------------------------------------------------------------------
 
     def render(self) -> None:
-        """Build the complete BBS panel layout."""
-        # ---- Message view card --------------------------------------
+        """Build the BBS message view panel layout."""
         with ui.card().classes('w-full'):
-            ui.label('BBS -- Bulletin Board System').classes('font-bold text-gray-600')
+            # Header row with gear icon
+            with ui.row().classes('w-full items-center justify-between'):
+                ui.label('BBS -- Bulletin Board System').classes('font-bold text-gray-600')
+                ui.button(
+                    icon='settings',
+                    on_click=lambda: ui.navigate.to('/bbs-settings'),
+                ).props('flat round dense').tooltip('BBS Settings')
 
             self._board_btn_row = ui.row().classes('w-full items-center gap-2 flex-wrap')
             with self._board_btn_row:
@@ -114,8 +119,9 @@ class BbsPanel:
 
             ui.separator()
 
+            # Responsive message list: h-72 is overridden by domca-panel CSS
             self._msg_list_container = ui.column().classes(
-                'w-full gap-1 h-72 overflow-y-auto bg-gray-50 rounded p-2'
+                'w-full gap-1 h-72 overflow-y-auto overflow-x-hidden bg-gray-50 rounded p-2'
             )
 
             ui.separator()
@@ -135,27 +141,15 @@ class BbsPanel:
 
                 self._text_input = ui.input(
                     placeholder='Message text...',
-                ).classes('flex-grow text-sm')
+                ).classes('flex-grow text-sm min-w-0')
 
                 ui.button('Send', on_click=self._on_post).props('no-caps').classes('text-xs')
 
-        # ---- Settings card ------------------------------------------
-        with ui.card().classes('w-full'):
-            ui.label('BBS Settings').classes('font-bold text-gray-600')
-            ui.separator()
-
-            self._boards_settings_container = ui.column().classes('w-full gap-3')
-            with self._boards_settings_container:
-                ui.label('Connect device to see channels.').classes(
-                    'text-xs text-gray-400 italic'
-                )
-
         # Initial render
         self._rebuild_board_buttons()
-        self._rebuild_boards_settings()
 
     # ------------------------------------------------------------------
-    # Board selector (message view)
+    # Board selector
     # ------------------------------------------------------------------
 
     def _rebuild_board_buttons(self) -> None:
@@ -167,7 +161,7 @@ class BbsPanel:
         with self._board_btn_row:
             ui.label('Board:').classes('text-sm text-gray-600')
             if not boards:
-                ui.label('No active boards.').classes(
+                ui.label('No active boards — open Settings to enable a channel.').classes(
                     'text-xs text-gray-400 italic'
                 )
                 return
@@ -177,7 +171,6 @@ class BbsPanel:
                     on_click=lambda b=board: self._select_board(b),
                 ).props('flat no-caps').classes('text-xs')
 
-        # Auto-select first board if none active or active was deleted
         ids = [b.id for b in boards]
         if boards and (self._active_board is None or self._active_board.id not in ids):
             self._select_board(boards[0])
@@ -260,9 +253,13 @@ class BbsPanel:
         ts = msg.timestamp[:16].replace('T', ' ')
         region_label = f' [{msg.region}]' if msg.region else ''
         header = f'{ts}  {msg.sender}  [{msg.category}]{region_label}'
-        with ui.column().classes('w-full gap-0 py-1 border-b border-gray-200'):
-            ui.label(header).classes('text-xs text-gray-500')
-            ui.label(msg.text).classes('text-sm')
+        with ui.column().classes('w-full min-w-0 gap-0 py-1 border-b border-gray-200'):
+            ui.label(header).classes('text-xs text-gray-500').style(
+                'word-break: break-all; overflow-wrap: break-word'
+            )
+            ui.label(msg.text).classes('text-sm').style(
+                'word-break: break-word; overflow-wrap: break-word'
+            )
 
     # ------------------------------------------------------------------
     # Post
@@ -293,7 +290,6 @@ class BbsPanel:
         if self._active_board.regions and self._post_region_select:
             region = self._post_region_select.value or ''
 
-        # Post on first assigned channel (primary channel for outgoing)
         target_channel = self._active_board.channels[0]
 
         msg = BbsMessage(
@@ -321,11 +317,113 @@ class BbsPanel:
         ui.notify('Message posted.', type='positive')
 
     # ------------------------------------------------------------------
-    # Settings -- channel list (standard view)
+    # External update hook
     # ------------------------------------------------------------------
 
-    def _rebuild_boards_settings(self) -> None:
-        """Rebuild settings: one row per device channel + collapsed advanced section."""
+    def update(self, data: Dict) -> None:
+        """Called by the dashboard timer with the SharedData snapshot.
+
+        Args:
+            data: SharedData snapshot dict.
+        """
+        device_channels = data.get('channels', [])
+        fingerprint = tuple(
+            (ch.get('idx', 0), ch.get('name', '')) for ch in device_channels
+        )
+        if fingerprint != self._last_ch_fingerprint:
+            self._last_ch_fingerprint = fingerprint
+            self._device_channels = device_channels
+            self._rebuild_board_buttons()
+
+
+# ---------------------------------------------------------------------------
+# Separate settings page (/bbs-settings)
+# ---------------------------------------------------------------------------
+
+class BbsSettingsPage:
+    """Standalone BBS settings page, registered at /bbs-settings.
+
+    Follows the same pattern as RoutePage: one instance, render() called
+    per page load.
+
+    Args:
+        shared:       SharedData instance (for device channel list).
+        config_store: BbsConfigStore instance.
+    """
+
+    def __init__(
+        self,
+        shared: SharedDataReadAndLookup,
+        config_store: BbsConfigStore,
+    ) -> None:
+        self._shared = shared
+        self._config_store = config_store
+        self._device_channels: List[Dict] = []
+        self._boards_settings_container = None
+
+    def render(self) -> None:
+        """Render the BBS settings page."""
+        from meshcore_gui.gui.dashboard import _DOMCA_HEAD  # lazy — avoids circular import
+        data = self._shared.get_snapshot()
+        self._device_channels = data.get('channels', [])
+
+        ui.page_title('BBS Settings')
+        ui.add_head_html(_DOMCA_HEAD)
+        ui.dark_mode(True)
+
+        with ui.header().classes('items-center px-4 py-2 shadow-md'):
+            ui.button(
+                icon='arrow_back',
+                on_click=lambda: ui.run_javascript('window.history.back()'),
+            ).props('flat round dense color=white').tooltip('Back')
+            ui.label('📋 BBS Settings').classes(
+                'text-lg font-bold domca-header-text'
+            ).style("font-family: 'JetBrains Mono', monospace")
+            ui.space()
+
+        with ui.column().classes('domca-panel gap-4').style('padding-top: 1rem'):
+            with ui.card().classes('w-full'):
+                ui.label('BBS Settings').classes('font-bold text-gray-600')
+                ui.separator()
+
+                self._boards_settings_container = ui.column().classes('w-full gap-3')
+                with self._boards_settings_container:
+                    if not self._device_channels:
+                        ui.label('Connect device to see channels.').classes(
+                            'text-xs text-gray-400 italic'
+                        )
+                    else:
+                        self._render_all()
+
+    # ------------------------------------------------------------------
+    # Settings rendering
+    # ------------------------------------------------------------------
+
+    def _render_all(self) -> None:
+        """Render all channel rows and the advanced section."""
+        for ch in self._device_channels:
+            self._render_channel_settings_row(ch)
+
+        ui.separator()
+
+        with ui.expansion('Advanced', value=False).classes('w-full').props('dense'):
+            ui.label('Regions and key list per channel').classes(
+                'text-xs text-gray-500 pb-1'
+            )
+            advanced_any = False
+            for ch in self._device_channels:
+                idx = ch.get('idx', ch.get('index', 0))
+                board = self._config_store.get_board(f'ch{idx}')
+                if board is not None:
+                    self._render_channel_advanced_row(ch, board)
+                    advanced_any = True
+            if not advanced_any:
+                ui.label(
+                    'Enable at least one channel to see advanced options.'
+                ).classes('text-xs text-gray-400 italic')
+
+    def _rebuild(self) -> None:
+        """Clear and re-render the settings container in-place."""
         if not self._boards_settings_container:
             return
         self._boards_settings_container.clear()
@@ -334,35 +432,11 @@ class BbsPanel:
                 ui.label('Connect device to see channels.').classes(
                     'text-xs text-gray-400 italic'
                 )
-                return
-
-            # Standard view: one row per channel
-            for ch in self._device_channels:
-                self._render_channel_settings_row(ch)
-
-            ui.separator()
-
-            # Advanced section (collapsed)
-            with ui.expansion('Advanced', value=False).classes('w-full').props('dense'):
-                ui.label('Regions and key list per channel').classes(
-                    'text-xs text-gray-500 pb-1'
-                )
-                advanced_any = False
-                for ch in self._device_channels:
-                    idx = ch.get('idx', ch.get('index', 0))
-                    board = self._config_store.get_board(f'ch{idx}')
-                    if board is not None:
-                        self._render_channel_advanced_row(ch, board)
-                        advanced_any = True
-                if not advanced_any:
-                    ui.label(
-                        'Enable at least one channel to see advanced options.'
-                    ).classes('text-xs text-gray-400 italic')
+            else:
+                self._render_all()
 
     def _render_channel_settings_row(self, ch: Dict) -> None:
         """Render the standard settings row for a single device channel.
-
-        Shows enable toggle, categories, retention and a Save button.
 
         Args:
             ch: Device channel dict with 'idx'/'index' and 'name' keys.
@@ -377,7 +451,6 @@ class BbsPanel:
         retention_value = str(board.retention_hours) if board else str(DEFAULT_RETENTION_HOURS)
 
         with ui.card().classes('w-full p-2'):
-            # Header row: channel name + active toggle
             with ui.row().classes('w-full items-center justify-between'):
                 ui.label(f'[{idx}] {ch_name}').classes('text-sm font-medium')
                 active_toggle = ui.toggle(
@@ -385,12 +458,10 @@ class BbsPanel:
                     value=is_active,
                 ).classes('text-xs')
 
-            # Categories
             with ui.row().classes('w-full items-center gap-2 mt-1'):
                 ui.label('Categories:').classes('text-xs text-gray-600 w-24 shrink-0')
                 cats_input = ui.input(value=cats_value).classes('text-xs flex-grow')
 
-            # Retention
             with ui.row().classes('w-full items-center gap-2 mt-1'):
                 ui.label('Retain:').classes('text-xs text-gray-600 w-24 shrink-0')
                 retention_input = ui.input(value=retention_value).classes('text-xs').style(
@@ -416,7 +487,6 @@ class BbsPanel:
                         ret_hours = int(ri.value or DEFAULT_RETENTION_HOURS)
                     except ValueError:
                         ret_hours = DEFAULT_RETENTION_HOURS
-                    # Preserve extra combined channels and advanced fields if board existed
                     extra_channels = (
                         [c for c in existing.channels if c != bidx]
                         if existing else []
@@ -435,23 +505,14 @@ class BbsPanel:
                     ui.notify(f'{bname} saved.', type='positive')
                 else:
                     self._config_store.delete_board(bid)
-                    if self._active_board and self._active_board.id == bid:
-                        self._active_board = None
                     debug_print(f'BBS settings: channel {bid} disabled')
                     ui.notify(f'{bname} disabled.', type='warning')
-                self._rebuild_board_buttons()
-                self._rebuild_boards_settings()
+                self._rebuild()
 
             ui.button('Save', on_click=_save).props('no-caps').classes('text-xs mt-1')
 
-    # ------------------------------------------------------------------
-    # Settings -- advanced section (collapsed)
-    # ------------------------------------------------------------------
-
     def _render_channel_advanced_row(self, ch: Dict, board: BbsBoard) -> None:
         """Render the advanced settings block for a single active channel.
-
-        Shows regions, allowed keys and optional channel combining.
 
         Args:
             ch:    Device channel dict.
@@ -465,7 +526,7 @@ class BbsPanel:
             ui.label(f'[{idx}] {ch_name}').classes('text-sm font-medium')
 
             regions_input = ui.input(
-                label="Regions (comma-separated)",
+                label='Regions (comma-separated)',
                 value=', '.join(board.regions),
             ).classes('w-full text-xs')
 
@@ -474,7 +535,6 @@ class BbsPanel:
                 value=', '.join(board.allowed_keys),
             ).classes('w-full text-xs')
 
-            # Combine with other channels
             other_channels = [
                 c for c in self._device_channels
                 if c.get('idx', c.get('index', 0)) != idx
@@ -523,30 +583,7 @@ class BbsPanel:
                 self._config_store.set_board(updated)
                 debug_print(f'BBS settings (advanced): {bid} saved')
                 ui.notify(f'{bname} saved.', type='positive')
-                self._rebuild_board_buttons()
-                self._rebuild_boards_settings()
+                self._rebuild()
 
             ui.button('Save', on_click=_save_adv).props('no-caps').classes('text-xs mt-1')
             ui.separator()
-
-    # ------------------------------------------------------------------
-    # External update hook
-    # ------------------------------------------------------------------
-
-    def update(self, data: Dict) -> None:
-        """Called by the dashboard timer with the SharedData snapshot.
-
-        Rebuilds the settings channel list when the device channel list
-        changes.
-
-        Args:
-            data: SharedData snapshot dict.
-        """
-        device_channels = data.get('channels', [])
-        fingerprint = tuple(
-            (ch.get('idx', 0), ch.get('name', '')) for ch in device_channels
-        )
-        if fingerprint != self._last_ch_fingerprint:
-            self._last_ch_fingerprint = fingerprint
-            self._device_channels = device_channels
-            self._rebuild_boards_settings()

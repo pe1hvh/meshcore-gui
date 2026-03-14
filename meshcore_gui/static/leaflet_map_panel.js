@@ -38,7 +38,17 @@
     const existing = maps.get(containerId);
     const host = document.getElementById(containerId);
 
-    if (!host || typeof window.L === 'undefined' || typeof window.L.markerClusterGroup !== 'function') {
+    if (!host || typeof window.L === 'undefined') {
+      return null;
+    }
+
+    // Do not initialize the Leaflet map while the host container has no
+    // rendered dimensions.  This happens when the map panel is hidden at
+    // page load (display:none via Vue v-show).  Calling L.map() on a
+    // zero-size element produces a broken map that never recovers.
+    // processPending will retry on the next scheduled tick once the panel
+    // becomes visible and the host gains real dimensions.
+    if (!existing && host.clientWidth === 0 && host.clientHeight === 0) {
       return null;
     }
 
@@ -71,6 +81,8 @@
       maxZoom: 19,
       zoomControl: true,
       preferCanvas: true,
+      fadeAnimation: false,
+      markerZoomAnimation: false,
     });
 
     const state = {
@@ -108,21 +120,7 @@
       ).addTo(map);
       state.theme = 'light';
 
-      state.layers.contacts = window.L.markerClusterGroup({
-        showCoverageOnHover: false,
-        spiderfyOnMaxZoom: true,
-        removeOutsideVisibleBounds: true,
-        animate: false,
-        chunkedLoading: true,
-        maxClusterRadius: 50,
-        iconCreateFunction(cluster) {
-          return window.L.divIcon({
-            html: '<div><span>' + cluster.getChildCount() + '</span></div>',
-            className: 'meshcore-marker-cluster',
-            iconSize: window.L.point(42, 42),
-          });
-        },
-      }).addTo(map);
+      state.layers.contacts = buildContactsLayer().addTo(map);
     } catch (error) {
       maps.delete(containerId);
       delete host.__meshcoreLeafletState;
@@ -293,8 +291,11 @@
     }
 
     state.deviceMarker.setLatLng(latLng);
-    state.deviceMarker.setIcon(icon);
-    state.deviceMarker.setPopupContent(popupHtml);
+    const devicePopupOpen = state.deviceMarker.isPopupOpen();
+    if (!devicePopupOpen) {
+      state.deviceMarker.setIcon(icon);
+      state.deviceMarker.setPopupContent(popupHtml);
+    }
     state.deviceMarker.options.title = '📡 ' + device.name;
   }
 
@@ -322,8 +323,11 @@
       }
 
       existing.setLatLng(latLng);
-      existing.setIcon(markerIcon);
-      existing.setPopupContent(popupHtml);
+      const contactPopupOpen = existing.isPopupOpen();
+      if (!contactPopupOpen) {
+        existing.setIcon(markerIcon);
+        existing.setPopupContent(popupHtml);
+      }
       existing.options.title = markerTitle;
       if (!state.layers.contacts.hasLayer(existing)) {
         state.layers.contacts.addLayer(existing);
@@ -408,6 +412,29 @@
     );
   }
 
+  function buildContactsLayer() {
+    if (typeof window.L.markerClusterGroup === 'function') {
+      return window.L.markerClusterGroup({
+        showCoverageOnHover: false,
+        spiderfyOnMaxZoom: true,
+        removeOutsideVisibleBounds: true,
+        animate: false,
+        chunkedLoading: true,
+        maxClusterRadius: 50,
+        iconCreateFunction(cluster) {
+          return window.L.divIcon({
+            html: '<div><span>' + cluster.getChildCount() + '</span></div>',
+            className: 'meshcore-marker-cluster',
+            iconSize: window.L.point(42, 42),
+          });
+        },
+      });
+    }
+
+    console.warn('MeshCoreLeafletBoot markercluster unavailable; falling back to plain layer group');
+    return window.L.layerGroup();
+  }
+
   function escapeHtml(value) {
     return String(value)
       .replaceAll('&', '&amp;')
@@ -446,9 +473,9 @@
       return;
     }
 
-    if (typeof window.L === 'undefined' || typeof window.L.markerClusterGroup !== 'function') {
+    if (typeof window.L === 'undefined') {
       if (retries >= MAX_RETRIES) {
-        console.error('MeshCoreLeafletBoot timeout waiting for Leaflet markercluster', { containerId });
+        console.error('MeshCoreLeafletBoot timeout waiting for Leaflet runtime', { containerId });
         return;
       }
       window.setTimeout(() => {
@@ -460,6 +487,13 @@
     try {
       const state = PANEL.ensureMap(containerId);
       if (!state) {
+        if (retries >= MAX_RETRIES) {
+          console.error('MeshCoreLeafletBoot timeout waiting for visible map host', { containerId });
+          return;
+        }
+        window.setTimeout(() => {
+          scheduleProcess(containerId, retries + 1);
+        }, RETRY_DELAY_MS);
         return;
       }
       const current = pending.get(containerId);
@@ -487,35 +521,21 @@
       return;
     }
 
-    const observer = new MutationObserver(() => {
+    const timer = window.setTimeout(() => {
+      watchers.delete(containerId);
       const host = document.getElementById(containerId);
-      if (!host) {
+      if (host) {
+        scheduleProcess(containerId, retries + 1);
         return;
       }
-      observer.disconnect();
-      watchers.delete(containerId);
-      scheduleProcess(containerId, retries + 1);
-    });
-
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-    });
-
-    watchers.set(containerId, observer);
-
-    window.setTimeout(() => {
-      if (watchers.get(containerId) !== observer) {
-        return;
-      }
-      observer.disconnect();
-      watchers.delete(containerId);
       if (retries >= MAX_RETRIES) {
         console.error('MeshCoreLeafletBoot timeout waiting for host element', { containerId });
         return;
       }
       scheduleProcess(containerId, retries + 1);
     }, RETRY_DELAY_MS);
+
+    watchers.set(containerId, timer);
   }
 
   function isDomReady() {
@@ -523,14 +543,28 @@
   }
 
 
-  window.MeshCoreRouteMapBoot = function (containerId, payload) {
+  window.MeshCoreRouteMapBoot = function (containerId, payload, retries) {
     if (!containerId || !payload) {
       return;
     }
 
+    const attempt = typeof retries === 'number' ? retries : 0;
     const host = document.getElementById(containerId);
     if (!host || typeof window.L === 'undefined') {
-      window.setTimeout(() => window.MeshCoreRouteMapBoot(containerId, payload), RETRY_DELAY_MS);
+      if (attempt >= MAX_RETRIES) {
+        console.error('MeshCoreRouteMapBoot timeout waiting for host/runtime', { containerId });
+        return;
+      }
+      window.setTimeout(() => window.MeshCoreRouteMapBoot(containerId, payload, attempt + 1), RETRY_DELAY_MS);
+      return;
+    }
+
+    if (host.clientWidth === 0 && host.clientHeight === 0) {
+      if (attempt >= MAX_RETRIES) {
+        console.error('MeshCoreRouteMapBoot timeout waiting for visible route map host', { containerId });
+        return;
+      }
+      window.setTimeout(() => window.MeshCoreRouteMapBoot(containerId, payload, attempt + 1), RETRY_DELAY_MS);
       return;
     }
 
@@ -551,6 +585,8 @@
       maxZoom: 19,
       zoomControl: true,
       preferCanvas: true,
+      fadeAnimation: false,
+      markerZoomAnimation: false,
     });
     host.__meshcoreRouteMap = map;
 
@@ -629,6 +665,11 @@
       } else {
         current.snapshot = { ...snapshot };
       }
+    }
+
+    if (!current.snapshot && current.theme && !maps.has(containerId)) {
+      pending.set(containerId, current);
+      return;
     }
 
     pending.set(containerId, current);

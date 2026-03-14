@@ -79,9 +79,8 @@ _ROUTE_MAP_ASSETS = r"""
   ensureStylesheet('meshcore-leaflet-panel-css', '/static/leaflet_map_panel.css');
 
   ensureScript('meshcore-leaflet-vendor-js', 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', function () {
-    ensureScript('meshcore-leaflet-markercluster-js', 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js', function () {
-      ensureScript('meshcore-leaflet-panel-js', '/static/leaflet_map_panel.js');
-    });
+    ensureScript('meshcore-leaflet-panel-js', '/static/leaflet_map_panel.js');
+    ensureScript('meshcore-leaflet-markercluster-js', 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js');
   });
 })();
 </script>
@@ -144,12 +143,8 @@ class RoutePage:
         with ui.header().classes('items-center px-4 py-2 shadow-md'):
             ui.button(
                 icon='arrow_back',
-                on_click=lambda: ui.navigate.to('/'),
-            ).props('flat round dense color=white').tooltip('Back to Dashboard')
-            ui.button(
-                icon='history',
-                on_click=lambda: ui.navigate.to('/archive'),
-            ).props('flat round dense color=white').tooltip('Back to Archive')
+                on_click=lambda: ui.run_javascript('window.history.back()'),
+            ).props('flat round dense color=white').tooltip('Back')
             ui.label('🗺️ MeshCore Route').classes(
                 'text-lg font-bold domca-header-text'
             ).style("font-family: 'JetBrains Mono', monospace")
@@ -230,19 +225,29 @@ class RoutePage:
 
     @staticmethod
     def _render_map(data: Dict, route: Dict) -> None:
-        """Render the route map in browser JS using the shared MAP icons."""
+        """Render the route map in browser JS using the shared MAP icons.
+
+        The Leaflet container is always rendered.  When no nodes carry GPS
+        coordinates a notice is shown inside the card, but the map itself
+        still initialises so the user sees the configured home area.
+        MeshCoreRouteMapBoot handles an empty nodes array gracefully by
+        displaying the map at payload.center with no markers.
+        """
         with ui.card().classes('w-full'):
             payload = RoutePage._build_route_map_payload(data, route)
+
+            # Show a notice when no node carries GPS, but do NOT skip the
+            # Leaflet container.  The JS runtime renders the map at the
+            # configured home area (DEFAULT_MAP_CENTER) with no markers.
             if not payload['nodes']:
                 ui.label(
-                    '📍 No location data available for map display'
-                ).classes('text-gray-500 italic p-4')
-                return
+                    '📍 No GPS location data — map shows home area'
+                ).classes('text-xs text-gray-400 italic px-2 pt-2')
 
             container_id = f'route-map-{uuid4().hex}'
-            ui.html(
-                f'<div id="{container_id}" class="w-full h-96 rounded-lg overflow-hidden"></div>'
-            ).classes('w-full')
+            ui.element('div').props(f'id={container_id}').classes(
+                'w-full'
+            ).style('height:24rem;border-radius:0.5rem;overflow:hidden;')
 
             boot_script = (
                 '(function bootRouteMap(retries){'

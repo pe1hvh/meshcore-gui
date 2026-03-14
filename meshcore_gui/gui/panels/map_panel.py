@@ -45,10 +45,9 @@ class MapPanel:
                         on_change=lambda e: self._set_map_theme_mode(e.value),
                     ).props('dense')
                     ui.button('Center on Device', on_click=self._center_on_device)
-            ui.html(
-                f'<div id="{self._container_id}" class="meshcore-leaflet-host w-full h-72"></div>'
-            ).classes('w-full h-72')
-            self._dispatch_to_browser(snapshot={'__command__': 'ensure_map'})
+            ui.element('div').props(f'id={self._container_id}').classes(
+                'meshcore-leaflet-host w-full h-72'
+            )
             self._apply_theme_only()
 
     def set_ui_dark_mode(self, value: bool | None) -> None:
@@ -189,10 +188,10 @@ class MapPanel:
     'meshcore-leaflet-vendor-js',
     'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
     function () {
+      ensurePanelRuntime();
       ensureScript(
         'meshcore-leaflet-markercluster-js',
-        'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js',
-        ensurePanelRuntime
+        'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js'
       );
     }
   );

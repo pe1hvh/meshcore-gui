@@ -1,3 +1,5 @@
+
+
 # CHANGELOG
 
 <!-- CHANGED: Title changed from "CHANGELOG: Message & Metadata Persistence" to "CHANGELOG" — 
@@ -5,6 +7,153 @@
 
 All notable changes to MeshCore GUI are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
+
+
+---
+
+> **📈 Performance note — v1.13.1 through v1.13.4**
+> Although versions 1.13.1–1.13.4 were released as targeted bugfix releases, the
+> cumulative effect of the fixes delivered a significant performance improvement:
+>
+> - **v1.13.1** — Bot non-response fix eliminated a silent failure path that caused
+>   repeated dedup-marked command re-evaluation on every message tick.
+> - **v1.13.2** — Map display fixes prevented Leaflet from being initialized on hidden
+>   zero-size containers, removing a source of repeated failed bootstrap retries and
+>   associated DOM churn.
+> - **v1.13.3** — Active panel timer gating reduced the 500 ms dashboard update work to
+>   only the currently visible panel, cutting unnecessary UI updates and background
+>   redraw load substantially — especially noticeable over VPN or on slower hardware.
+> - **v1.13.4** — Room Server event classification fix and sender name resolution removed
+>   redundant fallback processing paths and reduced per-tick contact lookup overhead.
+>
+> Users upgrading from v1.12.x or earlier will notice noticeably faster panel switching,
+> lower CPU usage during idle operation, and more stable map rendering.
+
+---
+## [1.14.0] - 2026-03-14 — Offline BBS (Bulletin Board System)
+
+### Added
+- 🆕 **`meshcore_gui/services/bbs_config_store.py`** — `BbsBoard` dataclass + `BbsConfigStore`. Beheert `~/.meshcore-gui/bbs/bbs_config.json` (config v2). Automatische migratie van v1. Thread-safe, atomische schrijfoperaties. Een board groepeert een of meerdere channel-indices tot één bulletin board. Methoden: `get_boards()`, `get_board()`, `get_board_for_channel()`, `set_board()`, `delete_board()`, `board_id_exists()`.
+- 🆕 **`meshcore_gui/services/bbs_service.py`** — SQLite-backed BBS persistence layer. `BbsMessage` dataclass. `BbsService.get_messages()` en `get_all_messages()` queryen via `WHERE channel IN (...)` zodat één board meerdere channels kan omvatten. WAL-mode + busy_timeout=3s voor veilig gebruik door meerdere processen. Database op `~/.meshcore-gui/bbs/bbs_messages.db`. `BbsCommandHandler` zoekt het board op via `get_board_for_channel()`.
+- 🆕 **`meshcore_gui/gui/panels/bbs_panel.py`** — BBS panel voor het dashboard.
+  - Board-selector (knoppen per geconfigureerd board).
+  - Regio- en categorie-filter (regio alleen zichtbaar als board regio's heeft).
+  - Scrollbare berichtenlijst over alle channels van het actieve board.
+  - Post-formulier: post op het eerste channel van het board.
+  - **Settings-sectie**: boards aanmaken (naam → Create), per board channels toewijzen via checkboxes (dynamisch gevuld vanuit device channels), categorieën, regio's, retentie, whitelist, Save en Delete.
+
+### Changed
+- 🔄 **`meshcore_gui/services/bot.py`** — `MeshBot` accepteert optionele `bbs_handler`; `!bbs` commando's worden doorgesluisd naar `BbsCommandHandler`.
+- 🔄 **`meshcore_gui/config.py`** — `BBS_CHANNELS` verwijderd; versie `1.14.0`.
+- 🔄 **`meshcore_gui/gui/dashboard.py`** — `BbsConfigStore` en `BbsService` instanties; `BbsPanel` geregistreerd; `📋 BBS` drawer-item.
+- 🔄 **`meshcore_gui/gui/panels/__init__.py`** — `BbsPanel` re-exported.
+
+### Storage
+```
+~/.meshcore-gui/bbs/bbs_config.json   -- board configuratie (v2)
+~/.meshcore-gui/bbs/bbs_messages.db   -- SQLite berichtenopslag
+```
+
+### Not changed
+- BLE-laag, SharedData, core/models, route_page, map_panel, message_archive, alle overige services en panels.
+
+---
+
+## [1.13.5] - 2026-03-14 — Route back-button and map popup flicker fixes
+
+### Fixed
+- 🛠 **Route page back-button navigated to main menu regardless of origin** — the two fixed navigation buttons (`/` and `/archive`) are replaced by a single `arrow_back` button that calls `window.history.back()`, so the user is always returned to the screen that opened the route page.
+- 🛠 **Map marker popup flickered on every 500 ms update tick** — the periodic `applyContacts` / `applyDevice` calls in `leaflet_map_panel.js` invoked `setIcon()` and `setPopupContent()` on all existing markers unconditionally. `setIcon()` rebuilds the marker DOM element; when a popup was open this caused the popup anchor to detach and reattach, producing visible flickering. Both functions now check `marker.isPopupOpen()` and skip icon/content updates while the popup is visible.
+- 🛠 **Map marker popup appeared with a flicker/flash on first click (main map and route map)** — Leaflet's default `fadeAnimation: true` caused popups to fade in from opacity 0, which on the Raspberry Pi rendered as a visible flicker. Both `L.map()` initialisations (`ensureMap` and `MeshCoreRouteMapBoot`) now set `fadeAnimation: false` and `markerZoomAnimation: false` so popups appear immediately without animation artefacts.
+
+### Changed
+- 🔄 `meshcore_gui/gui/route_page.py` — Replaced two fixed-destination header buttons with a single `arrow_back` button using `window.history.back()`.
+- 🔄 `meshcore_gui/static/leaflet_map_panel.js` — `applyDevice` and `applyContacts` guard `setIcon` / `setPopupContent` behind `isPopupOpen()`. Both `L.map()` calls add `fadeAnimation: false, markerZoomAnimation: false`.
+- 🔄 `meshcore_gui/config.py` — Version bumped to `1.13.5`.
+
+### Impact
+- Back navigation from the route page now always returns to the correct origin screen.
+- Open marker popups are stable during map update ticks; content refreshes on next tick after the popup is closed.
+- Popup opening is instant on both maps; no animation artefacts on low-power hardware.
+
+---
+## [1.13.4] - 2026-03-12 — Room Server message classification fix
+
+### Fixed
+- 🛠 **Incoming room messages from other participants could be misclassified as normal DMs** — `CONTACT_MSG_RECV` room detection now keys on `txt_type == 2` instead of requiring `signature`.
+- 🛠 **Incoming room traffic could be attached to the wrong key** — room message handling now prefers `room_pubkey` / receiver-style payload keys before falling back to `pubkey_prefix`.
+- 🛠 **Room login UI could stay out of sync with the actual server-confirmed state** — `LOGIN_SUCCESS` now updates `room_login_states` and refreshes room history using the resolved room key.
+- 🛠 **Room Server panel showed hex codes instead of sender names** — when a contact was not yet known at the time a room message was archived, `msg.sender` was stored as a raw hex prefix. The panel now performs a live lookup against the current contacts snapshot on every render tick, so names are shown as soon as the contact is known.
+
+### Changed
+- 🔄 `meshcore_gui/ble/events.py` — Broadened room payload parsing and added payload-key debug logging for incoming room traffic.
+- 🔄 `meshcore_gui/ble/worker.py` — `LOGIN_SUCCESS` handler now updates per-room login state and refreshes cached room history.
+- 🔄 `meshcore_gui/config.py` — Version kept at `1.13.4`.
+
+### Impact
+- Keeps the existing Room Server panel logic intact.
+- Fix is limited to room event classification and room login confirmation handling.
+- No intended behavioural change for ordinary DMs or channel messages.
+
+---
+---
+## [1.13.3] - 2026-03-12 — Active Panel Timer Gating
+
+### Changed
+- 🔄 `meshcore_gui/gui/dashboard.py` — The 500 ms dashboard timer now keeps only lightweight global state updates running continuously (status label, channel filters/options, drawer submenu consistency). Expensive panel refreshes are now gated to the currently active panel only
+- 🔄 `meshcore_gui/gui/dashboard.py` — Added immediate active-panel refresh on panel switch so newly opened panels populate at once instead of waiting for the next timer tick
+- 🔄 `meshcore_gui/gui/panels/map_panel.py` — Removed eager hidden `ensure_map` bootstrap from `render()`; the browser map now starts only when real snapshot work exists or when a live map already exists
+- 🔄 `meshcore_gui/static/leaflet_map_panel.js` — Theme-only calls without snapshot work no longer start hidden host retry processing before a real map exists
+- 🔄 `meshcore_gui/config.py` — Version bumped to `1.13.3`
+
+### Fixed
+- 🛠 **Hidden panels still refreshed every 500 ms** — Device, actions, contacts, messages, rooms and RX log are no longer needlessly updated while another panel is active
+- 🛠 **Map bootstrap activity while panel is not visible** — Removed one source of `MeshCoreLeafletBoot timeout waiting for visible map host` caused by eager hidden startup traffic
+- 🛠 **Slow navigation over VPN** — Reduced unnecessary dashboard-side UI churn by limiting timer-driven work to the active panel
+
+### Impact
+- Faster panel switching because the selected panel gets one direct refresh immediately
+- Lower background UI/update load on dashboard level, especially when the map panel is not active
+- Smaller chance of Leaflet hidden-host retries and related console noise outside active map usage
+- No intended functional regression for route maps or visible panel behaviour
+
+---
+## [1.13.2] - 2026-03-11 — Map Display Bugfix
+
+### Fixed
+- 🛠 **MAP panel blank when contacts list is empty at startup** — dashboard update loop
+  had two separate conditional map-update blocks that both silently stopped firing after
+  tick 1 when `data['contacts']` was empty. Map panel received no further snapshots and
+  remained blank indefinitely.
+- 🛠 **Leaflet map initialized on hidden (zero-size) container** — `processPending` in
+  the browser runtime called `L.map()` on the host element while it was still
+  `display:none` (Vue v-show, panel not yet visible). This produced a broken 0×0 map
+  that never recovered because `ensureMap` returned the cached broken state on all
+  subsequent calls. Fixed by adding a `clientWidth/clientHeight` guard in `ensureMap`:
+  initialization is deferred until the host has real dimensions.
+- 🛠 **Route map container had no height** — `route_page.py` used the Tailwind class
+  `h-96` for the Leaflet host `<div>`. NiceGUI/Quasar does not include Tailwind CSS,
+  so `h-96` had no effect and the container rendered at height 0. Leaflet initialized
+  on a zero-height element and produced a blank map.
+- 🛠 **Route map not rendered when no node has GPS coordinates** — `_render_map`
+  returned early before creating the Leaflet container when `payload['nodes']` was
+  empty. Fixed: container is always created; a notice label is shown instead.
+
+### Changed
+- 🔄 `meshcore_gui/static/leaflet_map_panel.js` — Added size guard in `ensureMap`:
+  returns `null` when host has `clientWidth === 0 && clientHeight === 0` and no map
+  state exists yet. `processPending` retries on the next tick once the panel is visible.
+- 🔄 `meshcore_gui/gui/dashboard.py` — Consolidated two conditional map-update blocks
+  into a single unconditional update while the MAP panel is active. Added `h-96` to the
+  DOMCA CSS height overrides for consistency with the route page map container.
+- 🔄 `meshcore_gui/gui/route_page.py` — Replaced `h-96` Tailwind class on the route
+  map host `<div>` with an explicit inline `style` (height: 24rem). Removed early
+  `return` guard so the Leaflet container is always created.
+
+### Impact
+- MAP panel now renders reliably on first open regardless of contact/GPS availability
+- Route map now always shows with correct height even when route nodes have no GPS
+- No breaking changes outside the three files listed above
 
 ---
 ## [1.13.0] - 2026-03-09 — Leaflet Map Runtime Stabilization

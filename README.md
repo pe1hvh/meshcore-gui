@@ -7,6 +7,8 @@
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-orange.svg)
 ![Transport](https://img.shields.io/badge/Transport-USB%20Serial%20%7C%20BLE-blueviolet.svg)
 ![Bridge](https://img.shields.io/badge/Bridge-Cross--Frequency%20LoRa%20↔%20LoRa-ff6600.svg)
+<img width="920" height="769" alt="image" src="https://github.com/user-attachments/assets/ff38b97f-557b-4217-abce-aaec68a90c35" />
+
 
 A graphical user interface for MeshCore mesh network devices with native USB serial and Bluetooth Low Energy (BLE) support, for on your desktop or as a headless service on your local network.
 
@@ -131,6 +133,8 @@ Under the hood it uses `meshcore` as the protocol layer, `meshcoredecoder` for r
 <img width="1000" height="873" alt="a_Screenshots" src="https://github.com/user-attachments/assets/bd19de9a-05f7-43fd-8acd-3b92cdf6c7fa" />
 <img width="944" height="877" alt="Screenshot from 2026-02-18 09-27-59" src="https://github.com/user-attachments/assets/6b0b19f4-9886-4cca-bd36-50b4c3797e02" />
 <img width="944" height="877" alt="Screenshot from 2026-02-18 09-28-27" src="https://github.com/user-attachments/assets/374694fa-ab2d-4b96-b81f-6a351af7710a" />
+<img width="920" height="769" alt="image" src="https://github.com/user-attachments/assets/78b8112a-1ad8-460c-99ae-a16d15b14b77" />
+
 
 ## 4. Requirements
 
@@ -1180,11 +1184,108 @@ meshcore-gui/
 └── README.md
 ```
 
-## 15. Roadmap
+## 15. BBS — Bulletin Board System
+
+MeshCore GUI includes an offline BBS that lets mesh nodes exchange structured messages by category, with optional region tagging.
+
+### Access model
+
+The operator links one or more channels to the BBS. Anyone who sends a message on a configured BBS channel is automatically added to the whitelist. After that, they can send commands via **Direct Message** to the BBS node — the channel itself stays clean.
+
+```
+First contact:  !bbs help  on the configured channel
+                → node sees the public key → whitelists it
+After that:     !p U need assistance  as DM to the node
+                → processed, reply sent back via DM
+```
+
+Anyone who has never sent a message on a configured channel is not on the whitelist and is silently ignored.
+
+### Settings
+
+Open via the gear icon (⚙) in the BBS panel, or navigate to `/bbs-settings`.
+
+```
+BBS Settings
+──────────────────────────────────────────
+Channels:    ☑ [1] NoodNet Zwolle
+             ☑ [2] NoodNet Dalfsen
+             ☐ [3] NoodNet OV
+Categories:  URGENT, MEDICAL, LOGISTICS, STATUS, GENERAL
+Retain:      48 hours
+[Save]
+
+▶ Advanced
+  Regions (comma-separated)
+  Allowed keys (empty = auto-learned from channel activity)
+```
+
+- **Channels** — check all channels whose participants should have access to the BBS. Multiple channels can be selected.
+- **Categories** — comma-separated list of valid category tags.
+- **Retain** — message retention in hours (default 48).
+- **Advanced → Regions** — optional region tags for geographic filtering.
+- **Advanced → Allowed keys** — manual whitelist override; leave empty to rely on auto-learned keys only.
+
+### Command syntax
+
+#### Short syntax
+
+| Command | Description |
+|---|---|
+| `!p <cat> <text>` | Post a message |
+| `!p <region> <cat> <text>` | Post with region |
+| `!r` | Read 5 most recent messages (all categories) |
+| `!r <cat>` | Read filtered by category |
+| `!r <region> <cat>` | Read filtered by region and category |
+
+Category abbreviations are computed automatically as the shortest unique prefix within the configured list. Example with `URGENT, MEDICAL, LOGISTICS, STATUS, GENERAL`:
+
+```
+U=URGENT  M=MEDICAL  L=LOGISTICS  S=STATUS  G=GENERAL
+```
+
+If two categories share the same leading letters (e.g. `MEDICAL` and `MISSING`), longer prefixes are calculated automatically: `ME` and `MI`. The `!r` (without arguments) and `!bbs help` replies always include the current abbreviation table.
+
+#### Full syntax
+
+| Command | Description |
+|---|---|
+| `!bbs help` | Show commands and abbreviation table |
+| `!bbs post <category> <text>` | Post a message |
+| `!bbs post <region> <category> <text>` | Post with region |
+| `!bbs read` | Read 5 most recent messages |
+| `!bbs read <category>` | Read filtered by category |
+| `!bbs read <region> <category>` | Read filtered by region and category |
+
+#### Example help reply
+
+```
+BBS [NoodNet Zwolle, NoodNet Dalfsen] | !p [cat] [text] | !r [cat] | U=URGENT M=MEDICAL L=LOGISTICS S=STATUS G=GENERAL
+```
+
+### Error handling
+
+| Situation | Reply |
+|---|---|
+| Unknown category | Lists valid categories and abbreviations |
+| Ambiguous abbreviation | Lists all matching categories |
+| Sender not on whitelist | Silent drop — no reply |
+
+### Storage
+
+```
+~/.meshcore-gui/bbs/bbs_messages.db    — SQLite message store (WAL mode)
+~/.meshcore-gui/bbs/bbs_config.json    — Board configuration
+```
+
+---
+
+## 16. Roadmap
 
 This project is under active development. The most common features from the official MeshCore Companion apps are being implemented gradually. Planned additions include:
 
 - [x] **Cross-frequency bridge** — standalone daemon connecting two devices on different frequencies via configurable channel forwarding (see [11. Cross-Frequency Bridge](#11-cross-frequency-bridge))
+- [x] **BBS — Bulletin Board System** — offline message board with DM-based commands, category/region filtering and automatic abbreviations (see [15. BBS](#15-bbs--bulletin-board-system))
 - [ ] **Observer mode** — passively monitor mesh traffic without transmitting, useful for network analysis, coverage mapping and long-term logging
 - [ ] **Room Server administration** — authenticate as admin to manage Room Server settings and users directly from the GUI
 - [ ] **Repeater management** — connect to repeater nodes to view status and adjust configuration

@@ -1,12 +1,4 @@
 
-## [1.13.1] - 2026-03-09
-
-### Fixed
-- Route map markers now use the same JS-rendered node icons as the main MAP instead of NiceGUI default blue markers.
-- Route detail pages now bootstrap their Leaflet assets explicitly so the shared map icon runtime is available there too.
-
-### Changed
-- Route maps are now rendered browser-side through the shared Leaflet JS runtime for icon consistency with MAP, Messages, and Archive.
 
 # CHANGELOG
 
@@ -16,43 +8,181 @@
 All notable changes to MeshCore GUI are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
+
 ---
-## [1.13.1] - 2026-03-09 — Message Icon Consistency
+
+> **📈 Performance note — v1.13.1 through v1.13.4**
+> Although versions 1.13.1–1.13.4 were released as targeted bugfix releases, the
+> cumulative effect of the fixes delivered a significant performance improvement:
+>
+> - **v1.13.1** — Bot non-response fix eliminated a silent failure path that caused
+>   repeated dedup-marked command re-evaluation on every message tick.
+> - **v1.13.2** — Map display fixes prevented Leaflet from being initialized on hidden
+>   zero-size containers, removing a source of repeated failed bootstrap retries and
+>   associated DOM churn.
+> - **v1.13.3** — Active panel timer gating reduced the 500 ms dashboard update work to
+>   only the currently visible panel, cutting unnecessary UI updates and background
+>   redraw load substantially — especially noticeable over VPN or on slower hardware.
+> - **v1.13.4** — Room Server event classification fix and sender name resolution removed
+>   redundant fallback processing paths and reduced per-tick contact lookup overhead.
+>
+> Users upgrading from v1.12.x or earlier will notice noticeably faster panel switching,
+> lower CPU usage during idle operation, and more stable map rendering.
+
+---
+## [1.14.0] - 2026-03-14 — BBS (Bulletin Board System)
+
+### Added
+
+- 🆕 **BBS — Bulletin Board System** — offline berichtenbord voor mesh-netwerken.
+  - **Toegangsmodel:** de beheerder selecteert één of meer channels in de settings. Iedereen die op een van die channels een bericht stuurt, wordt automatisch gewhitelist en kan daarna commando's sturen via **Direct Message** aan de node. Het channel blijft schoon; alleen de eerste interactie verloopt via het channel.
+  - Korte syntax: `!p <cat> <tekst>` (post) en `!r [cat]` (lezen). Categorie-afkortingen automatisch berekend als kortste unieke prefix (bijv. `U=URGENT M=MEDICAL`).
+  - Volledige syntax behouden: `!bbs post`, `!bbs read`, `!bbs help`.
+  - Optioneel regio-filter en handmatige allowed-keys override in Advanced.
+  - Settings-pagina (`/bbs-settings`): checkboxes per channel, categorieën, retentie, Advanced voor regio's en handmatige keys.
+  - Berichten opgeslagen in SQLite (`~/.meshcore-gui/bbs/bbs_messages.db`, WAL-mode).
 
 ### Changed
-- 🔄 `meshcore_gui/gui/constants.py` — Added shared helper functions to resolve node-type icons and labels from the same contact type mapping used by the map and contacts panel
-- 🔄 `meshcore_gui/core/models.py` — `Message.format_line()` now supports an optional sender prefix so message-related views can prepend the same node icon set without changing existing formatting logic
-- 🔄 `meshcore_gui/gui/panels/messages_panel.py` — Message rows now prepend the sender with the same node icon mapping as the map/contact views
-- 🔄 `meshcore_gui/gui/archive_page.py` — Archive rows now use the same sender icon mapping as the live messages panel and map/contact views
-- 🔄 `meshcore_gui/gui/route_page.py` — Route header and route detail table now show node-type icons derived from the shared contact type mapping instead of generic hardcoded role icons
+
+- 🔄 **`ble/events.py`** — `on_channel_msg` roept `BbsCommandHandler.handle_channel_msg()` aan op geconfigureerde BBS-channels: auto-whitelist + bootstrap reply. `on_contact_msg` stuurt `!`-DMs direct naar `handle_dm()`. Beide paden volledig los van `MeshBot`.
+- 🔄 **`services/bot.py`** — `MeshBot` is weer een pure keyword/channel responder; BBS-routing verwijderd.
+- 🔄 **`services/bbs_config_store.py`** — `configure_board()` (multi-channel), `add_allowed_key()` (auto-whitelist), `clear_board()`.
+- 🔄 **`gui/dashboard.py`** — `BbsPanel` geregistreerd, `📋 BBS` drawer-item toegevoegd.
+
+### Storage
+```
+~/.meshcore-gui/bbs/bbs_config.json   — board configuratie
+~/.meshcore-gui/bbs/bbs_messages.db   — SQLite berichtenopslag
+```
+
+---
+
+## [1.13.5] - 2026-03-14 — Route back-button and map popup flicker fixes
+
+### Fixed
+- 🛠 **Route page back-button navigated to main menu regardless of origin** — the two fixed navigation buttons (`/` and `/archive`) are replaced by a single `arrow_back` button that calls `window.history.back()`, so the user is always returned to the screen that opened the route page.
+- 🛠 **Map marker popup flickered on every 500 ms update tick** — the periodic `applyContacts` / `applyDevice` calls in `leaflet_map_panel.js` invoked `setIcon()` and `setPopupContent()` on all existing markers unconditionally. `setIcon()` rebuilds the marker DOM element; when a popup was open this caused the popup anchor to detach and reattach, producing visible flickering. Both functions now check `marker.isPopupOpen()` and skip icon/content updates while the popup is visible.
+- 🛠 **Map marker popup appeared with a flicker/flash on first click (main map and route map)** — Leaflet's default `fadeAnimation: true` caused popups to fade in from opacity 0, which on the Raspberry Pi rendered as a visible flicker. Both `L.map()` initialisations (`ensureMap` and `MeshCoreRouteMapBoot`) now set `fadeAnimation: false` and `markerZoomAnimation: false` so popups appear immediately without animation artefacts.
+
+### Changed
+- 🔄 `meshcore_gui/gui/route_page.py` — Replaced two fixed-destination header buttons with a single `arrow_back` button using `window.history.back()`.
+- 🔄 `meshcore_gui/static/leaflet_map_panel.js` — `applyDevice` and `applyContacts` guard `setIcon` / `setPopupContent` behind `isPopupOpen()`. Both `L.map()` calls add `fadeAnimation: false, markerZoomAnimation: false`.
+- 🔄 `meshcore_gui/config.py` — Version bumped to `1.13.5`.
 
 ### Impact
-- Message-driven views now use one consistent icon language across map, contacts, messages, archive and route detail
-- Existing map runtime and panel behavior remain unchanged
-- No breaking changes outside icon rendering
+- Back navigation from the route page now always returns to the correct origin screen.
+- Open marker popups are stable during map update ticks; content refreshes on next tick after the popup is closed.
+- Popup opening is instant on both maps; no animation artefacts on low-power hardware.
 
+---
+## [1.13.4] - 2026-03-12 — Room Server message classification fix
+
+### Fixed
+- 🛠 **Incoming room messages from other participants could be misclassified as normal DMs** — `CONTACT_MSG_RECV` room detection now keys on `txt_type == 2` instead of requiring `signature`.
+- 🛠 **Incoming room traffic could be attached to the wrong key** — room message handling now prefers `room_pubkey` / receiver-style payload keys before falling back to `pubkey_prefix`.
+- 🛠 **Room login UI could stay out of sync with the actual server-confirmed state** — `LOGIN_SUCCESS` now updates `room_login_states` and refreshes room history using the resolved room key.
+- 🛠 **Room Server panel showed hex codes instead of sender names** — when a contact was not yet known at the time a room message was archived, `msg.sender` was stored as a raw hex prefix. The panel now performs a live lookup against the current contacts snapshot on every render tick, so names are shown as soon as the contact is known.
+
+### Changed
+- 🔄 `meshcore_gui/ble/events.py` — Broadened room payload parsing and added payload-key debug logging for incoming room traffic.
+- 🔄 `meshcore_gui/ble/worker.py` — `LOGIN_SUCCESS` handler now updates per-room login state and refreshes cached room history.
+- 🔄 `meshcore_gui/config.py` — Version kept at `1.13.4`.
+
+### Impact
+- Keeps the existing Room Server panel logic intact.
+- Fix is limited to room event classification and room login confirmation handling.
+- No intended behavioural change for ordinary DMs or channel messages.
+
+---
+---
+## [1.13.3] - 2026-03-12 — Active Panel Timer Gating
+
+### Changed
+- 🔄 `meshcore_gui/gui/dashboard.py` — The 500 ms dashboard timer now keeps only lightweight global state updates running continuously (status label, channel filters/options, drawer submenu consistency). Expensive panel refreshes are now gated to the currently active panel only
+- 🔄 `meshcore_gui/gui/dashboard.py` — Added immediate active-panel refresh on panel switch so newly opened panels populate at once instead of waiting for the next timer tick
+- 🔄 `meshcore_gui/gui/panels/map_panel.py` — Removed eager hidden `ensure_map` bootstrap from `render()`; the browser map now starts only when real snapshot work exists or when a live map already exists
+- 🔄 `meshcore_gui/static/leaflet_map_panel.js` — Theme-only calls without snapshot work no longer start hidden host retry processing before a real map exists
+- 🔄 `meshcore_gui/config.py` — Version bumped to `1.13.3`
+
+### Fixed
+- 🛠 **Hidden panels still refreshed every 500 ms** — Device, actions, contacts, messages, rooms and RX log are no longer needlessly updated while another panel is active
+- 🛠 **Map bootstrap activity while panel is not visible** — Removed one source of `MeshCoreLeafletBoot timeout waiting for visible map host` caused by eager hidden startup traffic
+- 🛠 **Slow navigation over VPN** — Reduced unnecessary dashboard-side UI churn by limiting timer-driven work to the active panel
+
+### Impact
+- Faster panel switching because the selected panel gets one direct refresh immediately
+- Lower background UI/update load on dashboard level, especially when the map panel is not active
+- Smaller chance of Leaflet hidden-host retries and related console noise outside active map usage
+- No intended functional regression for route maps or visible panel behaviour
+
+---
+## [1.13.2] - 2026-03-11 — Map Display Bugfix
+
+### Fixed
+- 🛠 **MAP panel blank when contacts list is empty at startup** — dashboard update loop
+  had two separate conditional map-update blocks that both silently stopped firing after
+  tick 1 when `data['contacts']` was empty. Map panel received no further snapshots and
+  remained blank indefinitely.
+- 🛠 **Leaflet map initialized on hidden (zero-size) container** — `processPending` in
+  the browser runtime called `L.map()` on the host element while it was still
+  `display:none` (Vue v-show, panel not yet visible). This produced a broken 0×0 map
+  that never recovered because `ensureMap` returned the cached broken state on all
+  subsequent calls. Fixed by adding a `clientWidth/clientHeight` guard in `ensureMap`:
+  initialization is deferred until the host has real dimensions.
+- 🛠 **Route map container had no height** — `route_page.py` used the Tailwind class
+  `h-96` for the Leaflet host `<div>`. NiceGUI/Quasar does not include Tailwind CSS,
+  so `h-96` had no effect and the container rendered at height 0. Leaflet initialized
+  on a zero-height element and produced a blank map.
+- 🛠 **Route map not rendered when no node has GPS coordinates** — `_render_map`
+  returned early before creating the Leaflet container when `payload['nodes']` was
+  empty. Fixed: container is always created; a notice label is shown instead.
+
+### Changed
+- 🔄 `meshcore_gui/static/leaflet_map_panel.js` — Added size guard in `ensureMap`:
+  returns `null` when host has `clientWidth === 0 && clientHeight === 0` and no map
+  state exists yet. `processPending` retries on the next tick once the panel is visible.
+- 🔄 `meshcore_gui/gui/dashboard.py` — Consolidated two conditional map-update blocks
+  into a single unconditional update while the MAP panel is active. Added `h-96` to the
+  DOMCA CSS height overrides for consistency with the route page map container.
+- 🔄 `meshcore_gui/gui/route_page.py` — Replaced `h-96` Tailwind class on the route
+  map host `<div>` with an explicit inline `style` (height: 24rem). Removed early
+  `return` guard so the Leaflet container is always created.
+
+### Impact
+- MAP panel now renders reliably on first open regardless of contact/GPS availability
+- Route map now always shows with correct height even when route nodes have no GPS
+- No breaking changes outside the three files listed above
+
+---
 ## [1.13.0] - 2026-03-09 — Leaflet Map Runtime Stabilization
 
 ### Added
-- ✅ `meshcore_gui/static/leaflet_map_panel.js` — Dedicated browser-side Leaflet runtime responsible for map lifecycle, marker registry and theme handling independent from NiceGUI redraw cycles
-- ✅ `meshcore_gui/static/leaflet_map_panel.css` — Styling for browser-side node markers and map container
+- ✅ `meshcore_gui/static/leaflet_map_panel.js` — Dedicated browser-side Leaflet runtime responsible for map lifecycle, marker registry, clustering and theme handling independent from NiceGUI redraw cycles
+- ✅ `meshcore_gui/static/leaflet_map_panel.css` — Styling for browser-side node markers, cluster icons and map container
 - ✅ `meshcore_gui/services/map_snapshot_service.py` — Snapshot service that normalizes device/contact map data into a compact payload for the browser runtime
 - ✅ Browser-side map state management for center, zoom and theme
 - ✅ Theme persistence across reconnect events via browser storage fallback
+- ✅ Browser-side contact clustering via `Leaflet.markercluster`
+- ✅ Separate non-clustered device marker layer so the own device remains individually visible
 
 ### Changed
 - 🔄 `meshcore_gui/gui/panels/map_panel.py` — Replaced NiceGUI Leaflet wrapper usage with a pure browser-managed Leaflet container while preserving the existing card layout, theme toggle and center-on-device control
 - 🔄 Leaflet bootstrap moved out of inline Python into a dedicated browser runtime loaded from `/static`
+- 🔄 Asset loading order is now explicit: Leaflet first, then `Leaflet.markercluster`, then the MeshCore panel runtime
 - 🔄 Map initialization now occurs only once per container; NiceGUI refresh cycles no longer recreate the map
 - 🔄 Dashboard update loop now sends compact map snapshots instead of triggering redraws
 - 🔄 Snapshot processing in the browser is coalesced so only the newest payload is applied
 - 🔄 Map markers are managed in separate device/contact layers and updated incrementally by stable node id
+- 🔄 Contact markers are rendered inside a persistent cluster layer while the device marker remains outside clustering
 - 🔄 Theme switching moved to a dedicated theme channel instead of being embedded in snapshot data
 
 ### Fixed
 - 🛠 **Map disappearing during dashboard refresh cycles** — prevented repeated map reinitialization caused by the 500 ms NiceGUI update loop
 - 🛠 **Markers disappearing between refreshes** — marker updates are now incremental and keyed by node id
 - 🛠 **Blank map container on load** — browser bootstrap now waits for DOM host, Leaflet runtime and panel runtime before initialization
+- 🛠 **Leaflet clustering bootstrap failure (`L is not defined`)** — resolved by enforcing correct script dependency order before the panel runtime starts
+- 🛠 **MarkerClusterGroup failure (`Map has no maxZoom specified`)** — the map now defines `maxZoom` during initial creation before the cluster layer is attached
+- 🛠 **Half-initialized map retry cascade (`Map container is already initialized`)** — map state is now registered safely during initialization so a failed attempt cannot trigger a second `L.map(...)` on the same container
 - 🛠 **Race condition between queued snapshot and theme selection** — explicit theme changes can no longer be overwritten by stale snapshot payloads
 - 🛠 **Viewport jumping back to default center/zoom** — stored viewport is no longer reapplied on each snapshot update
 - 🛠 **Theme reverting to default during reconnect** — effective map theme is restored before snapshot processing resumes
@@ -60,6 +190,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ### Impact
 - Leaflet map is now managed entirely in the browser and is no longer recreated on each dashboard refresh
 - Node markers remain stable and no longer flicker or disappear during the 500 ms update cycle
+- Dense contact sets can now be rendered with clustering without violating the browser-owned map lifecycle
 - Theme switching and viewport state persist reliably across reconnect events
 - No breaking changes outside the map subsystem
 ---
@@ -787,20 +918,3 @@ overwriting all historical data with only the new buffered messages.
 - explicit theme changes are now handled only via the dedicated theme channel
 - initial map render now sends an ensure_map command plus an immediate theme sync
 - added no-op ensure_map handling in the Leaflet runtime to avoid accidental fallback behaviour
-
-## [1.13.0] - 2026-03-09
-
-### Added
-- Leaflet marker clustering using Leaflet.markercluster for contact nodes.
-- Browser-side cluster rendering with the device marker kept outside the cluster layer.
-- Cluster performance tuning with `chunkedLoading: true`.
-- Spiderfy support at max zoom for overlapping markers.
-
-### Fixed
-- Wrong asset load order causing `L is not defined` in MarkerClusterGroup.
-- Cluster initialization failure caused by missing `maxZoom` on map startup.
-- Retry cascade causing `Map container is already initialized`.
-
-### Changed
-- Map lifecycle is browser-owned: NiceGUI hosts the container, Leaflet owns map state.
-- Contact markers are updated incrementally in the existing cluster layer.

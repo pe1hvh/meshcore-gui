@@ -45,6 +45,7 @@ from meshcore_gui.ble.worker import create_worker
 from meshcore_gui.core.shared_data import SharedData
 from meshcore_gui.gui.dashboard import DashboardPage
 from meshcore_gui.gui.route_page import RoutePage
+from meshcore_gui.gui.panels.bbs_panel import BbsSettingsPage
 from meshcore_gui.gui.archive_page import ArchivePage
 from meshcore_gui.services.pin_store import PinStore
 from meshcore_gui.services.room_password_store import RoomPasswordStore
@@ -54,6 +55,8 @@ from meshcore_gui.services.room_password_store import RoomPasswordStore
 _shared = None
 _dashboard = None
 _route_page = None
+_bbs_settings_page = None
+_bbs_config_store_main = None
 _archive_page = None
 _pin_store = None
 _room_password_store = None
@@ -71,6 +74,13 @@ def _page_route(msg_key: str):
     """NiceGUI page handler — route visualization."""
     if _route_page:
         _route_page.render(msg_key)
+
+
+@ui.page('/bbs-settings')
+def _page_bbs_settings():
+    """NiceGUI page handler — BBS settings."""
+    if _bbs_settings_page:
+        _bbs_settings_page.render()
 
 
 @ui.page('/archive')
@@ -155,7 +165,7 @@ def main():
     Parses CLI arguments, auto-detects the transport, initialises all
     components and starts the NiceGUI server.
     """
-    global _shared, _dashboard, _route_page, _archive_page, _pin_store, _room_password_store
+    global _shared, _dashboard, _route_page, _bbs_settings_page, _archive_page, _pin_store, _room_password_store
 
     args, flags = _parse_flags(sys.argv[1:])
 
@@ -259,6 +269,8 @@ def main():
     _dashboard = DashboardPage(_shared, _pin_store, _room_password_store)
     _route_page = RoutePage(_shared)
     _archive_page = ArchivePage(_shared)
+    from meshcore_gui.services.bbs_config_store import BbsConfigStore as _BCS
+    _bbs_settings_page = BbsSettingsPage(_shared, _BCS())
 
     # ── Start worker ──
     worker = create_worker(

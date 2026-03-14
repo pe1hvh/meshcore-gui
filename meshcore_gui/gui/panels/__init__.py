@@ -15,3 +15,4 @@ from meshcore_gui.gui.panels.messages_panel import MessagesPanel    # noqa: F401
 from meshcore_gui.gui.panels.actions_panel import ActionsPanel      # noqa: F401
 from meshcore_gui.gui.panels.rxlog_panel import RxLogPanel          # noqa: F401
 from meshcore_gui.gui.panels.room_server_panel import RoomServerPanel  # noqa: F401
+from meshcore_gui.gui.panels.bbs_panel import BbsPanel              # noqa: F401

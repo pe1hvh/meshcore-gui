@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.13.5"
+VERSION: str = "1.14.0"
 
 
 # ==============================================================================
@@ -388,3 +388,44 @@ RXLOG_RETENTION_DAYS: int = 7
 # Retention period for contacts (in days).
 # Contacts not seen for longer than this are removed from cache.
 CONTACT_RETENTION_DAYS: int = 90
+
+
+# ==============================================================================
+# BBS — Bulletin Board System
+# ==============================================================================
+
+# One entry per BBS-enabled channel.  Each entry configures:
+#   channel         — MeshCore channel index (never use channel 0).
+#   name            — Human-readable channel name shown in the BBS panel.
+#   regions         — Optional list of region tags; empty list = no region filtering.
+#   categories      — List of valid category tags for this channel.
+#   allowed_keys    — Whitelist of sender public keys (hex strings).
+#                     Empty list = only channel security applies (all keys allowed).
+#   retention_hours — How long messages are kept before automatic deletion.
+
+BBS_CHANNELS: List[Dict] = [
+    {
+        "channel": 2,
+        "name": "NoodNet Zwolle",
+        "regions": ["Zwolle", "Dalfsen", "OV-Algemeen"],
+        "categories": ["MEDISCH", "LOGISTIEK", "STATUS", "ALGEMEEN"],
+        "allowed_keys": [],
+        "retention_hours": 48,
+    },
+    {
+        "channel": 3,
+        "name": "NoodNet OV",
+        "regions": [],
+        "categories": ["STATUS", "ALGEMEEN", "INFRA"],
+        "allowed_keys": [],
+        "retention_hours": 48,
+    },
+    {
+        "channel": 4,
+        "name": "Dalfsen",
+        "regions": [],
+        "categories": ["MEDISCH", "STATUS", "ALGEMEEN"],
+        "allowed_keys": [],
+        "retention_hours": 24,
+    },
+]

@@ -16,6 +16,7 @@ from meshcore_gui import config
 from meshcore_gui.core.protocols import SharedDataReader
 from meshcore_gui.gui.panels import (
     ActionsPanel,
+    BbsPanel,
     ContactsPanel,
     DevicePanel,
     MapPanel,
@@ -24,6 +25,7 @@ from meshcore_gui.gui.panels import (
     RxLogPanel,
 )
 from meshcore_gui.gui.archive_page import ArchivePage
+from meshcore_gui.services.bbs_service import BbsCommandHandler, BbsService
 from meshcore_gui.services.pin_store import PinStore
 from meshcore_gui.services.room_password_store import RoomPasswordStore
 
@@ -264,6 +266,7 @@ _STANDALONE_ITEMS = [
     ('\U0001f4e1', 'DEVICE',   'device'),
     ('\u26a1',     'ACTIONS',  'actions'),
     ('\U0001f4ca', 'RX LOG',   'rxlog'),
+    ('\U0001f4cb', 'BBS',      'bbs'),
 ]
 
 _EXT_LINKS = config.EXT_LINKS
@@ -295,6 +298,13 @@ class DashboardPage:
         self._pin_store = pin_store
         self._room_password_store = room_password_store
 
+        # BBS service (singleton, shared with bot routing)
+        from meshcore_gui import config as _cfg
+        self._bbs_service = BbsService()
+        self._bbs_handler = BbsCommandHandler(
+            self._bbs_service, _cfg.BBS_CHANNELS
+        )
+
         # Panels (created fresh on each render)
         self._device: DevicePanel | None = None
         self._contacts: ContactsPanel | None = None
@@ -303,6 +313,7 @@ class DashboardPage:
         self._actions: ActionsPanel | None = None
         self._rxlog: RxLogPanel | None = None
         self._room_server: RoomServerPanel | None = None
+        self._bbs: BbsPanel | None = None
 
         # Header status label
         self._status_label = None
@@ -349,6 +360,8 @@ class DashboardPage:
         self._actions = ActionsPanel(put_cmd, self._shared.set_bot_enabled)
         self._rxlog = RxLogPanel()
         self._room_server = RoomServerPanel(put_cmd, self._room_password_store)
+        from meshcore_gui import config as _cfg
+        self._bbs = BbsPanel(put_cmd, self._bbs_service, _cfg.BBS_CHANNELS)
 
         # Inject DOMCA theme (fonts + CSS variables)
         ui.add_head_html(_DOMCA_HEAD)
@@ -509,6 +522,7 @@ class DashboardPage:
             ('actions',  self._actions),
             ('rxlog',    self._rxlog),
             ('rooms',    self._room_server),
+            ('bbs',      self._bbs),
         ]
 
         for panel_id, panel_obj in panel_defs:
@@ -735,6 +749,9 @@ class DashboardPage:
             self._room_server.update(data)
         elif self._active_panel == 'rxlog':
             self._rxlog.update(data)
+        elif self._active_panel == 'bbs':
+            if self._bbs:
+                self._bbs.update(data)
 
     # ------------------------------------------------------------------
     # Room Server callback (from ContactsPanel)
@@ -816,6 +833,10 @@ class DashboardPage:
             elif self._active_panel == 'rxlog':
                 if data['rxlog_updated'] or is_first:
                     self._rxlog.update(data)
+
+            elif self._active_panel == 'bbs':
+                if self._bbs:
+                    self._bbs.update(data)
 
             # Signal worker that GUI is ready for data
             if is_first and data['channels'] and data['contacts']:

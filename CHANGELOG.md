@@ -30,6 +30,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 > lower CPU usage during idle operation, and more stable map rendering.
 
 ---
+## [1.14.0] - 2026-03-14 — Offline BBS (Bulletin Board System)
+
+### Added
+- 🆕 **`meshcore_gui/services/bbs_service.py`** — SQLite-backed BBS persistence layer.
+  - `BbsMessage` dataclass: channel, region, category, sender, sender_key, text, timestamp.
+  - `BbsService`: `post_message()`, `get_messages()`, `get_all_messages()`, `purge_expired()`, `purge_all_expired()`.  Thread-safe via `threading.Lock`.  Database at `~/.meshcore-gui/bbs/bbs_messages.db`.
+  - `BbsCommandHandler`: parses `!bbs post`, `!bbs read`, `!bbs help` mesh commands.  Whitelist enforcement (silent drop on unknown sender key).  Per-channel region/category validation with error reply.
+- 🆕 **`meshcore_gui/gui/panels/bbs_panel.py`** — BBS panel for the dashboard.
+  - Channel selector (NoodNet Zwolle / NoodNet OV / Dalfsen).
+  - Region filter (shown only when the active channel has regions configured).
+  - Category filter (all or specific).
+  - Scrollable message list with timestamp, sender, category and optional region tag.
+  - Post form: region select (conditional), category select, text input, Send button.
+  - Send broadcasts `!bbs post …` on the mesh channel so other nodes receive it.
+- 🔄 **`meshcore_gui/config.py`** — `BBS_CHANNELS` configuration block added; version bumped to `1.14.0`.
+- 🔄 **`meshcore_gui/services/bot.py`** — `MeshBot` accepts optional `bbs_handler` parameter.  Incoming `!bbs` messages are routed to `BbsCommandHandler` before keyword matching; replies are sent on the originating channel.
+- 🔄 **`meshcore_gui/gui/dashboard.py`** — `BbsPanel` registered as standalone panel `'bbs'`; menu item `📋 BBS` added to the drawer.
+- 🔄 **`meshcore_gui/gui/panels/__init__.py`** — `BbsPanel` re-exported.
+
+### Not changed
+- BLE layer, SharedData, core/models, route_page, map_panel, message_archive, all other services.
+- All existing bot keyword behaviour, room server flow, archive page, contacts, map, device, actions, rxlog panels.
+
+---
+
 ## [1.13.5] - 2026-03-14 — Route back-button and map popup flicker fixes
 
 ### Fixed

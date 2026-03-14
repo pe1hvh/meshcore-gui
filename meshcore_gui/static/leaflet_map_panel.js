@@ -81,6 +81,8 @@
       maxZoom: 19,
       zoomControl: true,
       preferCanvas: true,
+      fadeAnimation: false,
+      markerZoomAnimation: false,
     });
 
     const state = {
@@ -289,8 +291,11 @@
     }
 
     state.deviceMarker.setLatLng(latLng);
-    state.deviceMarker.setIcon(icon);
-    state.deviceMarker.setPopupContent(popupHtml);
+    const devicePopupOpen = state.deviceMarker.isPopupOpen();
+    if (!devicePopupOpen) {
+      state.deviceMarker.setIcon(icon);
+      state.deviceMarker.setPopupContent(popupHtml);
+    }
     state.deviceMarker.options.title = '📡 ' + device.name;
   }
 
@@ -318,8 +323,11 @@
       }
 
       existing.setLatLng(latLng);
-      existing.setIcon(markerIcon);
-      existing.setPopupContent(popupHtml);
+      const contactPopupOpen = existing.isPopupOpen();
+      if (!contactPopupOpen) {
+        existing.setIcon(markerIcon);
+        existing.setPopupContent(popupHtml);
+      }
       existing.options.title = markerTitle;
       if (!state.layers.contacts.hasLayer(existing)) {
         state.layers.contacts.addLayer(existing);
@@ -577,6 +585,8 @@
       maxZoom: 19,
       zoomControl: true,
       preferCanvas: true,
+      fadeAnimation: false,
+      markerZoomAnimation: false,
     });
     host.__meshcoreRouteMap = map;
 

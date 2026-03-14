@@ -1236,7 +1236,11 @@ Retain:      48 hours
 | `!p <region> <cat> <text>` | Post with region |
 | `!r` | Read 5 most recent messages (all categories) |
 | `!r <cat>` | Read filtered by category |
-| `!r <region> <cat>` | Read filtered by region and category |
+| `!r <cat> <from-to>` | Read with range, e.g. `!r U 6-10` |
+| `!r <region> <cat> <from-to>` | Read filtered by region, category and range |
+| `!s <cat> <query>` | Search messages in a category |
+| `!s <region> <cat> <query>` | Search with region filter |
+| `!h` | Show help and abbreviation table |
 
 Category abbreviations are computed automatically as the shortest unique prefix within the configured list. Example with `URGENT, MEDICAL, LOGISTICS, STATUS, GENERAL`:
 
@@ -1244,7 +1248,22 @@ Category abbreviations are computed automatically as the shortest unique prefix 
 U=URGENT  M=MEDICAL  L=LOGISTICS  S=STATUS  G=GENERAL
 ```
 
-If two categories share the same leading letters (e.g. `MEDICAL` and `MISSING`), longer prefixes are calculated automatically: `ME` and `MI`. The `!r` (without arguments) and `!bbs help` replies always include the current abbreviation table.
+If two categories share the same leading letters (e.g. `MEDICAL` and `MISSING`), longer prefixes are calculated automatically: `ME` and `MI`. The `!r` (without arguments) and `!h` / `!bbs help` replies always include the current abbreviation table.
+
+**Range pagination** — messages are returned newest first, 1-indexed:
+
+| Range | Returns |
+|---|---|
+| `!r U 1-5` | Messages 1–5 (same as `!r U`) |
+| `!r U 6-10` | Messages 6–10 |
+| `!r U 15-40` | Messages 15–40 |
+
+**Search** — case-insensitive substring match across message bodies, all results returned:
+
+```
+!s U assistance         → all URGENT messages containing "assistance"
+!s Zwolle U water       → all URGENT messages in region Zwolle containing "water"
+```
 
 #### Full syntax
 
@@ -1255,12 +1274,13 @@ If two categories share the same leading letters (e.g. `MEDICAL` and `MISSING`),
 | `!bbs post <region> <category> <text>` | Post with region |
 | `!bbs read` | Read 5 most recent messages |
 | `!bbs read <category>` | Read filtered by category |
-| `!bbs read <region> <category>` | Read filtered by region and category |
+| `!bbs read <category> <from-to>` | Read with range |
+| `!bbs read <region> <category> <from-to>` | Read filtered by region, category and range |
 
 #### Example help reply
 
 ```
-BBS [NoodNet Zwolle, NoodNet Dalfsen] | !p [cat] [text] | !r [cat] | U=URGENT M=MEDICAL L=LOGISTICS S=STATUS G=GENERAL
+BBS [NoodNet Zwolle, NoodNet Dalfsen] | !p [cat] [text] | !r [cat] [1-5] | !s [cat] [query] | U=URGENT M=MEDICAL L=LOGISTICS S=STATUS G=GENERAL
 ```
 
 ### Error handling
@@ -1286,7 +1306,7 @@ This project is under active development. The most common features from the offi
 
 - [x] **Cross-frequency bridge** — standalone daemon connecting two devices on different frequencies via configurable channel forwarding (see [11. Cross-Frequency Bridge](#11-cross-frequency-bridge))
 - [x] **BBS — Bulletin Board System** — offline message board with DM-based commands, category/region filtering and automatic abbreviations (see [15. BBS](#15-bbs--bulletin-board-system))
-- [ ] **Observer mode** — passively monitor mesh traffic without transmitting, useful for network analysis, coverage mapping and long-term logging
+- [x] **Observer mode** — passively monitor mesh traffic without transmitting, useful for network analysis, coverage mapping and long-term logging
 - [ ] **Room Server administration** — authenticate as admin to manage Room Server settings and users directly from the GUI
 - [ ] **Repeater management** — connect to repeater nodes to view status and adjust configuration
 

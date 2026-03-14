@@ -154,14 +154,16 @@ class BbsService:
         region: Optional[str] = None,
         category: Optional[str] = None,
         limit: int = 5,
+        offset: int = 0,
     ) -> List[BbsMessage]:
-        """Return the *limit* most recent messages for a set of channels.
+        """Return messages for a set of channels, newest first.
 
         Args:
             channels: MeshCore channel indices to query (board's channel list).
-            region:   Optional region filter.
-            category: Optional category filter.
+            region:   Optional region filter (case-insensitive).
+            category: Optional category filter (case-insensitive).
             limit:    Maximum number of messages to return.
+            offset:   Number of messages to skip (for pagination).
 
         Returns:
             List of ``BbsMessage`` objects, newest first.
@@ -175,13 +177,53 @@ class BbsService:
         )
         params: list = list(channels)
         if region:
-            query += " AND region = ?"
+            query += " AND region = ? COLLATE NOCASE"
             params.append(region)
         if category:
-            query += " AND category = ?"
+            query += " AND category = ? COLLATE NOCASE"
             params.append(category)
-        query += " ORDER BY timestamp DESC LIMIT ?"
-        params.append(limit)
+        query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(query, params).fetchall()
+        return [self._row_to_msg(r) for r in rows]
+
+    def search_messages(
+        self,
+        channels: List[int],
+        text_query: str,
+        region: Optional[str] = None,
+        category: Optional[str] = None,
+    ) -> List[BbsMessage]:
+        """Full-text search across message bodies (case-insensitive substring).
+
+        Args:
+            channels:   MeshCore channel indices to query.
+            text_query: Substring to search for (case-insensitive).
+            region:     Optional region filter.
+            category:   Optional category filter.
+
+        Returns:
+            All matching ``BbsMessage`` objects, newest first.
+        """
+        if not channels or not text_query:
+            return []
+        placeholders = ",".join("?" * len(channels))
+        query = (
+            f"SELECT id, channel, region, category, sender, sender_key, text, timestamp "
+            f"FROM bbs_messages WHERE channel IN ({placeholders})"
+            f" AND text LIKE ? COLLATE NOCASE"
+        )
+        params: list = list(channels) + [f"%{text_query}%"]
+        if region:
+            query += " AND region = ? COLLATE NOCASE"
+            params.append(region)
+        if category:
+            query += " AND category = ? COLLATE NOCASE"
+            params.append(category)
+        query += " ORDER BY timestamp DESC"
 
         with self._lock:
             with self._connect() as conn:
@@ -370,13 +412,20 @@ class BbsCommandHandler:
         first = text.split()[0].lower()
         channel_for_post = channel_idx
 
-        if first == "!p":
+        if first in ("!p",):
             rest = text[len(first):].strip()
             return self._handle_post_short(board, channel_for_post, sender, sender_key, rest)
 
-        if first == "!r":
+        if first in ("!r",):
             rest = text[len(first):].strip()
             return self._handle_read_short(board, rest)
+
+        if first in ("!s",):
+            rest = text[len(first):].strip()
+            return self._handle_search(board, rest)
+
+        if first in ("!help", "!h"):
+            return self._handle_help(board)
 
         if first == "!bbs":
             parts = text.split(None, 2)
@@ -386,7 +435,7 @@ class BbsCommandHandler:
                 return self._handle_post(board, channel_for_post, sender, sender_key, rest)
             if sub == "read":
                 return self._handle_read(board, rest)
-            if sub == "help" or not sub:
+            if sub in ("help", ""):
                 return self._handle_help(board)
             return f"Unknown subcommand '{sub}'. " + self._handle_help(board)
 
@@ -447,6 +496,13 @@ class BbsCommandHandler:
             rest = text[len(first):].strip()
             return self._handle_read_short(board, rest)
 
+        if first in ("!s",):
+            rest = text[len(first):].strip()
+            return self._handle_search(board, rest)
+
+        if first in ("!help", "!h"):
+            return self._handle_help(board)
+
         if first == "!bbs":
             parts = text.split(None, 2)
             sub = parts[1].lower() if len(parts) > 1 else ""
@@ -455,11 +511,11 @@ class BbsCommandHandler:
                 return self._handle_post(board, channel_idx, sender, sender_key, rest)
             if sub == "read":
                 return self._handle_read(board, rest)
-            if sub == "help" or not sub:
+            if sub in ("help", ""):
                 return self._handle_help(board)
             return f"Unknown subcommand '{sub}'. " + self._handle_help(board)
 
-        # Unknown !-command starting with something else
+        # Unknown !-command
         return None
 
     # ------------------------------------------------------------------
@@ -573,10 +629,11 @@ class BbsCommandHandler:
         return f"Posted [{category}]{region_label}: {text[:60]}"
 
     def _handle_read_short(self, board, args):
-        """Handle ``!r [region] [abbrev]``.
+        """Handle ``!r [region] [abbrev] [from-to]``.
 
-        With no arguments returns 5 most recent messages across all
-        categories and always includes the abbreviation table.
+        Range syntax: ``!r U 6-10`` returns messages 6 to 10 (1-indexed,
+        newest first).  Without a range the default is 1-5 (five most recent).
+        ``!r`` without any arguments always includes the abbreviation table.
         """
         regions = board.regions
         categories = board.categories
@@ -584,20 +641,118 @@ class BbsCommandHandler:
 
         region = None
         category = None
+        offset = 0
+        limit = self.READ_LIMIT
 
+        # Optional region (only if board has regions configured)
         if tokens and regions:
             resolved_r = self._resolve_region(tokens[0], regions)
             if resolved_r:
                 region = resolved_r
                 tokens = tokens[1:]
 
+        # Optional category / abbreviation
         if tokens:
-            category = self._resolve_category(tokens[0], categories)
-            if category is None:
-                abbr = self._abbrev_table(categories)
-                return f"Unknown category '{tokens[0]}'. Valid: {abbr}"
+            # Check if token is a range (e.g. "6-10") rather than a category
+            if not self._is_range(tokens[0]):
+                category = self._resolve_category(tokens[0], categories)
+                if category is None:
+                    abbr = self._abbrev_table(categories)
+                    return f"Unknown category '{tokens[0]}'. Valid: {abbr}"
+                tokens = tokens[1:]
 
-        return self._format_messages(board, region, category, include_abbrevs=not args)
+        # Optional range
+        if tokens and self._is_range(tokens[0]):
+            offset, limit = self._parse_range(tokens[0])
+            if offset is None:
+                return f"Invalid range '{tokens[0]}'. Use e.g. 6-10 or 1-20."
+
+        return self._format_messages(
+            board, region, category,
+            offset=offset, limit=limit,
+            include_abbrevs=not args,
+        )
+
+    def _handle_search(self, board, args):
+        """Handle ``!s [region] <abbrev> <query>`` — full-text search.
+
+        Searches all messages in the given category for the query string
+        (case-insensitive substring match) and returns all matches.
+
+        Usage: ``!s U zoektekst``  or  ``!s Zwolle U zoektekst``
+        """
+        regions = board.regions
+        categories = board.categories
+
+        first_tokens = args.split(None, 1) if args else []
+
+        region = None
+        remainder = args
+
+        # Optional region
+        if regions and first_tokens:
+            resolved_r = self._resolve_region(first_tokens[0], regions)
+            if resolved_r:
+                region = resolved_r
+                remainder = first_tokens[1] if len(first_tokens) > 1 else ""
+
+        # Category + query
+        cat_and_query = remainder.split(None, 1) if remainder else []
+        if len(cat_and_query) < 2:
+            abbr = self._abbrev_table(categories)
+            return f"Usage: !s [region] <cat> <query> | {abbr}"
+
+        cat_token, query = cat_and_query[0], cat_and_query[1].strip()
+        category = self._resolve_category(cat_token, categories)
+        if category is None:
+            abbr = self._abbrev_table(categories)
+            return f"Unknown category '{cat_token}'. Valid: {abbr}"
+
+        messages = self._service.search_messages(
+            board.channels,
+            text_query=query,
+            region=region,
+            category=category,
+        )
+        if not messages:
+            return f"BBS: no results for '{query}' in [{category}]."
+        lines = [f"Search [{category}] '{query}': {len(messages)} result(s)"]
+        for m in messages:
+            ts = m.timestamp[:16].replace("T", " ")
+            region_label = f"[{m.region}] " if m.region else ""
+            lines.append(f"{ts} {m.sender} {region_label}{m.text}")
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Range helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_range(token: str) -> bool:
+        """Return True if *token* looks like a range (e.g. ``6-10``)."""
+        parts = token.split("-")
+        if len(parts) != 2:
+            return False
+        return parts[0].isdigit() and parts[1].isdigit()
+
+    @staticmethod
+    def _parse_range(token: str):
+        """Parse ``'from-to'`` into ``(offset, limit)``.
+
+        ``'1-5'`` → offset=0, limit=5 (messages 1 to 5, 1-indexed newest first).
+        ``'6-10'`` → offset=5, limit=5.
+
+        Returns ``(None, None)`` on invalid input.
+        """
+        try:
+            parts = token.split("-")
+            start = int(parts[0])
+            end = int(parts[1])
+            if start < 1 or end < start:
+                return None, None
+            return start - 1, end - start + 1
+        except (ValueError, IndexError):
+            return None, None
 
     # ------------------------------------------------------------------
     # Full syntax — !bbs post / read
@@ -644,13 +799,15 @@ class BbsCommandHandler:
         return f"Posted [{category}]{region_label}: {text[:60]}"
 
     def _handle_read(self, board, args):
-        """Handle ``!bbs read [region] [category]``."""
+        """Handle ``!bbs read [region] [category] [from-to]``."""
         regions = board.regions
         categories = board.categories
         tokens = args.split() if args else []
 
         region = None
         category = None
+        offset = 0
+        limit = self.READ_LIMIT
 
         if tokens and regions:
             resolved_r = self._resolve_region(tokens[0], regions)
@@ -658,21 +815,45 @@ class BbsCommandHandler:
                 region = resolved_r
                 tokens = tokens[1:]
 
-        if tokens:
+        if tokens and not self._is_range(tokens[0]):
             category = self._resolve_category(tokens[0], categories)
             if category is None:
                 abbr = self._abbrev_table(categories)
                 return f"Unknown category '{tokens[0]}'. Valid: {abbr}"
+            tokens = tokens[1:]
 
-        return self._format_messages(board, region, category, include_abbrevs=False)
+        if tokens and self._is_range(tokens[0]):
+            offset, limit = self._parse_range(tokens[0])
+            if offset is None:
+                return f"Invalid range '{tokens[0]}'. Use e.g. 6-10."
+
+        return self._format_messages(
+            board, region, category,
+            offset=offset, limit=limit,
+            include_abbrevs=False,
+        )
 
     # ------------------------------------------------------------------
     # Shared message formatter
     # ------------------------------------------------------------------
 
-    def _format_messages(self, board, region, category, include_abbrevs: bool) -> str:
+    def _format_messages(
+        self,
+        board,
+        region,
+        category,
+        offset: int = 0,
+        limit: int = None,
+        include_abbrevs: bool = False,
+    ) -> str:
+        if limit is None:
+            limit = self.READ_LIMIT
         messages = self._service.get_messages(
-            board.channels, region=region, category=category, limit=self.READ_LIMIT,
+            board.channels,
+            region=region,
+            category=category,
+            limit=limit,
+            offset=offset,
         )
         lines = []
         if include_abbrevs:
@@ -692,7 +873,12 @@ class BbsCommandHandler:
 
     def _handle_help(self, board) -> str:
         abbr = self._abbrev_table(board.categories)
-        header = f"BBS [{board.name}] | !p [cat] [text] | !r [cat]"
+        header = (
+            f"BBS [{board.name}] | "
+            f"!p [cat] [text] | "
+            f"!r [cat] [1-5] | "
+            f"!s [cat] [query]"
+        )
         if board.regions:
             regs = ", ".join(board.regions)
             return f"{header} | Regions: {regs} | {abbr}"

@@ -62,23 +62,23 @@ A graphical user interface for MeshCore mesh network devices with native USB ser
   - [11.2. Quick Start](#112-quick-start)
   - [11.3. Bridge Configuration](#113-bridge-configuration)
   - [11.4. systemd Service](#114-systemd-service)
-- [12. Known Limitations](#12-known-limitations)
-- [13. Troubleshooting](#13-troubleshooting)
-  - [13.1. Linux](#131-linux)
-    - [13.1.1. Serial Quick Fixes](#1311-serial-quick-fixes)
-    - [13.1.2. BLE Quick Fixes](#1312-ble-quick-fixes)
-  - [13.2. macOS](#132-macos)
-  - [13.3. Windows](#133-windows)
-  - [13.4. All Platforms](#134-all-platforms)
-- [14. Development](#14-development)
-  - [14.1. Debug Mode](#141-debug-mode)
-  - [14.2. Project Structure](#142-project-structure)
-- [15. Roadmap](#15-roadmap)
-- [16. Disclaimer](#16-disclaimer)
-- [17. License](#17-license)
-- [18. Author](#18-author)
-- [19. Acknowledgments](#19-acknowledgments)
-
+- [12. BBS — Bulletin Board System](#12-bbs--bulletin-board-system)
+- [13. Known Limitations](#13-known-limitations)
+- [14. Troubleshooting](#14-troubleshooting)
+  - [14.1. Linux](#141-linux)
+    - [14.1.1. Serial Quick Fixes](#1411-serial-quick-fixes)
+    - [14.1.2. BLE Quick Fixes](#1412-ble-quick-fixes)
+  - [14.2. macOS](#142-macos)
+  - [14.3. Windows](#143-windows)
+  - [14.4. All Platforms](#144-all-platforms)
+- [15. Development](#15-development)
+  - [15.1. Debug Mode](#151-debug-mode)
+  - [15.2. Project Structure](#152-project-structure)
+- [16. Roadmap](#16-roadmap)
+- [17. Disclaimer](#17-disclaimer)
+- [18. License](#18-license)
+- [19. Author](#19-author)
+- [20. Acknowledgments](#20-acknowledgments)
 ---
 
 ## 1. Why This Project Exists
@@ -176,7 +176,7 @@ sudo systemctl status bluetooth
 > - `org.bluez.Error.AuthenticationFailed` or `org.bluez.Error.ConnectionAttemptFailed` in the logs
 > - Repeated bond/unbond cycles without a stable connection
 >
-> **Workaround:** If you experience BLE instability, try downgrading BlueZ to 5.65 or pinning the package version. Alternatively, use **USB serial mode** which is not affected by BlueZ and provides the most reliable connection on all platforms. See [13.1.2. BLE Quick Fixes](#1312-ble-quick-fixes) for troubleshooting steps.
+> **Workaround:** If you experience BLE instability, try downgrading BlueZ to 5.65 or pinning the package version. Alternatively, use **USB serial mode** which is not affected by BlueZ and provides the most reliable connection on all platforms. See [14.1.2. BLE Quick Fixes](#1412-ble-quick-fixes) for troubleshooting steps.
 
 **Raspberry Pi (Raspberry Pi OS Lite) — Serial:**
 ```bash
@@ -665,7 +665,7 @@ Route data is resolved from two sources (in priority order):
 2. **Contact out_path** — Stored route from the sender's contact record (fallback)
 
 <!-- CHANGED: Self-contained route table data (v1.7.1) -->
-Route table data (path hashes, resolved repeater names and channel names) is captured at receive time and stored in the archive. This means route tables (names and IDs) remain correct even when contacts are renamed, removed or offline. Sender identity is resolved via pubkey lookup with an automatic name-based fallback when the pubkey lookup fails. Map visualization still depends on live contact GPS data — see [12. Known Limitations](#12-known-limitations).
+Route table data (path hashes, resolved repeater names and channel names) is captured at receive time and stored in the archive. This means route tables (names and IDs) remain correct even when contacts are renamed, removed or offline. Sender identity is resolved via pubkey lookup with an automatic name-based fallback when the pubkey lookup fails. Map visualization still depends on live contact GPS data — see [13. Known Limitations](#13-known-limitations).
 
 <!-- ADDED: Room Server section (v5.7.0) -->
 ### 9.7. Room Server
@@ -923,7 +923,123 @@ To uninstall: `sudo bash install_bridge.sh --uninstall`
 
 For full documentation including architecture details, troubleshooting and assumptions, see [BRIDGE.md](BRIDGE.md).
 
-## 12. Known Limitations
+## 12. BBS — Bulletin Board System
+
+MeshCore GUI includes an offline BBS that lets mesh nodes exchange structured messages by category, with optional region tagging.
+
+### Access model
+
+The operator links one or more channels to the BBS. Anyone who sends a message on a configured BBS channel is automatically added to the whitelist. After that, they can send commands via **Direct Message** to the BBS node — the channel itself stays clean.
+
+```
+First contact:  !bbs help  on the configured channel
+                → node sees the public key → whitelists it
+After that:     !p U need assistance  as DM to the node
+                → processed, reply sent back via DM
+```
+
+Anyone who has never sent a message on a configured channel is not on the whitelist and is silently ignored.
+
+### Settings
+
+Open via the gear icon (⚙) in the BBS panel, or navigate to `/bbs-settings`.
+
+```
+BBS Settings
+──────────────────────────────────────────
+Channels:    ☑ [1] NoodNet Zwolle
+             ☑ [2] NoodNet Dalfsen
+             ☐ [3] NoodNet OV
+Categories:  URGENT, MEDICAL, LOGISTICS, STATUS, GENERAL
+Retain:      48 hours
+[Save]
+
+▶ Advanced
+  Regions (comma-separated)
+  Allowed keys (empty = auto-learned from channel activity)
+```
+
+- **Channels** — check all channels whose participants should have access to the BBS. Multiple channels can be selected.
+- **Categories** — comma-separated list of valid category tags.
+- **Retain** — message retention in hours (default 48).
+- **Advanced → Regions** — optional region tags for geographic filtering.
+- **Advanced → Allowed keys** — manual whitelist override; leave empty to rely on auto-learned keys only.
+
+### Command syntax
+
+#### Short syntax
+
+| Command | Description |
+|---|---|
+| `!p <cat> <text>` | Post a message |
+| `!p <region> <cat> <text>` | Post with region |
+| `!r` | Read 5 most recent messages (all categories) |
+| `!r <cat>` | Read filtered by category |
+| `!r <cat> <from-to>` | Read with range, e.g. `!r U 6-10` |
+| `!r <region> <cat> <from-to>` | Read filtered by region, category and range |
+| `!s <cat> <query>` | Search messages in a category |
+| `!s <region> <cat> <query>` | Search with region filter |
+| `!h` | Show help and abbreviation table |
+
+Category abbreviations are computed automatically as the shortest unique prefix within the configured list. Example with `URGENT, MEDICAL, LOGISTICS, STATUS, GENERAL`:
+
+```
+U=URGENT  M=MEDICAL  L=LOGISTICS  S=STATUS  G=GENERAL
+```
+
+If two categories share the same leading letters (e.g. `MEDICAL` and `MISSING`), longer prefixes are calculated automatically: `ME` and `MI`. The `!r` (without arguments) and `!h` / `!bbs help` replies always include the current abbreviation table.
+
+**Range pagination** — messages are returned newest first, 1-indexed:
+
+| Range | Returns |
+|---|---|
+| `!r U 1-5` | Messages 1–5 (same as `!r U`) |
+| `!r U 6-10` | Messages 6–10 |
+| `!r U 15-40` | Messages 15–40 |
+
+**Search** — case-insensitive substring match across message bodies, all results returned:
+
+```
+!s U assistance         → all URGENT messages containing "assistance"
+!s Zwolle U water       → all URGENT messages in region Zwolle containing "water"
+```
+
+#### Full syntax
+
+| Command | Description |
+|---|---|
+| `!bbs help` | Show commands and abbreviation table |
+| `!bbs post <category> <text>` | Post a message |
+| `!bbs post <region> <category> <text>` | Post with region |
+| `!bbs read` | Read 5 most recent messages |
+| `!bbs read <category>` | Read filtered by category |
+| `!bbs read <category> <from-to>` | Read with range |
+| `!bbs read <region> <category> <from-to>` | Read filtered by region, category and range |
+
+#### Example help reply
+
+```
+BBS [NoodNet Zwolle, NoodNet Dalfsen] | !p [cat] [text] | !r [cat] [1-5] | !s [cat] [query] | U=URGENT M=MEDICAL L=LOGISTICS S=STATUS G=GENERAL
+```
+
+### Error handling
+
+| Situation | Reply |
+|---|---|
+| Unknown category | Lists valid categories and abbreviations |
+| Ambiguous abbreviation | Lists all matching categories |
+| Sender not on whitelist | Silent drop — no reply |
+
+### Storage
+
+```
+~/.meshcore-gui/bbs/bbs_messages.db    — SQLite message store (WAL mode)
+~/.meshcore-gui/bbs/bbs_config.json    — Board configuration
+```
+
+---
+
+## 13. Known Limitations
 
 1. **Channel discovery timing** — Dynamic channel discovery probes the device at startup; on very slow links (especially BLE), some channels may be missed on first attempt. Channels are retried in the background and cached for subsequent startups when `CHANNEL_CACHE_ENABLED = True`
 2. **Initial load time** — GUI waits for device data before the first render is complete (mitigated by cache: if cached data exists, the GUI populates instantly)
@@ -933,13 +1049,13 @@ For full documentation including architecture details, troubleshooting and assum
 5. **BLE Linux only** — BLE mode requires Linux with BlueZ and D-Bus. macOS and Windows are not supported for BLE connections because the PIN agent relies on the D-Bus system bus
 6. **BlueZ 5.66+ instability** — Recent BlueZ versions (shipped with Ubuntu 24.04, Debian Bookworm, Raspberry Pi OS Bookworm) can cause BLE connection instability, pairing failures and unexpected disconnects. USB serial is not affected and is recommended as the most reliable transport
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 ### 14.1. Linux
 
 For Linux troubleshooting, start by checking device permissions and that the correct device argument is used.
 
-#### 13.1.1. Serial Quick Fixes
+#### 14.1.1. Serial Quick Fixes
 
 ##### GUI remains empty / serial connection fails
 
@@ -966,7 +1082,7 @@ For Linux troubleshooting, start by checking device permissions and that the cor
    python meshcore_gui.py /dev/ttyUSB0
    ```
 
-#### 13.1.2. BLE Quick Fixes
+#### 14.1.2. BLE Quick Fixes
 
 ##### GUI remains empty / BLE connection fails
 
@@ -1061,25 +1177,25 @@ If the version is 5.66 or higher, you have several options:
 - Ensure the device shows up under `/dev/tty.usb*`, `/dev/tty.usbserial*`, or `/dev/tty.usbmodem*`
 - Close any other app that might be using the serial port
 
-### 13.3. Windows
+### 14.3. Windows
 
 - Confirm the COM port in Device Manager → Ports (COM & LPT)
 - Close any other app that might be using the COM port
 
-### 13.4. All Platforms
+### 14.4. All Platforms
 
-#### 13.4.1. Device Not Found
+#### 14.4.1. Device Not Found
 
 **Serial:** Make sure the MeshCore device is powered on, running Serial Companion firmware, and the correct serial port is selected.
 
 **BLE:** Ensure the device is powered on and discoverable (`bluetoothctl scan on`). Check that the MAC address is correct and that the BLE PIN matches (default: `123456`). On Linux, verify D-Bus permissions — see `docs/ble/BLE_ARCHITECTURE.md` for details.
 
-#### 13.4.2. Messages Not Arriving
+#### 14.4.2. Messages Not Arriving
 
 - Check if your channels are correctly configured
 - Use `meshcli` to verify that messages are arriving
 
-#### 13.4.3. Clearing the Cache
+#### 14.4.3. Clearing the Cache
 
 If cached data causes issues (e.g. stale contacts), delete the cache file:
 
@@ -1089,9 +1205,9 @@ rm ~/.meshcore-gui/cache/*.json
 
 The cache will be recreated on the next successful serial connection.
 
-## 14. Development
+## 15. Development
 
-### 14.1. Debug Mode
+### 15.1. Debug Mode
 
 Enable via command line flag:
 
@@ -1103,7 +1219,7 @@ Or set `DEBUG = True` in `meshcore_gui/config.py`.
 
 Debug output is written to both stdout and a per-device rotating log file at `~/.meshcore-gui/logs/<ADDRESS>_meshcore_gui.log` (e.g. `F0_9E_9E_75_A3_01_meshcore_gui.log`).
 
-### 14.2. Project Structure
+### 15.2. Project Structure
 
 <!-- CHANGED: Project structure updated — added archive_page.py and message_archive.py -->
 
@@ -1184,30 +1300,31 @@ meshcore-gui/
 └── README.md
 ```
 
-## 15. Roadmap
+## 16. Roadmap
 
 This project is under active development. The most common features from the official MeshCore Companion apps are being implemented gradually. Planned additions include:
 
 - [x] **Cross-frequency bridge** — standalone daemon connecting two devices on different frequencies via configurable channel forwarding (see [11. Cross-Frequency Bridge](#11-cross-frequency-bridge))
+- [x] **BBS — Bulletin Board System** — offline message board with DM-based commands, category/region filtering and automatic abbreviations (see [12. BBS](#12-bbs--bulletin-board-system))
 - [ ] **Observer mode** — passively monitor mesh traffic without transmitting, useful for network analysis, coverage mapping and long-term logging
 - [ ] **Room Server administration** — authenticate as admin to manage Room Server settings and users directly from the GUI
 - [ ] **Repeater management** — connect to repeater nodes to view status and adjust configuration
 
 Have a feature request or want to contribute? Open an issue or submit a pull request.
 
-## 16. Disclaimer
+## 17. Disclaimer
 
 This is an **independent community project** and is not affiliated with or endorsed by the official [MeshCore](https://github.com/meshcore-dev) development team. It is built on top of the open-source `meshcore` Python library.
 
-## 17. License
+## 18. License
 
 MIT License - see LICENSE file
 
-## 18. Author
+## 19. Author
 
 **PE1HVH** — [GitHub](https://github.com/pe1hvh)
 
-## 19. Acknowledgments
+## 20. Acknowledgments
 
 - [MeshCore](https://github.com/meshcore-dev) — Mesh networking firmware and protocol
 - [meshcore_py](https://github.com/meshcore-dev/meshcore_py) — Python bindings for MeshCore

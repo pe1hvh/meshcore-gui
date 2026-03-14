@@ -54,6 +54,8 @@ from meshcore_gui.ble.commands import CommandHandler
 from meshcore_gui.ble.events import EventHandler
 from meshcore_gui.ble.packet_decoder import PacketDecoder
 from meshcore_gui.services.bot import BotConfig, MeshBot
+from meshcore_gui.services.bbs_service import BbsCommandHandler, BbsService
+from meshcore_gui.services.bbs_config_store import BbsConfigStore
 from meshcore_gui.services.cache import DeviceCache
 from meshcore_gui.services.dedup import DualDeduplicator
 from meshcore_gui.services.device_identity import write_device_identity
@@ -123,6 +125,12 @@ class _BaseWorker(abc.ABC):
             command_sink=shared.put_command,
             enabled_check=shared.is_bot_enabled,
         )
+
+        # BBS handler — wired directly into EventHandler for DM routing.
+        # Independent of the bot; uses a shared config store and service.
+        _bbs_config = BbsConfigStore()
+        _bbs_service = BbsService()
+        self._bbs_handler = BbsCommandHandler(service=_bbs_service, config_store=_bbs_config)
 
         # Channel indices that still need keys from device
         self._pending_keys: Set[int] = set()
@@ -244,6 +252,8 @@ class _BaseWorker(abc.ABC):
             decoder=self._decoder,
             dedup=self._dedup,
             bot=self._bot,
+            bbs_handler=self._bbs_handler,
+            command_sink=self.shared.put_command,
         )
         self._cmd_handler = CommandHandler(
             mc=self.mc, shared=self.shared, cache=self._cache,

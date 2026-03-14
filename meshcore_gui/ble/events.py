@@ -4,9 +4,16 @@ Device event callbacks for MeshCore GUI.
 Handles ``CHANNEL_MSG_RECV``, ``CONTACT_MSG_RECV`` and ``RX_LOG_DATA``
 events from the MeshCore library.  Extracted from ``SerialWorker`` so the
 worker only deals with connection lifecycle.
+
+BBS routing
+~~~~~~~~~~~
+Direct Messages (``CONTACT_MSG_RECV``) whose text starts with ``!`` are
+forwarded to :class:`~meshcore_gui.services.bbs_service.BbsCommandHandler`
+**before** any other DM processing.  This path is completely independent of
+:class:`~meshcore_gui.services.bot.MeshBot`.
 """
 
-from typing import Dict, Optional
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional
 
 from meshcore_gui.config import debug_print
 from meshcore_gui.core.models import Message, RxLogEntry
@@ -14,6 +21,9 @@ from meshcore_gui.core.protocols import SharedDataWriter
 from meshcore_gui.ble.packet_decoder import PacketDecoder, PayloadType
 from meshcore_gui.services.bot import MeshBot
 from meshcore_gui.services.dedup import DualDeduplicator
+
+if TYPE_CHECKING:
+    from meshcore_gui.services.bbs_service import BbsCommandHandler
 
 
 class EventHandler:
@@ -35,11 +45,15 @@ class EventHandler:
         decoder: PacketDecoder,
         dedup: DualDeduplicator,
         bot: MeshBot,
+        bbs_handler: Optional["BbsCommandHandler"] = None,
+        command_sink: Optional[Callable[[Dict], None]] = None,
     ) -> None:
         self._shared = shared
         self._decoder = decoder
         self._dedup = dedup
         self._bot = bot
+        self._bbs_handler = bbs_handler
+        self._command_sink = command_sink
 
         # Cache: message_hash → path_hashes (from RX_LOG decode).
         # Used by on_channel_msg fallback to recover hashes that the
@@ -287,6 +301,23 @@ class EventHandler:
             message_hash=msg_hash,
         ))
 
+        # BBS channel hook: auto-whitelist sender + bootstrap reply for !-commands.
+        # Runs on every message on a configured BBS channel, independent of the bot.
+        if self._bbs_handler is not None and self._command_sink is not None:
+            bbs_reply = self._bbs_handler.handle_channel_msg(
+                channel_idx=ch_idx,
+                sender=sender,
+                sender_key=sender_pubkey,
+                text=msg_text,
+            )
+            if bbs_reply is not None:
+                debug_print(f"BBS channel reply on ch{ch_idx} to {sender!r}: {bbs_reply[:60]}")
+                self._command_sink({
+                    "action": "send_message",
+                    "channel": ch_idx,
+                    "text": bbs_reply,
+                })
+
         self._bot.check_and_reply(
             sender=sender,
             text=msg_text,
@@ -409,9 +440,45 @@ class EventHandler:
                 or (pubkey[:8] if pubkey else '')
             )
 
+        dm_text = payload.get('text', '')
+
+        # BBS routing: DMs starting with '!' go directly to BbsCommandHandler.
+        # This path is independent of the bot (MeshBot is for channel messages only).
+        if (
+            self._bbs_handler is not None
+            and self._command_sink is not None
+            and dm_text.strip().startswith("!")
+        ):
+            bbs_reply = self._bbs_handler.handle_dm(
+                sender=sender,
+                sender_key=pubkey,
+                text=dm_text,
+            )
+            if bbs_reply is not None:
+                debug_print(f"BBS DM reply to {sender} ({pubkey[:8]}): {bbs_reply[:60]}")
+                self._command_sink({
+                    "action": "send_dm",
+                    "pubkey": pubkey,
+                    "text": bbs_reply,
+                })
+            # Always store the incoming DM in the message archive too
+            self._shared.add_message(Message.incoming(
+                sender,
+                dm_text,
+                None,
+                snr=self._extract_snr(payload),
+                path_len=path_len,
+                sender_pubkey=pubkey,
+                path_hashes=path_hashes,
+                path_names=path_names,
+                message_hash=msg_hash,
+            ))
+            debug_print(f"BBS DM stored from {sender}: {dm_text[:30]}")
+            return
+
         self._shared.add_message(Message.incoming(
             sender,
-            payload.get('text', ''),
+            dm_text,
             None,
             snr=self._extract_snr(payload),
             path_len=path_len,
@@ -420,7 +487,7 @@ class EventHandler:
             path_names=path_names,
             message_hash=msg_hash,
         ))
-        debug_print(f"DM received from {sender}: {payload.get('text', '')[:30]}")
+        debug_print(f"DM received from {sender}: {dm_text[:30]}")
 
     # ------------------------------------------------------------------
     # Helpers

@@ -30,30 +30,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 > lower CPU usage during idle operation, and more stable map rendering.
 
 ---
-## [1.14.0] - 2026-03-14 — BBS (Bulletin Board System)
+## [1.14.0] - 2026-03-14 — Offline BBS (Bulletin Board System)
 
 ### Added
-
-- 🆕 **BBS — Bulletin Board System** — offline berichtenbord voor mesh-netwerken.
-  - **Toegangsmodel:** de beheerder selecteert één of meer channels in de settings. Iedereen die op een van die channels een bericht stuurt, wordt automatisch gewhitelist en kan daarna commando's sturen via **Direct Message** aan de node. Het channel blijft schoon; alleen de eerste interactie verloopt via het channel.
-  - Korte syntax: `!p <cat> <tekst>` (post) en `!r [cat]` (lezen). Categorie-afkortingen automatisch berekend als kortste unieke prefix (bijv. `U=URGENT M=MEDICAL`).
-  - Volledige syntax behouden: `!bbs post`, `!bbs read`, `!bbs help`.
-  - Optioneel regio-filter en handmatige allowed-keys override in Advanced.
-  - Settings-pagina (`/bbs-settings`): checkboxes per channel, categorieën, retentie, Advanced voor regio's en handmatige keys.
-  - Berichten opgeslagen in SQLite (`~/.meshcore-gui/bbs/bbs_messages.db`, WAL-mode).
+- 🆕 **`meshcore_gui/services/bbs_config_store.py`** — `BbsBoard` dataclass + `BbsConfigStore`. Beheert `~/.meshcore-gui/bbs/bbs_config.json` (config v2). Automatische migratie van v1. Thread-safe, atomische schrijfoperaties. Een board groepeert een of meerdere channel-indices tot één bulletin board. Methoden: `get_boards()`, `get_board()`, `get_board_for_channel()`, `set_board()`, `delete_board()`, `board_id_exists()`.
+- 🆕 **`meshcore_gui/services/bbs_service.py`** — SQLite-backed BBS persistence layer. `BbsMessage` dataclass. `BbsService.get_messages()` en `get_all_messages()` queryen via `WHERE channel IN (...)` zodat één board meerdere channels kan omvatten. WAL-mode + busy_timeout=3s voor veilig gebruik door meerdere processen. Database op `~/.meshcore-gui/bbs/bbs_messages.db`. `BbsCommandHandler` zoekt het board op via `get_board_for_channel()`.
+- 🆕 **`meshcore_gui/gui/panels/bbs_panel.py`** — BBS panel voor het dashboard.
+  - Board-selector (knoppen per geconfigureerd board).
+  - Regio- en categorie-filter (regio alleen zichtbaar als board regio's heeft).
+  - Scrollbare berichtenlijst over alle channels van het actieve board.
+  - Post-formulier: post op het eerste channel van het board.
+  - **Settings-sectie**: boards aanmaken (naam → Create), per board channels toewijzen via checkboxes (dynamisch gevuld vanuit device channels), categorieën, regio's, retentie, whitelist, Save en Delete.
 
 ### Changed
-
-- 🔄 **`ble/events.py`** — `on_channel_msg` roept `BbsCommandHandler.handle_channel_msg()` aan op geconfigureerde BBS-channels: auto-whitelist + bootstrap reply. `on_contact_msg` stuurt `!`-DMs direct naar `handle_dm()`. Beide paden volledig los van `MeshBot`.
-- 🔄 **`services/bot.py`** — `MeshBot` is weer een pure keyword/channel responder; BBS-routing verwijderd.
-- 🔄 **`services/bbs_config_store.py`** — `configure_board()` (multi-channel), `add_allowed_key()` (auto-whitelist), `clear_board()`.
-- 🔄 **`gui/dashboard.py`** — `BbsPanel` geregistreerd, `📋 BBS` drawer-item toegevoegd.
+- 🔄 **`meshcore_gui/services/bot.py`** — `MeshBot` accepteert optionele `bbs_handler`; `!bbs` commando's worden doorgesluisd naar `BbsCommandHandler`.
+- 🔄 **`meshcore_gui/config.py`** — `BBS_CHANNELS` verwijderd; versie `1.14.0`.
+- 🔄 **`meshcore_gui/gui/dashboard.py`** — `BbsConfigStore` en `BbsService` instanties; `BbsPanel` geregistreerd; `📋 BBS` drawer-item.
+- 🔄 **`meshcore_gui/gui/panels/__init__.py`** — `BbsPanel` re-exported.
 
 ### Storage
 ```
-~/.meshcore-gui/bbs/bbs_config.json   — board configuratie
-~/.meshcore-gui/bbs/bbs_messages.db   — SQLite berichtenopslag
+~/.meshcore-gui/bbs/bbs_config.json   -- board configuratie (v2)
+~/.meshcore-gui/bbs/bbs_messages.db   -- SQLite berichtenopslag
 ```
+
+### Not changed
+- BLE-laag, SharedData, core/models, route_page, map_panel, message_archive, alle overige services en panels.
 
 ---
 

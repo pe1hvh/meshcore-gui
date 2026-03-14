@@ -33,7 +33,7 @@ def _slug(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 class BbsPanel:
-    """BBS panel: board selector, filters, message list and post form.
+    """BBS panel: board selector, category buttons, message list and post form.
 
     Settings are on a separate page (/bbs-settings), reachable via the
     gear icon in the panel header.
@@ -56,19 +56,20 @@ class BbsPanel:
 
         # Active view state
         self._active_board: Optional[BbsBoard] = None
-        self._active_region: Optional[str] = None
         self._active_category: Optional[str] = None
 
-        # UI refs -- message view
+        # UI refs
         self._board_btn_row = None
-        self._region_row = None
-        self._region_select = None
-        self._category_select = None
-        self._text_input = None
+        self._category_btn_row = None
+        self._msg_list_container = None
         self._post_region_row = None
         self._post_region_select = None
         self._post_category_select = None
-        self._msg_list_container = None
+        self._text_input = None
+
+        # Button refs for active highlight
+        self._board_buttons: Dict[str, object] = {}
+        self._category_buttons: Dict[str, object] = {}
 
         # Cached device channels (updated by update())
         self._device_channels: List[Dict] = []
@@ -89,43 +90,30 @@ class BbsPanel:
                     on_click=lambda: ui.navigate.to('/bbs-settings'),
                 ).props('flat round dense').tooltip('BBS Settings')
 
-            self._board_btn_row = ui.row().classes('w-full items-center gap-2 flex-wrap')
+            # Board selector row
+            self._board_btn_row = ui.row().classes('w-full items-center gap-1 flex-wrap')
             with self._board_btn_row:
-                ui.label('Board:').classes('text-sm text-gray-600')
+                ui.label('No active boards — open Settings to enable a channel.').classes(
+                    'text-xs text-gray-400 italic'
+                )
 
             ui.separator()
 
-            with ui.row().classes('w-full items-center gap-4 flex-wrap'):
-                ui.label('Filter:').classes('text-sm text-gray-600')
-
-                self._region_row = ui.row().classes('items-center gap-2')
-                with self._region_row:
-                    ui.label('Region:').classes('text-xs text-gray-600')
-                    self._region_select = ui.select(
-                        options=[], value=None,
-                        on_change=lambda e: self._on_region_filter(e.value),
-                    ).classes('text-xs').style('min-width: 120px')
-
-                with ui.row().classes('items-center gap-2'):
-                    ui.label('Category:').classes('text-xs text-gray-600')
-                    self._category_select = ui.select(
-                        options=[], value=None,
-                        on_change=lambda e: self._on_category_filter(e.value),
-                    ).classes('text-xs').style('min-width: 120px')
-
-                ui.button(
-                    'Refresh', on_click=self._refresh_messages,
-                ).props('flat no-caps').classes('text-xs')
+            # Category filter row (clickable buttons, replaces dropdown)
+            self._category_btn_row = ui.row().classes('w-full items-center gap-1 flex-wrap')
+            with self._category_btn_row:
+                ui.label('Select a board first.').classes('text-xs text-gray-400 italic')
 
             ui.separator()
 
-            # Responsive message list: h-72 is overridden by domca-panel CSS
+            # Message list
             self._msg_list_container = ui.column().classes(
-                'w-full gap-1 h-72 overflow-y-auto overflow-x-hidden bg-gray-50 rounded p-2'
-            )
+                'w-full gap-1 overflow-y-auto overflow-x-hidden bg-gray-50 rounded p-2'
+            ).style('max-height: calc(100vh - 24rem); min-height: 8rem')
 
             ui.separator()
 
+            # Post row — keep selects for sending
             with ui.row().classes('w-full items-center gap-2 flex-wrap'):
                 ui.label('Post:').classes('text-sm text-gray-600')
 
@@ -157,69 +145,106 @@ class BbsPanel:
         if not self._board_btn_row:
             return
         self._board_btn_row.clear()
+        self._board_buttons = {}
         boards = self._config_store.get_boards()
         with self._board_btn_row:
-            ui.label('Board:').classes('text-sm text-gray-600')
             if not boards:
                 ui.label('No active boards — open Settings to enable a channel.').classes(
                     'text-xs text-gray-400 italic'
                 )
                 return
             for board in boards:
-                ui.button(
+                btn = ui.button(
                     board.name,
                     on_click=lambda b=board: self._select_board(b),
-                ).props('flat no-caps').classes('text-xs')
+                ).props('flat no-caps').classes('text-xs domca-menu-btn')
+                self._board_buttons[board.id] = btn
 
         ids = [b.id for b in boards]
         if boards and (self._active_board is None or self._active_board.id not in ids):
             self._select_board(boards[0])
+        elif self._active_board and self._active_board.id in self._board_buttons:
+            self._board_buttons[self._active_board.id].classes('domca-menu-active')
 
     def _select_board(self, board: BbsBoard) -> None:
-        """Activate a board and rebuild filter selects.
+        """Activate a board and rebuild category buttons.
 
         Args:
             board: Board to activate.
         """
         self._active_board = board
-        self._active_region = None
         self._active_category = None
 
-        has_regions = bool(board.regions)
-        if self._region_row:
-            self._region_row.set_visibility(has_regions)
-        if self._post_region_row:
-            self._post_region_row.set_visibility(has_regions)
+        # Update board button highlights
+        for bid, btn in self._board_buttons.items():
+            if bid == board.id:
+                btn.classes('domca-menu-active', remove='')
+            else:
+                btn.classes(remove='domca-menu-active')
 
-        region_opts = ['(all)'] + board.regions
-        if self._region_select:
-            self._region_select.options = region_opts
-            self._region_select.value = '(all)'
+        # Update post selects
+        if self._post_region_row:
+            self._post_region_row.set_visibility(bool(board.regions))
         if self._post_region_select:
             self._post_region_select.options = board.regions
             self._post_region_select.value = board.regions[0] if board.regions else None
-
-        cat_opts = ['(all)'] + board.categories
-        if self._category_select:
-            self._category_select.options = cat_opts
-            self._category_select.value = '(all)'
         if self._post_category_select:
             self._post_category_select.options = board.categories
             self._post_category_select.value = board.categories[0] if board.categories else None
 
+        self._rebuild_category_buttons()
         self._refresh_messages()
 
     # ------------------------------------------------------------------
-    # Filters
+    # Category buttons
     # ------------------------------------------------------------------
 
-    def _on_region_filter(self, value: Optional[str]) -> None:
-        self._active_region = None if (not value or value == '(all)') else value
+    def _rebuild_category_buttons(self) -> None:
+        """Rebuild clickable category filter buttons for the active board."""
+        if not self._category_btn_row:
+            return
+        self._category_btn_row.clear()
+        self._category_buttons = {}
+        if self._active_board is None:
+            with self._category_btn_row:
+                ui.label('Select a board first.').classes('text-xs text-gray-400 italic')
+            return
+        with self._category_btn_row:
+            # "All" button
+            all_btn = ui.button(
+                'ALL',
+                on_click=lambda: self._on_category_filter(None),
+            ).props('flat no-caps').classes('text-xs domca-menu-btn')
+            self._category_buttons['__all__'] = all_btn
+
+            for cat in self._active_board.categories:
+                btn = ui.button(
+                    cat,
+                    on_click=lambda c=cat: self._on_category_filter(c),
+                ).props('flat no-caps').classes('text-xs domca-menu-btn')
+                self._category_buttons[cat] = btn
+
+        # Highlight the current active category
+        self._update_category_highlight()
+
+    def _on_category_filter(self, category: Optional[str]) -> None:
+        """Handle category button click.
+
+        Args:
+            category: Category string, or None for all.
+        """
+        self._active_category = category
+        self._update_category_highlight()
         self._refresh_messages()
 
-    def _on_category_filter(self, value: Optional[str]) -> None:
-        self._active_category = None if (not value or value == '(all)') else value
-        self._refresh_messages()
+    def _update_category_highlight(self) -> None:
+        """Apply domca-menu-active to the currently selected category button."""
+        active_key = self._active_category if self._active_category else '__all__'
+        for key, btn in self._category_buttons.items():
+            if key == active_key:
+                btn.classes('domca-menu-active', remove='')
+            else:
+                btn.classes(remove='domca-menu-active')
 
     # ------------------------------------------------------------------
     # Message list
@@ -240,7 +265,7 @@ class BbsPanel:
                 return
             messages = self._service.get_all_messages(
                 channels=self._active_board.channels,
-                region=self._active_region,
+                region=None,
                 category=self._active_category,
             )
             if not messages:

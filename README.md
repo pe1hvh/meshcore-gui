@@ -956,7 +956,7 @@ Retain:      48 hours
 
 ▶ Advanced
   Regions (comma-separated)
-  Allowed keys (empty = auto-learned from channel activity)
+  Allowed keys (DM-BBS whitelist)
 ```
 
 - **Channels** — check all channels whose participants should have access to the BBS. Multiple channels can be selected.

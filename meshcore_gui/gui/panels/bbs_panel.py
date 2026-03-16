@@ -324,16 +324,9 @@ class BbsPanel:
         )
         self._service.post_message(msg)
 
-        region_part = f'{region} ' if region else ''
-        mesh_text = f'!bbs post {region_part}{category} {text}'
-        self._put_command({
-            'action': 'send_message',
-            'channel': target_channel,
-            'text': mesh_text,
-        })
         debug_print(
-            f'BBS panel: posted to board={self._active_board.id} '
-            f'ch={target_channel} {mesh_text[:60]}'
+            f'BBS panel: locally posted to board={self._active_board.id} '
+            f'ch={target_channel} [{category}] {text[:60]}'
         )
 
         if self._text_input:

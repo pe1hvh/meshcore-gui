@@ -377,13 +377,12 @@ class BbsCommandHandler:
         """Handle a channel message on a configured BBS channel.
 
         Called from ``EventHandler.on_channel_msg`` **after** the message
-        has been stored.  Two responsibilities:
+        has been stored.
 
-        1. **Auto-whitelist**: every sender seen on a BBS channel gets their
-           key added to ``allowed_keys`` so they can use DMs afterwards.
-        2. **Bootstrap reply**: if the message starts with ``!``, reply on
-           the channel so the sender knows the BBS is active and receives
-           the abbreviation table.
+        Design rule:
+        - only ``!bbs`` is handled on the linked BBS channel;
+        - it whitelists the sender public key for later DM-BBS use;
+        - help/read/post/search commands are DM-only.
 
         Args:
             channel_idx: MeshCore channel index the message arrived on.
@@ -400,46 +399,16 @@ class BbsCommandHandler:
         if channel_idx not in board.channels:
             return None
 
-        # Auto-whitelist: register this sender so they can use DMs
-        if sender_key:
-            self._config_store.add_allowed_key(sender_key)
-
-        # Bootstrap reply only for !-commands
         text = (text or "").strip()
-        if not text.startswith("!"):
+        if text.lower() != "!bbs":
             return None
-
-        first = text.split()[0].lower()
-        channel_for_post = channel_idx
-
-        if first in ("!p",):
-            rest = text[len(first):].strip()
-            return self._handle_post_short(board, channel_for_post, sender, sender_key, rest)
-
-        if first in ("!r",):
-            rest = text[len(first):].strip()
-            return self._handle_read_short(board, rest)
-
-        if first in ("!s",):
-            rest = text[len(first):].strip()
-            return self._handle_search(board, rest)
-
-        if first in ("!help", "!h"):
-            return self._handle_help(board)
-
-        if first == "!bbs":
-            parts = text.split(None, 2)
-            sub = parts[1].lower() if len(parts) > 1 else ""
-            rest = parts[2] if len(parts) > 2 else ""
-            if sub == "post":
-                return self._handle_post(board, channel_for_post, sender, sender_key, rest)
-            if sub == "read":
-                return self._handle_read(board, rest)
-            if sub in ("help", ""):
-                return self._handle_help(board)
-            return f"Unknown subcommand '{sub}'. " + self._handle_help(board)
-
-        return None
+        if not sender_key:
+            debug_print("BBS: !bbs ignored on channel because sender key is empty")
+            return "BBS whitelist failed: sender key unknown."
+        added = self._config_store.add_allowed_key(sender_key)
+        if added:
+            return "Add to BBS OK. Use !h in DM-BBS for help."
+        return "Already on BBS whitelist. Use !h in DM-BBS for help."
 
     # ------------------------------------------------------------------
 
@@ -476,13 +445,25 @@ class BbsCommandHandler:
             debug_print("BBS: no board configured, ignoring DM")
             return None
 
-        # Whitelist check
-        if board.allowed_keys and sender_key not in board.allowed_keys:
-            debug_print(
-                f"BBS: silently dropping DM from {sender} "
-                f"(key not in whitelist for board '{board.id}')"
-            )
-            return None
+        # Whitelist check (accept full-key/prefix matches in both directions)
+        if board.allowed_keys:
+            sender_key_up = (sender_key or "").upper()
+            allowed = False
+            for key in board.allowed_keys:
+                key_up = (key or "").upper()
+                if sender_key_up and key_up and (
+                    sender_key_up == key_up
+                    or sender_key_up.startswith(key_up)
+                    or key_up.startswith(sender_key_up)
+                ):
+                    allowed = True
+                    break
+            if not allowed:
+                debug_print(
+                    f"BBS: silently dropping DM from {sender} "
+                    f"(key not in whitelist for board '{board.id}')"
+                )
+                return None
 
         # Channel for storing posted messages
         channel_idx = board.channels[0] if board.channels else 0
@@ -511,9 +492,9 @@ class BbsCommandHandler:
                 return self._handle_post(board, channel_idx, sender, sender_key, rest)
             if sub == "read":
                 return self._handle_read(board, rest)
-            if sub in ("help", ""):
+            if sub == "help":
                 return self._handle_help(board)
-            return f"Unknown subcommand '{sub}'. " + self._handle_help(board)
+            return "Use !bbs on the linked channel for whitelist bootstrap."
 
         # Unknown !-command
         return None
@@ -553,7 +534,8 @@ class BbsCommandHandler:
         abbrevs = self.compute_abbreviations(categories)
         # abbrevs maps prefix → full name; invert for display
         inv = {v: k for k, v in abbrevs.items()}
-        return " ".join(f"{inv[c]}={c}" for c in [cu.upper() for cu in categories] if cu.upper() in inv)
+        cats_upper = [c.upper() for c in categories]
+        return " ".join(f"{inv[c]}={c}" for c in cats_upper if c in inv)
 
     def _resolve_category(self, token: str, categories: List[str]) -> Optional[str]:
         """Resolve *token* to a category via exact match or abbreviation.
@@ -633,7 +615,7 @@ class BbsCommandHandler:
 
         Range syntax: ``!r U 6-10`` returns messages 6 to 10 (1-indexed,
         newest first).  Without a range the default is 1-5 (five most recent).
-        ``!r`` without any arguments always includes the abbreviation table.
+        Bare ``!r`` returns the most recent messages across all categories.
         """
         regions = board.regions
         categories = board.categories
@@ -670,7 +652,7 @@ class BbsCommandHandler:
         return self._format_messages(
             board, region, category,
             offset=offset, limit=limit,
-            include_abbrevs=not args,
+            include_abbrevs=False,
         )
 
     def _handle_search(self, board, args):

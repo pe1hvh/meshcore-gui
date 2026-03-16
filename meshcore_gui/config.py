@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.14.2"
+VERSION: str = "1.15.0"
 
 
 # ==============================================================================
@@ -74,6 +74,10 @@ DATA_DIR: Path = Path.home() / ".meshcore-gui"
 
 # Log directory for debug and error log files.
 LOG_DIR: Path = DATA_DIR / "logs"
+
+# Bot configuration directory — bot JSON files live here.
+# File naming: _<safe_dev_id>_bot.json (e.g. _dev_ttyUSB1_bot.json).
+BOT_DIR: Path = DATA_DIR / "bot"
 
 # Log file path (rotating: max 5 MB per file, 3 backups = 20 MB total).
 LOG_FILE: Path = LOG_DIR / "meshcore_gui.log"

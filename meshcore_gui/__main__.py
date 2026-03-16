@@ -49,6 +49,7 @@ from meshcore_gui.gui.panels.bbs_panel import BbsSettingsPage
 from meshcore_gui.gui.archive_page import ArchivePage
 from meshcore_gui.services.pin_store import PinStore
 from meshcore_gui.services.room_password_store import RoomPasswordStore
+from meshcore_gui.services.bot_config_store import BotConfigStore
 
 
 # Global instances (needed by NiceGUI page decorators)
@@ -60,13 +61,14 @@ _bbs_config_store_main = None
 _archive_page = None
 _pin_store = None
 _room_password_store = None
+_bot_config_store = None
 
 
 @ui.page('/')
 def _page_dashboard():
     """NiceGUI page handler — main dashboard."""
     if _shared and _pin_store and _room_password_store:
-        DashboardPage(_shared, _pin_store, _room_password_store).render()
+        DashboardPage(_shared, _pin_store, _room_password_store, _bot_config_store).render()
 
 
 @ui.page('/route/{msg_key}')
@@ -165,7 +167,7 @@ def main():
     Parses CLI arguments, auto-detects the transport, initialises all
     components and starts the NiceGUI server.
     """
-    global _shared, _dashboard, _route_page, _bbs_settings_page, _archive_page, _pin_store, _room_password_store
+    global _shared, _dashboard, _route_page, _bbs_settings_page, _archive_page, _pin_store, _room_password_store, _bot_config_store
 
     args, flags = _parse_flags(sys.argv[1:])
 
@@ -266,7 +268,8 @@ def main():
     _shared = SharedData(device_id)
     _pin_store = PinStore(device_id)
     _room_password_store = RoomPasswordStore(device_id)
-    _dashboard = DashboardPage(_shared, _pin_store, _room_password_store)
+    _bot_config_store = BotConfigStore(device_id)
+    _dashboard = DashboardPage(_shared, _pin_store, _room_password_store, _bot_config_store)
     _route_page = RoutePage(_shared)
     _archive_page = ArchivePage(_shared)
     from meshcore_gui.services.bbs_config_store import BbsConfigStore as _BCS
@@ -278,6 +281,7 @@ def main():
         _shared,
         baudrate=config.SERIAL_BAUDRATE,
         cx_dly=config.SERIAL_CX_DELAY,
+        pin_store=_pin_store,
     )
     worker.start()
 

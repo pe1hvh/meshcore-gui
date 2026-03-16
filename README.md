@@ -732,23 +732,27 @@ If the connection fails (serial or BLE), the GUI remains usable with cached data
 
 ### 9.10. Keyword Bot
 
-The built-in bot automatically replies to messages containing recognised keywords. Enable or disable it via the 🤖 BOT checkbox in the filter bar.
+The built-in bot automatically replies to messages containing recognised keywords. Configure it via the dedicated **🤖 BOT** menu item.
 
-<!-- CHANGED: Bot device name switching feature added in v5.5.0 -->
-**Device name switching:** When the BOT checkbox is enabled, the device name is automatically changed to the configured `BOT_DEVICE_NAME` (default: `;NL-OV-ZWL-STDSHGN-WKC Bot`). The original device name is saved and restored when bot mode is disabled. This allows the mesh network to identify the node as a bot by its name.
+<!-- CHANGED: v1.15.0 — bot moved from Actions panel to dedicated BOT panel -->
+**BOT panel features:**
+- **Enable / disable toggle** — activating the bot changes the device name to the configured `BOT_DEVICE_NAME`; disabling restores the original name.
+- **Interactive channel assignment** — checkboxes for each discovered channel; selection is saved per device to `~/.meshcore-gui/bot/_<dev_id>_bot.json`.
+- **Private mode** — when enabled the bot only responds to pinned contacts.  The toggle is disabled until at least one contact is pinned; auto-disables if all pins are removed.
+
+**Device name switching:** When the bot is enabled, the device name is automatically changed to the configured `BOT_DEVICE_NAME` (default: `ZwolsBotje`). The original device name is saved and restored when bot mode is disabled. This allows the mesh network to identify the node as a bot by its name.
 
 **Default keywords:**
 
-<!-- CHANGED: Removed "Zwolle Bot:" prefix from example replies — bot replies no longer include a name prefix (v5.5.0) -->
-
 | Keyword | Reply |
 |---------|-------|
-| `test` | `<sender>, rcvd \| SNR <snr> \| path(<hops>); <repeaters>` |
+| `test` | `<sender>, rcvd \| SNR <snr> \| path(<hops>)` |
 | `ping` | `Pong!` |
 | `help` | `test, ping, help` |
 
 **Safety guards:**
-- Only replies on configured channels (`BOT_CHANNELS`)
+- Only replies on configured channels (interactive selection in BOT panel)
+- Private mode: optionally restricts replies to pinned contacts only
 - Ignores own messages and messages from other bots (names ending in "Bot")
 - Cooldown period between replies (default: 5 seconds)
 
@@ -760,6 +764,7 @@ The built-in bot automatically replies to messages containing recognised keyword
 ### 9.12. Actions
 - Refresh data
 - Send advertisement
+- Set device name
 
 ## 10. Architecture
 

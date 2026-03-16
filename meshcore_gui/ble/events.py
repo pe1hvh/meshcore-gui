@@ -207,6 +207,7 @@ class EventHandler:
                             snr=snr_msg,
                             path_len=decoded.path_length,
                             path_hashes=decoded.path_hashes,
+                            sender_pubkey=sender_pubkey,
                         )
 
                         # BBS channel hook: auto-whitelist sender and reply
@@ -356,6 +357,7 @@ class EventHandler:
             channel_idx=ch_idx,
             snr=snr,
             path_len=payload.get('path_len', 0),
+            sender_pubkey=sender_pubkey,
         )
 
     # ------------------------------------------------------------------

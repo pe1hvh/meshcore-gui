@@ -17,6 +17,7 @@ from meshcore_gui.core.protocols import SharedDataReader
 from meshcore_gui.gui.panels import (
     ActionsPanel,
     BbsPanel,
+    BotPanel,
     ContactsPanel,
     DevicePanel,
     MapPanel,
@@ -27,6 +28,7 @@ from meshcore_gui.gui.panels import (
 from meshcore_gui.gui.archive_page import ArchivePage
 from meshcore_gui.services.bbs_config_store import BbsConfigStore
 from meshcore_gui.services.bbs_service import BbsCommandHandler, BbsService
+from meshcore_gui.services.bot_config_store import BotConfigStore
 from meshcore_gui.services.pin_store import PinStore
 from meshcore_gui.services.room_password_store import RoomPasswordStore
 
@@ -267,6 +269,7 @@ _STANDALONE_ITEMS = [
     ('\U0001f4e1', 'DEVICE',   'device'),
     ('\u26a1',     'ACTIONS',  'actions'),
     ('\U0001f4ca', 'RX LOG',   'rxlog'),
+    ('\U0001f916', 'BOT',      'bot'),
     ('\U0001f4cb', 'BBS',      'bbs'),
 ]
 
@@ -294,7 +297,7 @@ class DashboardPage:
         shared: SharedDataReader for data access and command dispatch.
     """
 
-    def __init__(self, shared: SharedDataReader, pin_store: PinStore, room_password_store: RoomPasswordStore) -> None:
+    def __init__(self, shared: SharedDataReader, pin_store: PinStore, room_password_store: RoomPasswordStore, bot_config_store: BotConfigStore | None = None) -> None:
         self._shared = shared
         self._pin_store = pin_store
         self._room_password_store = room_password_store
@@ -306,6 +309,11 @@ class DashboardPage:
             self._bbs_service, self._bbs_config_store
         )
 
+        # Bot config store — injected from __main__ so dashboard and worker
+        # share the same device-scoped file.  Falls back to a default-scoped
+        # instance when not provided (e.g. unit tests, legacy callers).
+        self._bot_config_store = bot_config_store if bot_config_store is not None else BotConfigStore()
+
         # Panels (created fresh on each render)
         self._device: DevicePanel | None = None
         self._contacts: ContactsPanel | None = None
@@ -315,6 +323,7 @@ class DashboardPage:
         self._rxlog: RxLogPanel | None = None
         self._room_server: RoomServerPanel | None = None
         self._bbs: BbsPanel | None = None
+        self._bot: BotPanel | None = None
 
         # Header status label
         self._status_label = None
@@ -358,10 +367,16 @@ class DashboardPage:
         self._contacts = ContactsPanel(put_cmd, self._pin_store, self._shared.set_auto_add_enabled, self._on_add_room_server)
         self._map = MapPanel()
         self._messages = MessagesPanel(put_cmd)
-        self._actions = ActionsPanel(put_cmd, self._shared.set_bot_enabled)
+        self._actions = ActionsPanel(put_cmd)
         self._rxlog = RxLogPanel()
         self._room_server = RoomServerPanel(put_cmd, self._room_password_store)
         self._bbs = BbsPanel(put_cmd, self._bbs_service, self._bbs_config_store)
+        self._bot = BotPanel(
+            put_cmd,
+            self._shared.set_bot_enabled,
+            self._bot_config_store,
+            self._pin_store,
+        )
 
         # Inject DOMCA theme (fonts + CSS variables)
         ui.add_head_html(_DOMCA_HEAD)
@@ -523,6 +538,7 @@ class DashboardPage:
             ('rxlog',    self._rxlog),
             ('rooms',    self._room_server),
             ('bbs',      self._bbs),
+            ('bot',      self._bot),
         ]
 
         for panel_id, panel_obj in panel_defs:
@@ -752,6 +768,9 @@ class DashboardPage:
         elif self._active_panel == 'bbs':
             if self._bbs:
                 self._bbs.update(data)
+        elif self._active_panel == 'bot':
+            if self._bot:
+                self._bot.update(data)
 
     # ------------------------------------------------------------------
     # Room Server callback (from ContactsPanel)
@@ -837,6 +856,10 @@ class DashboardPage:
             elif self._active_panel == 'bbs':
                 if self._bbs:
                     self._bbs.update(data)
+
+            elif self._active_panel == 'bot':
+                if self._bot:
+                    self._bot.update(data)
 
             # Signal worker that GUI is ready for data
             if is_first and data['channels'] and data['contacts']:

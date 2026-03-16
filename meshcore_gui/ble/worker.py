@@ -56,9 +56,11 @@ from meshcore_gui.ble.packet_decoder import PacketDecoder
 from meshcore_gui.services.bot import BotConfig, MeshBot
 from meshcore_gui.services.bbs_service import BbsCommandHandler, BbsService
 from meshcore_gui.services.bbs_config_store import BbsConfigStore
+from meshcore_gui.services.bot_config_store import BotConfigStore
 from meshcore_gui.services.cache import DeviceCache
 from meshcore_gui.services.dedup import DualDeduplicator
 from meshcore_gui.services.device_identity import write_device_identity
+from meshcore_gui.services.pin_store import PinStore
 
 
 # Seconds between background retry attempts for missing channel keys.
@@ -76,17 +78,18 @@ def create_worker(device_id: str, shared: SharedDataWriter, **kwargs):
     """Return the appropriate worker for *device_id*.
 
     Keyword arguments are forwarded to the worker constructor
-    (e.g. ``baudrate``, ``cx_dly`` for serial).
+    (e.g. ``baudrate``, ``cx_dly`` for serial, ``pin_store`` for all).
     """
     from meshcore_gui.config import is_ble_address
 
     if is_ble_address(device_id):
-        return BLEWorker(device_id, shared)
+        return BLEWorker(device_id, shared, pin_store=kwargs.get("pin_store"))
     return SerialWorker(
         device_id,
         shared,
         baudrate=kwargs.get("baudrate", _config.SERIAL_BAUDRATE),
         cx_dly=kwargs.get("cx_dly", _config.SERIAL_CX_DELAY),
+        pin_store=kwargs.get("pin_store"),
     )
 
 
@@ -107,7 +110,7 @@ class _BaseWorker(abc.ABC):
       a broken connection
     """
 
-    def __init__(self, device_id: str, shared: SharedDataWriter) -> None:
+    def __init__(self, device_id: str, shared: SharedDataWriter, pin_store: Optional[PinStore] = None) -> None:
         self.device_id = device_id
         self.shared = shared
         self.mc: Optional[MeshCore] = None
@@ -117,6 +120,16 @@ class _BaseWorker(abc.ABC):
         # Local cache (one file per device)
         self._cache = DeviceCache(device_id)
 
+        # Bot config store — persists channel selection and private mode.
+        self._bot_config_store = BotConfigStore(device_id)
+
+        # Sync persisted bot-enabled flag to SharedData so the bot starts
+        # in the correct state after a restart.  Without this, SharedData
+        # defaults to bot_enabled=False every run regardless of what the
+        # user saved in the BOT panel.
+        if self._bot_config_store.get_settings().enabled:
+            shared.set_bot_enabled(True)
+
         # Collaborators (created eagerly, wired after connection)
         self._decoder = PacketDecoder()
         self._dedup = DualDeduplicator(max_size=200)
@@ -124,6 +137,8 @@ class _BaseWorker(abc.ABC):
             config=BotConfig(),
             command_sink=shared.put_command,
             enabled_check=shared.is_bot_enabled,
+            config_store=self._bot_config_store,
+            pinned_check=pin_store.is_pinned if pin_store is not None else None,
         )
 
         # BBS handler — wired directly into EventHandler for DM routing.
@@ -723,8 +738,9 @@ class SerialWorker(_BaseWorker):
         shared: SharedDataWriter,
         baudrate: int = _config.SERIAL_BAUDRATE,
         cx_dly: float = _config.SERIAL_CX_DELAY,
+        pin_store: Optional[PinStore] = None,
     ) -> None:
-        super().__init__(port, shared)
+        super().__init__(port, shared, pin_store=pin_store)
         self.port = port
         self.baudrate = baudrate
         self.cx_dly = cx_dly
@@ -866,8 +882,8 @@ class BLEWorker(_BaseWorker):
         shared:   SharedDataWriter for thread-safe communication.
     """
 
-    def __init__(self, address: str, shared: SharedDataWriter) -> None:
-        super().__init__(address, shared)
+    def __init__(self, address: str, shared: SharedDataWriter, pin_store: Optional[PinStore] = None) -> None:
+        super().__init__(address, shared, pin_store=pin_store)
         self.address = address
 
         # BLE PIN agent — imported lazily so serial-only installs

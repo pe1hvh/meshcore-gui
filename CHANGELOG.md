@@ -8,6 +8,56 @@
 All notable changes to MeshCore GUI are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
+---
+
+## [1.15.0] - 2026-03-16
+
+### ADDED
+- **BOT panel** (`gui/panels/bot_panel.py`): new dedicated panel in the main menu
+  (between RX LOG and BBS) with enable toggle, private mode toggle and interactive
+  channel assignment via checkboxes built from the live device channel list.
+- **BotConfigStore** (`services/bot_config_store.py`): persistent bot configuration
+  per device stored at `~/.meshcore-gui/bot/_<dev_id>_bot.json`.  Saves enabled
+  flag, private mode state and selected channel set across restarts.
+- **Private mode**: when enabled the bot only replies to pinned contacts.  Guard 1.5
+  added to `MeshBot.check_and_reply` — reads live from `BotConfigStore` so changes
+  take effect immediately without restart.
+- **Private mode constraint**: private mode can only be activated when at least one
+  contact is pinned.  The toggle is disabled (greyed out) with an explanation label
+  when no pinned contacts exist; auto-disables if all pins are removed.
+- **Interactive channel assignment**: BOT panel shows a checkbox per discovered
+  channel; selection persisted via `BotConfigStore.set_channels()` on Save.
+- **`BOT_DIR`** config constant (`~/.meshcore-gui/bot/`) centralising the storage
+  root for bot configuration files.
+
+### CHANGED
+- **BOT toggle removed from ActionsPanel**: `actions_panel.py` no longer contains
+  the BOT checkbox or `set_bot_enabled` wiring; the panel is now solely for Refresh,
+  Advertise and Set device name.
+- **`MeshBot`** gains two optional constructor arguments: `config_store`
+  (`BotConfigStore`) for live channel/private-mode reads, and `pinned_check`
+  (`Callable[[str], bool]`) for pin lookups.  Fully backwards-compatible — both
+  default to `None` and existing behaviour is preserved when absent.
+- **`MeshBot.check_and_reply`** gains optional `sender_pubkey` kwarg used by Guard 1.5.
+- **`_BaseWorker`** now accepts optional `pin_store` kwarg; wires `pinned_check` and
+  `config_store` into `MeshBot` at construction time.
+- **`create_worker`** forwards optional `pin_store` kwarg to subworkers.
+- **`DashboardPage`** receives `BotConfigStore` instance; `ActionsPanel` call no
+  longer passes `set_bot_enabled`.
+
+### IMPACT
+- `ble/events.py`: both `check_and_reply` call sites now pass `sender_pubkey=`.
+- `ble/worker.py`: `_BaseWorker`, `SerialWorker`, `BLEWorker`, `create_worker` updated.
+- `gui/dashboard.py`: `BotPanel` registered as panel `'bot'`; menu item `🤖 BOT` added.
+- `gui/panels/actions_panel.py`: BOT toggle removed; `ActionsPanel.__init__` signature
+  simplified to `(put_command)`.
+- `config.py`: `VERSION` bumped to `1.15.0`; `BOT_DIR` constant added.
+
+### RATIONALE
+Bot functionality was embedded in the Actions panel and had no persistence.  Extracting
+it to a dedicated panel and a config store aligns with the existing modularity of the
+codebase (cf. BBS panel / BbsConfigStore) and enables future extension.  Private mode
+fulfils the requirement to restrict bot replies to trusted contacts only.
 
 ---
 

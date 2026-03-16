@@ -27,6 +27,7 @@ Leaflet Runtime (Browser)
       │
       ├─ Map instance (persistent)
       ├─ Marker registry
+      ├─ Contact cluster layer
       ├─ Theme state
       └─ Viewport state
 ```
@@ -100,6 +101,8 @@ Responsibilities:
 * initialize the Leaflet map once
 * maintain persistent map instance
 * manage marker registry
+* maintain a persistent contact cluster layer
+* keep the own-device marker outside clustering
 * apply snapshots incrementally
 * manage map theme and viewport state
 
@@ -109,6 +112,7 @@ Key design rules:
 map is created once
 markers updated incrementally
 snapshots never recreate the map
+clustering is attached only after maxZoom is known
 ```
 
 ---
@@ -154,8 +158,8 @@ Theme state is managed in the browser runtime and restored on reconnect.
 Markers are keyed by **stable node id**.
 
 ```
-device marker
-contact markers
+device marker (standalone)
+contact markers (clustered)
 ```
 
 Updates are applied incrementally:
@@ -175,9 +179,11 @@ This prevents marker flicker during the refresh loop.
 Developers must **not**:
 
 * recreate the Leaflet map inside the dashboard refresh loop
+* call `L.map(...)` from snapshot handlers, retry loops or timer callbacks
 * embed theme state in snapshots
 * call Leaflet APIs directly from Python
 * force viewport resets during normal snapshot updates
+* place the device marker inside the contact cluster layer
 
 Violating these rules will reintroduce:
 
@@ -203,10 +209,10 @@ When the NiceGUI connection temporarily drops:
 
 Possible improvements without breaking the architecture:
 
-* marker clustering
 * heatmap layers
 * route overlays
 * tile provider switching
+* richer cluster icons or spiderfy tuning
 
 All extensions must remain **browser-managed**.
 

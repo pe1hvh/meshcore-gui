@@ -18,6 +18,8 @@ from meshcore_gui.services.cache import DeviceCache
 
 
 class CommandHandler:
+    MAX_REPLY_LEN: int = 180
+
     """Dispatches and executes commands sent from the GUI.
 
     Args:
@@ -68,6 +70,34 @@ class CommandHandler:
             debug_print(f"Unknown command action: {action}")
 
     # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _split_reply(self, text: str) -> List[str]:
+        """Split long replies into transport-safe chunks on line boundaries."""
+        if not text:
+            return []
+        lines = str(text).splitlines() or [str(text)]
+        chunks: List[str] = []
+        current = ""
+        for line in lines:
+            line = line.rstrip()
+            candidate = line if not current else f"{current}\n{line}"
+            if len(candidate) <= self.MAX_REPLY_LEN:
+                current = candidate
+                continue
+            if current:
+                chunks.append(current)
+                current = ""
+            while len(line) > self.MAX_REPLY_LEN:
+                chunks.append(line[:self.MAX_REPLY_LEN])
+                line = line[self.MAX_REPLY_LEN:]
+            current = line
+        if current:
+            chunks.append(current)
+        return chunks
+
+    # ------------------------------------------------------------------
     # Individual command handlers
     # ------------------------------------------------------------------
 
@@ -76,11 +106,13 @@ class CommandHandler:
         text = cmd.get('text', '')
         is_bot = cmd.get('_bot', False)
         if text:
-            await self._mc.commands.send_chan_msg(channel, text)
+            chunks = self._split_reply(text)
+            for idx, chunk in enumerate(chunks):
+                await self._mc.commands.send_chan_msg(channel, chunk)
+                if idx + 1 < len(chunks):
+                    await asyncio.sleep(0.2)
             if not is_bot:
-                self._shared.add_message(Message.outgoing(
-                    text, channel,
-                ))
+                self._shared.add_message(Message.outgoing(text, channel))
             debug_print(
                 f"{'BOT' if is_bot else 'Sent'} message to "
                 f"channel {channel}: {text[:30]}"
@@ -91,10 +123,12 @@ class CommandHandler:
         text = cmd.get('text', '')
         contact_name = cmd.get('contact_name', pubkey[:8])
         if text and pubkey:
-            await self._mc.commands.send_msg(pubkey, text)
-            self._shared.add_message(Message.outgoing(
-                text, None, sender_pubkey=pubkey,
-            ))
+            chunks = self._split_reply(text)
+            for idx, chunk in enumerate(chunks):
+                await self._mc.commands.send_msg(pubkey, chunk)
+                if idx + 1 < len(chunks):
+                    await asyncio.sleep(0.2)
+            self._shared.add_message(Message.outgoing(text, None, sender_pubkey=pubkey))
             debug_print(f"Sent DM to {contact_name}: {text[:30]}")
 
     async def _cmd_send_advert(self, cmd: Dict) -> None:

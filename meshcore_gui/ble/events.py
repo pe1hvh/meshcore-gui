@@ -208,7 +208,34 @@ class EventHandler:
                             path_len=decoded.path_length,
                             path_hashes=decoded.path_hashes,
                         )
-        
+
+                        # BBS channel hook: auto-whitelist sender and reply
+                        # for '!bbs' on a configured BBS channel.
+                        # Must run here because on_channel_msg is suppressed
+                        # by content-dedup when on_rx_log already stored the
+                        # message (the common path for resolved channel_idx).
+                        if (
+                            self._bbs_handler is not None
+                            and self._command_sink is not None
+                        ):
+                            bbs_reply = self._bbs_handler.handle_channel_msg(
+                                channel_idx=decoded.channel_idx,
+                                sender=decoded.sender,
+                                sender_key=sender_pubkey,
+                                text=decoded.text,
+                            )
+                            if bbs_reply is not None:
+                                debug_print(
+                                    f"BBS channel reply (rx_log) on "
+                                    f"ch{decoded.channel_idx} to "
+                                    f"{decoded.sender!r}: {bbs_reply[:60]}"
+                                )
+                                self._command_sink({
+                                    "action": "send_message",
+                                    "channel": decoded.channel_idx,
+                                    "text": bbs_reply,
+                                })
+
         # Add RX log entry with message_hash and path info (if available)
         # ── Fase 1 Observer: raw packet metadata ──
         raw_packet_len = len(payload_hex) // 2 if payload_hex else 0
@@ -276,8 +303,13 @@ class EventHandler:
             f"text={msg_text[:40]!r}"
         )
 
-        sender_pubkey = ''
-        if sender:
+        sender_pubkey = (
+            payload.get('pubkey_prefix')
+            or payload.get('sender_pubkey')
+            or payload.get('signature')
+            or ''
+        )
+        if not sender_pubkey and sender:
             match = self._shared.get_contact_by_name(sender)
             if match:
                 sender_pubkey, _contact = match

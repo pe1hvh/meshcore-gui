@@ -64,13 +64,16 @@ fi
 CURRENT_USER="$(whoami)"
 VENV_PYTHON="${PROJECT_DIR}/venv/bin/python"
 
-# Check venv
+# Check venv / bootstrap dependencies when missing
 if [[ ! -x "${VENV_PYTHON}" ]]; then
-    error "Virtual environment not found at: ${VENV_PYTHON}
-       Create it first:
-         python3 -m venv venv
-         source venv/bin/activate
-         pip install meshcore nicegui meshcoredecoder"
+    info "Virtual environment not found. Creating project venv..."
+    python3 -m venv "${PROJECT_DIR}/venv"
+
+    info "Installing required Python packages into the venv..."
+    # shellcheck disable=SC1091
+    source "${PROJECT_DIR}/venv/bin/activate"
+    pip install nicegui meshcore meshcoredecoder
+    ok "Virtual environment created and dependencies installed"
 fi
 
 # Determine the entry point

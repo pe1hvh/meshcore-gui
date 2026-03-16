@@ -30,6 +30,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 > lower CPU usage during idle operation, and more stable map rendering.
 
 ---
+## [1.14.3] - 2026-03-16 — BBS !h / !help NameError fix
+
+### Fixed
+- 🐛 **`services/bbs_service.py`** — `!h` en `!help` DM-commando's gooiden een `NameError: name 'cu' is not defined` in `_abbrev_table()`.
+  - **Root cause**: `cu` werd gedefinieerd in een inner list comprehension `[cu.upper() for cu in categories]`, maar Python 3 list comprehensions hebben een eigen scope. De `if cu.upper() in inv` in de buitenste generator expression kon `cu` daardoor niet bereiken.
+  - **Fix**: list comprehension extracted naar een aparte variabele `cats_upper`; de generator itereert nu over die lijst.
+
+## [1.14.2] - 2026-03-16 — BBS whitelist fix: !bbs channel hook in on_rx_log
+
+### Fixed
+- 🐛 **`ble/events.py`** — `!bbs` op een geconfigureerd BBS-channel deed nooit een whitelist-add, waardoor `!h` en andere DM-BBS-commando's daarna silently werden gedropped.
+  - **Root cause**: de BBS channel hook stond uitsluitend in `on_channel_msg`, maar `on_channel_msg` wordt in het normale pad onderdrukt door de content-dedup early-return (het bericht is dan al door `on_rx_log` verwerkt en gemarkeerd).
+  - **Fix**: BBS channel hook (`handle_channel_msg`) ook aangeroepen in `on_rx_log`, direct ná de bot-aanroep, binnen de `GroupText + channel_idx resolved`-branch. `sender_pubkey` is daar al opgelost via `get_contact_by_name`.
+  - De hook in `on_channel_msg` blijft intact als fallback voor het deferred-path (channel_idx onopgelost in `on_rx_log`).
+
+## [1.14.1] - 2026-03-16 — BBS test corrections
+
+### Changed
+- Testing package flattened to a single canonical `meshcore_gui/...` tree so runtime and validation target one code path.
+- `!bbs` channel bootstrap, DM-only `!h` / `!help`, and chunked BBS reply work were applied as in-progress fixes under version `1.14.1` while testing continues.
+- No release bump: version numbering is kept at `1.14.1` for this test set.
+
 ## [1.14.0] - 2026-03-14 — BBS (Bulletin Board System)
 
 ### Added

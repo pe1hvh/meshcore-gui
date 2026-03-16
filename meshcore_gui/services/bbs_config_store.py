@@ -66,7 +66,7 @@ class BbsBoard:
         categories:      Valid category tags for this board.
         regions:         Optional region tags; empty = no region filtering.
         retention_hours: Message retention period in hours.
-        allowed_keys:    Sender public key whitelist (empty = all allowed).
+        allowed_keys:    Sender public key whitelist for DM-BBS access.
     """
 
     id: str
@@ -330,9 +330,9 @@ class BbsConfigStore:
     ) -> None:
         """Save the board configuration.
 
-        Multiple channels can be assigned.  Every sender seen on any of
-        these channels is automatically eligible for DM access (the
-        worker calls :meth:`add_allowed_key` when it sees them).
+        Multiple channels can be assigned. DM-BBS access is controlled by the
+        whitelist; senders are added only through the explicit ``!bbs``
+        bootstrap on the linked channel.
 
         The board id is always ``'bbs_board'``.  The board name is built
         from the channel names in *channel_names*.
@@ -343,8 +343,7 @@ class BbsConfigStore:
             categories:      Category tag list.
             retention_hours: Message retention period in hours.
             regions:         Optional region tags.
-            allowed_keys:    Manual sender key whitelist seed (auto-learned
-                             keys are added via :meth:`add_allowed_key`).
+            allowed_keys:    Manual sender key whitelist seed.
         """
         name = ", ".join(
             channel_names.get(i, f"Ch {i}") for i in sorted(channel_indices)
@@ -383,8 +382,8 @@ class BbsConfigStore:
     def add_allowed_key(self, sender_key: str) -> bool:
         """Add *sender_key* to the board's allowed_keys whitelist.
 
-        Called automatically by the worker whenever a sender is seen on
-        a configured BBS channel.  No-op if the key is already present
+        Called when the explicit ``!bbs`` bootstrap is received on the linked
+        BBS channel. No-op if the key is already present
         or if no board is configured.
 
         Args:

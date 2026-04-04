@@ -10,6 +10,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 
 ---
 
+## [1.17.1] - 2026-04-04
+
+### FIXED
+- **Multibyte path hash support** (`ble/events.py`, `core/shared_data.py`):
+  corrected docstrings in both `_resolve_path_names` methods that incorrectly
+  described path hashes as "2-char hex strings". The actual contact lookup
+  uses `startswith` matching, which is hash-size agnostic and correctly
+  handles 1-byte (2 hex chars), 2-byte (4 hex chars) and 3-byte (6 hex chars)
+  path hashes as introduced in MeshCore firmware v1.14.0. No functional code
+  was changed — only the documentation was incorrect.
+- **MariaDB schema** (`meshcore_schema.sql`): `meshcore_messages.path_hashes`
+  column widened from `VARCHAR(128)` to `VARCHAR(255)`. The old limit caused
+  silent truncation for paths longer than ~40 hops in 1-byte mode or ~25 hops
+  in 2-byte mode. Migration is backward-compatible; existing data is unchanged.
+
+### CHANGED
+- `config.py`: version bump `1.17.0 → 1.17.1`.
+
+### RATIONALE
+- MeshCore firmware v1.14.0 (2026-03-06) introduced configurable path hash
+  sizes (1-, 2- or 3-byte per repeater). Verification confirmed that
+  `meshcoredecoder 0.3.2` already returns correctly sized hex strings via
+  `_decode_path_len_byte`. The GUI path-resolution logic was already
+  forward-compatible; only the docstrings and the MariaDB column width required
+  correction.
+
+### IMPACT
+- No BLE handler, GUI panel, service or API endpoint modified.
+- `meshcoredecoder` library unchanged; no pip update required.
+- MariaDB migration: single `ALTER TABLE` statement, no downtime, no data loss.
+
+---
+
 ## [1.17.0] - 2026-04-04
 
 ### ADDED

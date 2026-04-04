@@ -394,15 +394,19 @@ class SharedData:
         return f'Ch {channel_idx}'
 
     def _resolve_path_names(self, path_hashes: list) -> list:
-        """Resolve 2-char path hashes to display names.
+        """Resolve path hashes to display names.
 
         MUST be called with self.lock held.
 
         Safety-net for messages whose path_names were not resolved at
         receive time (e.g. older code path, or contacts not yet loaded).
 
+        Supports 1-byte (2 hex chars), 2-byte (4 hex chars) and
+        3-byte (6 hex chars) path hashes as introduced in firmware v1.14.
+        Contact lookup uses ``startswith`` matching and is hash-size agnostic.
+
         Args:
-            path_hashes: List of 2-char hex strings.
+            path_hashes: List of hex strings, 2–6 chars each (1–3 bytes).
 
         Returns:
             List of display names (same length as *path_hashes*).

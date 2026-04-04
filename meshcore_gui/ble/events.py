@@ -65,13 +65,17 @@ class EventHandler:
     # ------------------------------------------------------------------
 
     def _resolve_path_names(self, path_hashes: list) -> list:
-        """Resolve 2-char path hashes to display names.
+        """Resolve path hashes to display names.
 
         Performs a contact lookup for each hash *now* so the names are
         captured at receive time and stored in the archive.
 
+        Supports 1-byte (2 hex chars), 2-byte (4 hex chars) and
+        3-byte (6 hex chars) path hashes as introduced in firmware v1.14.
+        Contact lookup uses ``startswith`` matching and is hash-size agnostic.
+
         Args:
-            path_hashes: List of 2-char hex strings.
+            path_hashes: List of hex strings, 2–6 chars each (1–3 bytes).
 
         Returns:
             List of display names (same length as *path_hashes*).
@@ -83,8 +87,7 @@ class EventHandler:
                 names.append('-')
                 continue
             name = self._shared.get_contact_name_by_prefix(h)
-            # get_contact_name_by_prefix returns h[:8] as fallback,
-            # normalise to uppercase hex for 2-char hashes.
+            # startswith matching is hash-size agnostic (2/4/6-char hashes).
             if name and name != h[:8]:
                 names.append(name)
             else:

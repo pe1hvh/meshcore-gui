@@ -119,6 +119,7 @@ Under the hood it uses `meshcore` as the protocol layer, `meshcoredecoder` for r
 <!-- ADDED: Room Server feature (v5.7.0) -->
 - **Dynamic Channel Discovery** — Channels are automatically discovered from the device at startup via probing, eliminating the need to manually configure `CHANNELS_CONFIG`
 <!-- ADDED: Dynamic channel discovery (v5.7.0) -->
+- **Add Channel** — Add hashtag or private channels directly from the GUI via the `＋ Add Channel` button in the Messages submenu. New private channels generate a shareable QR code and hex key for distribution to other users
 - **Keyword Bot** — Built-in auto-reply bot that responds to configurable keywords on selected channels, with cooldown and loop prevention
 - **Packet Decoding** — Raw LoRa packets from RX log are decoded and decrypted using channel keys, providing message hashes, path hashes and hop data
 - **Message Deduplication** — Dual-strategy dedup (hash-based and content-based) prevents duplicate messages from appearing
@@ -304,7 +305,19 @@ Channels are automatically discovered from the device at startup via the serial 
 
 If you want to cache the discovered channel list to disk (for faster startup), set `CHANNEL_CACHE_ENABLED = True` in `meshcore_gui/config.py`. By default, channels are always fetched fresh from the device.
 
-> **Note:** The maximum number of channel slots probed can be adjusted via `MAX_CHANNELS` in `config.py` (default: 8, which matches the MeshCore protocol limit).
+> **Note:** The maximum number of channel slots probed can be adjusted via `MAX_CHANNELS` in `config.py` (default: 100).
+
+#### Adding channels from the GUI
+
+Open the **Messages** section in the left drawer and click **＋ Add Channel** at the bottom of the channel list. A dialog appears with three modes:
+
+| Mode | When to use | Key input |
+|---|---|---|
+| **# Hashtag** | Join a public topic channel (e.g. `#localmesh`) | None — key is derived from the name |
+| **🔒 Private – New** | Create a new private group channel | Click *Generate key*, then share the QR or hex key |
+| **🔒 Private – Existing** | Join a private channel someone shared with you | Paste the 32-char hex key |
+
+After clicking **Add Channel**, the device is updated and channel discovery re-runs automatically. A new private channel shows a scannable QR code (`meshcore://channel/add?name=…&secret=…`) that the official MeshCore app can read directly.
 
 ### 6.4. Start the GUI
 

@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.15.0"
+VERSION: str = "1.16.0"
 
 
 # ==============================================================================
@@ -279,7 +279,7 @@ def debug_data(label: str, obj: Any) -> None:
 
 # Maximum number of channel slots to probe on the device.
 # MeshCore supports up to 8 channels (indices 0-7).
-MAX_CHANNELS: int = 8
+MAX_CHANNELS: int = 100
 
 # Enable or disable caching of the channel list to disk.
 # When False (default), channels are always fetched fresh from the

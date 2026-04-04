@@ -51,6 +51,7 @@ class CommandHandler:
             'logout_room': self._cmd_logout_room,
             'send_room_msg': self._cmd_send_room_msg,
             'load_room_history': self._cmd_load_room_history,
+            'add_channel': self._cmd_add_channel,
         }
 
     async def process_all(self) -> None:
@@ -546,6 +547,60 @@ class CommandHandler:
                 f"⚠️ Room message error: {exc}"
             )
             debug_print(f"send_room_msg exception: {exc}")
+
+    async def _cmd_add_channel(self, cmd: Dict) -> None:
+        """Add or update a channel slot on the MeshCore device.
+
+        Calls ``mc.commands.set_channel()`` and — on success — triggers a
+        full channel re-discovery so the GUI immediately reflects the new
+        channel in the submenu and filter checkboxes.
+
+        The library's ``set_channel`` handles two cases automatically:
+        - ``channel_name.startswith('#')`` or ``secret=None`` → key derived
+          from ``SHA-256(name)[:16]`` (hashtag channel).
+        - Explicit 16-byte ``secret`` → used verbatim (private channel).
+
+        Expected command dict::
+
+            {
+                'action': 'add_channel',
+                'idx': int,        # target channel slot (1–99)
+                'name': str,       # channel name
+                'secret_hex': str, # 32-char hex for private; '' for hashtag
+            }
+        """
+        idx: int = int(cmd.get('idx', 1))
+        name: str = (cmd.get('name') or '').strip()
+        secret_hex: str = (cmd.get('secret_hex') or '').strip()
+
+        if not name:
+            debug_print('add_channel: no name provided, skipping')
+            return
+
+        # Resolve secret: empty string → None (library derives from name)
+        secret_bytes: Optional[bytes] = None
+        if secret_hex:
+            try:
+                secret_bytes = bytes.fromhex(secret_hex)
+            except ValueError:
+                self._shared.set_status('⚠️ Invalid channel secret (not valid hex)')
+                debug_print(f'add_channel: bad hex secret for [{idx}] {name}')
+                return
+
+        try:
+            r = await self._mc.commands.set_channel(idx, name, secret_bytes)
+            if r.type == EventType.ERROR:
+                self._shared.set_status(f"⚠️ Failed to add channel '{name}'")
+                debug_print(f'add_channel: device returned ERROR for [{idx}] {name}')
+            else:
+                self._shared.set_status(f"✅ Channel [{idx}] '{name}' added")
+                debug_print(f'add_channel: success [{idx}] {name}')
+                # Re-discover channels so the GUI updates immediately
+                if self._load_data_callback:
+                    await self._load_data_callback()
+        except Exception as exc:
+            self._shared.set_status(f'⚠️ Add channel error: {exc}')
+            debug_print(f'add_channel exception: {exc}')
 
     # ------------------------------------------------------------------
     # Callback for refresh (set by SerialWorker after construction)

@@ -10,6 +10,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 
 ---
 
+## [1.16.0] - 2026-04-04
+
+### ADDED
+- **Add Channel dialog** (`gui/panels/channel_panel.py`): new `ChannelPanel` class
+  that renders a `ui.dialog` with three modes — Hashtag, Private New, and
+  Private Existing — accessible via a `＋ Add Channel` button at the bottom of
+  the Messages submenu.
+- **ChannelService** (`services/channel_service.py`): pure-Python business logic
+  for channel key management. Provides `generate_secret()`, `derive_hashtag_key()`,
+  `build_qr_url()` and `generate_qr_base64()`. No GUI or BLE dependencies.
+- **`_cmd_add_channel`** (`ble/commands.py`): new BLE command handler that calls
+  `mc.commands.set_channel(idx, name, secret)` and triggers a full channel
+  re-discovery on success so the GUI immediately reflects the new channel.
+- **`＋ Add Channel` submenu button** (`gui/dashboard.py`): added to the Messages
+  submenu — present on initial render and preserved through all dynamic rebuilds.
+- **QR code sharing**: after adding a new private channel the dialog shows a
+  scannable QR code (`meshcore://channel/add?name=…&secret=…`) and a
+  copy-to-clipboard button for the hex key.
+
+### CHANGED
+- `gui/panels/__init__.py`: `ChannelPanel` added to re-exports.
+- `gui/dashboard.py`: `ChannelPanel` imported, instantiated in `render()`,
+  updated in `_update_ui()` and opened from the `＋ Add Channel` submenu button.
+- `ble/commands.py`: `add_channel` registered in the handler dict.
+
+### RATIONALE
+- Channels could previously only be added by flashing or using a separate tool.
+  The dialog covers all three user scenarios (hashtag join, private create, private
+  join) without requiring any changes to the BLE worker's discovery logic.
+
+### IMPACT
+- No existing command handlers modified. No existing panel logic altered.
+  Pure addition — all existing functionality unaffected.
+
+---
+
 ## [1.15.0] - 2026-03-16
 
 ### ADDED

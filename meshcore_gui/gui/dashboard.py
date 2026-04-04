@@ -18,6 +18,7 @@ from meshcore_gui.gui.panels import (
     ActionsPanel,
     BbsPanel,
     BotPanel,
+    ChannelPanel,
     ContactsPanel,
     DevicePanel,
     MapPanel,
@@ -325,6 +326,9 @@ class DashboardPage:
         self._bbs: BbsPanel | None = None
         self._bot: BotPanel | None = None
 
+        # Channel add dialog panel
+        self._channel_panel: ChannelPanel | None = None
+
         # Header status label
         self._status_label = None
 
@@ -377,6 +381,8 @@ class DashboardPage:
             self._bot_config_store,
             self._pin_store,
         )
+        self._channel_panel = ChannelPanel(put_cmd)
+        self._channel_panel.render()
 
         # Inject DOMCA theme (fonts + CSS variables)
         ui.add_head_html(_DOMCA_HEAD)
@@ -418,6 +424,10 @@ class DashboardPage:
                         'DM', lambda: self._navigate_panel('messages', channel='DM')
                     )
                     # Dynamic channel items populated by _update_submenus
+                    self._make_sub_btn(
+                        '＋ Add Channel',
+                        lambda: self._channel_panel.open() if self._channel_panel else None,
+                    )
 
             # ── 🏠 ROOMS (expandable with room submenu) ───────────
             with ui.expansion(
@@ -610,6 +620,10 @@ class DashboardPage:
                             f"[{idx}] {name}",
                             lambda i=idx: self._navigate_panel('messages', channel=i),
                         )
+                    self._make_sub_btn(
+                        '＋ Add Channel',
+                        lambda: self._channel_panel.open() if self._channel_panel else None,
+                    )
 
             # Rebuild Archive submenu
             if self._archive_sub_container:
@@ -816,6 +830,8 @@ class DashboardPage:
                 self._messages.update_filters(data)
                 self._messages.update_channel_options(data['channels'])
                 self._update_submenus(data)
+                if self._channel_panel:
+                    self._channel_panel.update(data)
 
             if self._active_panel == 'device':
                 if data['device_updated'] or is_first:

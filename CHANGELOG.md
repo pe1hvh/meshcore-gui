@@ -10,6 +10,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 
 ---
 
+## [1.17.0] - 2026-04-04
+
+### ADDED
+- **Public REST API** (`api/routes.py`, `api/__init__.py`): four read-only
+  GET endpoints registered on the NiceGUI/FastAPI application instance.
+  Enabled via `API_ENABLED = True` in `config.py` (default: on).
+  - `GET /api/v1/stats` — aggregate statistics for the last 72 hours:
+    total messages, unique senders, active nodes per type, average hops
+    and peak hour. Only public and hashtag channel messages are counted.
+  - `GET /api/v1/nodes` — full contact list with node type, GPS coordinates
+    and (when available) last-seen timestamp and battery voltage.
+  - `GET /api/v1/messages?limit=N&offset=N` — paginated message list
+    restricted to public (idx 0) and hashtag (`name.startswith('#')`)
+    channels. Private channel messages are unconditionally excluded.
+  - `GET /api/v1/channels` — channel list with `is_private` flag per entry.
+- **PublicApiService** (`services/public_api_service.py`): pure-Python
+  business logic for all four endpoints.  Contains the single source of
+  truth for channel-type classification (`is_public_channel`,
+  `is_private_channel`) used throughout the API layer.
+- **`API_ENABLED`** and **`API_CORS_ORIGINS`** constants (`config.py`):
+  toggle the API on/off and configure allowed CORS origins.
+
+### CHANGED
+- `config.py`: version bump `1.16.0 → 1.17.0`; `PUBLIC API` section added
+  with `API_ENABLED` and `API_CORS_ORIGINS`.
+- `__main__.py`: conditional `register_routes(_shared)` call after
+  `SharedData` construction; prints API URL or disabled notice at startup.
+
+### RATIONALE
+- Enables the domca.nl PHP collector to pull live mesh data over HTTP
+  without direct access to the SQLite archive or SharedData internals.
+- Filtering is enforced server-side: what is not public can never leak,
+  even without authentication.
+
+### IMPACT
+- No existing route, panel or BLE handler modified.
+- `SharedData` and `MessageArchive` accessed read-only.
+- Zero breaking changes to v1.16.0 behaviour when `API_ENABLED = False`.
+
+---
+
 ## [1.16.0] - 2026-04-04
 
 ### ADDED

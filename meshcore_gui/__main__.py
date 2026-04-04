@@ -275,6 +275,14 @@ def main():
     from meshcore_gui.services.bbs_config_store import BbsConfigStore as _BCS
     _bbs_settings_page = BbsSettingsPage(_shared, _BCS())
 
+    # ── Register public REST API routes (optional) ──
+    if config.API_ENABLED:
+        from meshcore_gui.api.routes import register_routes
+        register_routes(_shared)
+        print(f"Public API enabled  — http://0.0.0.0:{port}/api/v1/stats")
+    else:
+        print("Public API disabled — set API_ENABLED=True in config.py to enable")
+
     # ── Start worker ──
     worker = create_worker(
         device_id,

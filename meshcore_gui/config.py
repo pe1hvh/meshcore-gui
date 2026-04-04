@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.16.0"
+VERSION: str = "1.17.0"
 
 
 # ==============================================================================
@@ -289,6 +289,21 @@ MAX_CHANNELS: int = 100
 # Note: channel *keys* (for packet decryption) are always cached
 # regardless of this setting.
 CHANNEL_CACHE_ENABLED: bool = False
+
+
+# ==============================================================================
+# PUBLIC API
+# ==============================================================================
+
+# Enable or disable the public REST API endpoints (/api/v1/*).
+# When False, no routes are registered and the API is unreachable.
+API_ENABLED: bool = True
+
+# CORS origins allowed to call the public API.
+# Set to the internal IP or hostname of the domca.nl Raspberry Pi.
+# Example: ["http://192.168.1.10", "https://www.domca.nl"]
+# Use ["*"] only on trusted internal networks.
+API_CORS_ORIGINS: list[str] = ["*"]
 
 
 # ==============================================================================

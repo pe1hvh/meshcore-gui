@@ -56,6 +56,7 @@ A graphical user interface for MeshCore mesh network devices with native USB ser
   - [9.10. Keyword Bot](#910-keyword-bot)
   - [9.11. RX Log](#911-rx-log)
   - [9.12. Actions](#912-actions)
+  - [9.13. Public REST API](#913-public-rest-api)
 - [10. Architecture](#10-architecture)
 - [11. Cross-Frequency Bridge](#11-cross-frequency-bridge)
   - [11.1. Bridge Overview](#111-bridge-overview)
@@ -120,6 +121,7 @@ Under the hood it uses `meshcore` as the protocol layer, `meshcoredecoder` for r
 - **Dynamic Channel Discovery** — Channels are automatically discovered from the device at startup via probing, eliminating the need to manually configure `CHANNELS_CONFIG`
 <!-- ADDED: Dynamic channel discovery (v5.7.0) -->
 - **Add Channel** — Add hashtag or private channels directly from the GUI via the `＋ Add Channel` button in the Messages submenu. New private channels generate a shareable QR code and hex key for distribution to other users
+- **Public REST API** — Read-only JSON endpoints (`/api/v1/stats`, `/api/v1/nodes`, `/api/v1/messages`, `/api/v1/channels`) for external consumers such as statistics dashboards. Private channel messages are unconditionally excluded; no authentication required
 - **Keyword Bot** — Built-in auto-reply bot that responds to configurable keywords on selected channels, with cooldown and loop prevention
 - **Packet Decoding** — Raw LoRa packets from RX log are decoded and decrypted using channel keys, providing message hashes, path hashes and hop data
 - **Message Deduplication** — Dual-strategy dedup (hash-based and content-based) prevents duplicate messages from appearing
@@ -778,6 +780,66 @@ The built-in bot automatically replies to messages containing recognised keyword
 - Refresh data
 - Send advertisement
 - Set device name
+
+### 9.13. Public REST API
+
+MeshCore GUI exposes a lightweight read-only REST API under `/api/v1/`.
+It is designed for consumption by the [domca.nl](https://www.domca.nl)
+statistics pages but can be used by any HTTP client on the same network.
+
+Enable or disable the API in `meshcore_gui/config.py`:
+
+```python
+API_ENABLED: bool = True          # set False to disable all endpoints
+API_CORS_ORIGINS: list[str] = ["*"]   # restrict to your RPi IP in production
+```
+
+#### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/stats` | Network statistics for the last 72 hours |
+| GET | `/api/v1/nodes` | All known mesh nodes with GPS and type |
+| GET | `/api/v1/messages?limit=100&offset=0` | Paginated public channel messages |
+| GET | `/api/v1/channels` | Channel list with `is_private` flag |
+
+**Privacy guarantee:** the `/api/v1/messages` endpoint returns messages from
+`Public` (index 0) and `#hashtag` channels **only**. Private channel messages
+are unconditionally excluded — no authentication is needed because there is
+nothing private in the response.
+
+#### Quick test
+
+```bash
+curl http://<meshcore-ip>:8081/api/v1/stats | python3 -m json.tool
+curl "http://<meshcore-ip>:8081/api/v1/messages?limit=5"
+```
+
+#### Example responses
+
+`GET /api/v1/stats`
+```json
+{
+  "generated_at": "2026-04-04T10:00:00+00:00",
+  "period_hours": 72,
+  "total_messages": 1240,
+  "unique_senders": 38,
+  "active_clients": 89,
+  "active_repeaters": 12,
+  "active_room_servers": 3,
+  "avg_hops": 1.8,
+  "peak_hour": 14
+}
+```
+
+`GET /api/v1/channels`
+```json
+[
+  {"idx": 0, "name": "Public",     "is_private": false},
+  {"idx": 1, "name": "#localmesh", "is_private": false},
+  {"idx": 2, "name": "TeamNL",     "is_private": true}
+]
+```
 
 ## 10. Architecture
 

@@ -1,8 +1,8 @@
 """
-Channel panel — dialog for adding hashtag and private channels.
+Channel panel — dialog for adding, moving and managing channels.
 
-Triggered by the ``＋ Add Channel`` button in the Messages submenu.
-Three modes are supported:
+Triggered by the ``＋ Add Channel`` button or the ``↕`` move button in
+the Messages submenu.  Four modes are supported:
 
 Hashtag
     Name must start with ``#``.  The channel key is derived automatically
@@ -18,6 +18,11 @@ Private — Existing  (join)
     Used when another user has shared a private channel key.  The user
     pastes the 32-character hex key and the dialog writes it to the
     device verbatim.  No key export is offered.
+
+Move / Reindex
+    Select an existing channel and assign it a different slot index.
+    The secret is read from the DeviceCache by the command handler; the
+    user only needs to pick a source channel and a target index.
 """
 
 from typing import Callable, Dict, List, Optional
@@ -32,7 +37,7 @@ from meshcore_gui.services.channel_service import (
 
 
 class ChannelPanel:
-    """NiceGUI dialog for adding a channel to the connected MeshCore device.
+    """NiceGUI dialog for adding or moving a channel on the MeshCore device.
 
     Args:
         put_command: Callable to enqueue a command dict for the BLE worker.
@@ -60,6 +65,10 @@ class ChannelPanel:
         self._qr_label: Optional[ui.label] = None
         self._qr_image: Optional[ui.image] = None
 
+        # Move-mode widgets
+        self._move_section: Optional[ui.column] = None
+        self._move_select: Optional[ui.select] = None
+
         # Transient state
         self._generated_secret: Optional[bytes] = None
 
@@ -80,7 +89,7 @@ class ChannelPanel:
             with ui.card().classes('w-full').style(
                 'min-width: 340px; max-width: 440px; gap: 0.6rem'
             ):
-                ui.label('📡 Add Channel').classes('font-bold text-gray-600 text-base')
+                ui.label('📡 Channel Manager').classes('font-bold text-gray-600 text-base')
 
                 # ── Mode selection ──────────────────────────────────
                 self._mode_radio = ui.radio(
@@ -88,6 +97,7 @@ class ChannelPanel:
                         'hashtag': '# Hashtag channel',
                         'private_new': '🔒 Private – New',
                         'private_existing': '🔒 Private – Existing (join)',
+                        'move': '↕️ Move / Reindex',
                     },
                     value='hashtag',
                     on_change=self._on_mode_change,
@@ -103,13 +113,13 @@ class ChannelPanel:
                     format='%d',
                 ).classes('w-full')
 
-                # ── Channel name ─────────────────────────────────────
+                # ── Channel name (add modes) ─────────────────────────
                 self._name_input = ui.input(
                     label='Channel name',
                     placeholder='e.g. #localmesh',
                 ).classes('w-full')
 
-                # ── Hashtag info label (hashtag mode only) ───────────
+                # ── Hashtag info label ───────────────────────────────
                 self._hashtag_info = ui.label(
                     '🔑 Key is derived automatically from the name. '
                     'Anyone who knows the name can join.'
@@ -123,7 +133,6 @@ class ChannelPanel:
                         placeholder='e.g. 8b3387e9c5cdea6ac9e5edbaa115cd72',
                     ).classes('w-full')
 
-                    # Generate + copy row (private-new only)
                     self._generate_row = ui.row().classes('gap-2 items-center')
                     with self._generate_row:
                         ui.button(
@@ -135,6 +144,19 @@ class ChannelPanel:
                             on_click=self._copy_key,
                         ).props('flat dense no-caps')
 
+                # ── Move section ─────────────────────────────────────
+                self._move_section = ui.column().classes('w-full gap-1')
+                with self._move_section:
+                    self._move_select = ui.select(
+                        options={},
+                        label='Channel to move',
+                    ).classes('w-full')
+                    ui.label(
+                        'The channel will be written to the new index and '
+                        'removed from its current slot. The secret is '
+                        'retrieved automatically from the cache.'
+                    ).classes('text-xs text-gray-500')
+
                 # ── Action buttons ───────────────────────────────────
                 with ui.row().classes('gap-2 justify-end w-full'):
                     ui.button(
@@ -142,7 +164,7 @@ class ChannelPanel:
                         on_click=self._close,
                     ).props('flat no-caps')
                     ui.button(
-                        'Add Channel',
+                        'Confirm',
                         on_click=self._submit,
                     ).props('unelevated color=primary no-caps')
 
@@ -163,21 +185,29 @@ class ChannelPanel:
                 self._qr_section.set_visibility(False)
 
     def update(self, data: Dict) -> None:
-        """Update the next-available channel index from the live channel list.
+        """Update the channel list from the live data snapshot.
 
         Called every 500 ms from the dashboard update cycle.  Stores the
-        current channel list so ``open()`` can pre-fill a sensible index.
+        current channel list so ``open()`` can pre-fill sensible defaults
+        and populate the move-mode selector.
 
         Args:
             data: SharedData snapshot dict containing the ``channels`` list.
         """
         self._channels = data.get('channels', [])
 
-    def open(self) -> None:
-        """Open the dialog and reset the form to a clean state."""
+    def open(self, mode: str = 'hashtag', preselect_idx: Optional[int] = None) -> None:
+        """Open the dialog in the given mode.
+
+        Args:
+            mode:          One of ``'hashtag'``, ``'private_new'``,
+                           ``'private_existing'``, or ``'move'``.
+            preselect_idx: When mode is ``'move'``, pre-select this channel
+                           index in the source selector.
+        """
         if self._dialog is None:
             return
-        self._reset_form()
+        self._reset_form(mode=mode, preselect_idx=preselect_idx)
         self._dialog.open()
 
     # ------------------------------------------------------------------
@@ -189,12 +219,16 @@ class ChannelPanel:
         if self._dialog:
             self._dialog.close()
 
-    def _reset_form(self) -> None:
-        """Reset all fields to their defaults and hide the QR section."""
+    def _reset_form(
+        self,
+        mode: str = 'hashtag',
+        preselect_idx: Optional[int] = None,
+    ) -> None:
+        """Reset all fields to clean state and apply the given mode."""
         self._generated_secret = None
 
         if self._mode_radio:
-            self._mode_radio.value = 'hashtag'
+            self._mode_radio.value = mode
         if self._name_input:
             self._name_input.value = ''
         if self._secret_input:
@@ -207,14 +241,34 @@ class ChannelPanel:
             self._qr_label.text = ''
 
         # Pre-fill next available index
-        if self._channels:
+        if self._channels and mode != 'move':
             next_idx = min(max(ch['idx'] for ch in self._channels) + 1, 99)
         else:
             next_idx = 1
         if self._idx_input:
             self._idx_input.value = next_idx
 
-        self._apply_visibility('hashtag')
+        # Populate move-mode selector
+        self._refresh_move_options(preselect_idx)
+        self._apply_visibility(mode)
+
+    def _refresh_move_options(self, preselect_idx: Optional[int] = None) -> None:
+        """Rebuild the source-channel selector for move mode."""
+        if not self._move_select:
+            return
+        # Skip index 0 (Public) — slot 0 cannot be moved
+        opts = {
+            ch['idx']: f"[{ch['idx']}] {ch['name']}"
+            for ch in self._channels
+            if ch['idx'] != 0
+        }
+        self._move_select.options = opts
+        if opts:
+            if preselect_idx is not None and preselect_idx in opts:
+                self._move_select.value = preselect_idx
+            else:
+                self._move_select.value = next(iter(opts))
+        self._move_select.update()
 
     def _on_mode_change(self, event=None) -> None:
         """React to mode-radio change — update field visibility."""
@@ -224,6 +278,8 @@ class ChannelPanel:
             self._secret_input.value = ''
         if self._qr_section:
             self._qr_section.set_visibility(False)
+        if mode == 'move':
+            self._refresh_move_options()
         self._apply_visibility(mode)
 
     def _apply_visibility(self, mode: str) -> None:
@@ -231,6 +287,7 @@ class ChannelPanel:
         is_hashtag = mode == 'hashtag'
         is_private = mode in ('private_new', 'private_existing')
         is_private_new = mode == 'private_new'
+        is_move = mode == 'move'
 
         if self._hashtag_info:
             self._hashtag_info.set_visibility(is_hashtag)
@@ -240,9 +297,18 @@ class ChannelPanel:
             self._generate_row.set_visibility(is_private_new)
         if self._copy_btn:
             self._copy_btn.set_visibility(is_private_new)
-
-        # Adjust name placeholder to hint correct input format
         if self._name_input:
+            self._name_input.set_visibility(not is_move)
+        if self._move_section:
+            self._move_section.set_visibility(is_move)
+
+        # Adjust index label contextually
+        if self._idx_input:
+            label = 'Target index (1 – 99)' if is_move else 'Channel index (1 – 99)'
+            self._idx_input.props(f'label="{label}"')
+
+        # Adjust name placeholder
+        if self._name_input and not is_move:
             placeholder = 'e.g. #localmesh' if is_hashtag else 'e.g. TeamName'
             self._name_input.props(f'placeholder="{placeholder}"')
 
@@ -268,12 +334,17 @@ class ChannelPanel:
             ui.notify('Generate a key first', type='warning', timeout=2000)
 
     def _submit(self) -> None:
-        """Validate form inputs and queue the ``add_channel`` command."""
+        """Validate form inputs and queue the appropriate command."""
         mode = self._mode_radio.value if self._mode_radio else 'hashtag'
+
+        if mode == 'move':
+            self._submit_move()
+            return
+
+        # ── Add modes ────────────────────────────────────────────────
         name = (self._name_input.value or '').strip() if self._name_input else ''
         idx = int(self._idx_input.value or 1) if self._idx_input else 1
 
-        # ── Validation ──────────────────────────────────────────────
         if not name:
             ui.notify('Channel name is required', type='warning', timeout=3000)
             return
@@ -309,11 +380,9 @@ class ChannelPanel:
             secret_hex = raw
 
         else:
-            # Hashtag: library derives the key; pass empty string so the
-            # command handler passes secret=None to set_channel().
+            # Hashtag: library derives the key
             secret_hex = ''
 
-        # ── Queue command ────────────────────────────────────────────
         self._put_command({
             'action': 'add_channel',
             'idx': idx,
@@ -323,14 +392,52 @@ class ChannelPanel:
 
         ui.notify(f"Adding [{idx}] {name}…", type='info', timeout=2500)
 
-        # ── QR code for new private channels ─────────────────────────
         if mode == 'private_new' and self._generated_secret:
             qr_data = generate_qr_base64(name, self._generated_secret)
             if qr_data and self._qr_image and self._qr_label and self._qr_section:
                 self._qr_image.source = qr_data
                 self._qr_label.text = f'Share key for "{name}"'
                 self._qr_section.set_visibility(True)
-                # Keep dialog open so the user can scan / copy the key
                 return
 
+        self._close()
+
+    def _submit_move(self) -> None:
+        """Validate and queue a move_channel command."""
+        if not self._move_select or not self._move_select.options:
+            ui.notify('No movable channels available', type='warning', timeout=3000)
+            return
+
+        old_idx = self._move_select.value
+        new_idx = int(self._idx_input.value or 1) if self._idx_input else 1
+
+        if old_idx is None:
+            ui.notify('Select a channel to move', type='warning', timeout=3000)
+            return
+
+        if old_idx == new_idx:
+            ui.notify('Source and target index are the same', type='warning', timeout=3000)
+            return
+
+        # Resolve name from channel list
+        name = next(
+            (ch['name'] for ch in self._channels if ch['idx'] == old_idx),
+            '',
+        )
+        if not name:
+            ui.notify('Could not resolve channel name', type='warning', timeout=3000)
+            return
+
+        self._put_command({
+            'action': 'move_channel',
+            'old_idx': old_idx,
+            'new_idx': new_idx,
+            'name': name,
+        })
+
+        ui.notify(
+            f"Moving [{old_idx}] {name} → [{new_idx}]…",
+            type='info',
+            timeout=2500,
+        )
         self._close()

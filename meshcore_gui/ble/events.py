@@ -60,6 +60,12 @@ class EventHandler:
         # CHANNEL_MSG_RECV event does not provide.
         self._path_cache: Dict[str, list] = {}
 
+        # Secondary path cache keyed by "sender:text[:100]".
+        # Fallback for on_channel_msg when the message_hash computed by
+        # meshcoredecoder differs from the one in CHANNEL_MSG_RECV
+        # (two independent libraries may disagree on the hash format).
+        self._path_cache_by_content: Dict[str, list] = {}
+
     # ------------------------------------------------------------------
     # Helpers — resolve names at receive time
     # ------------------------------------------------------------------
@@ -147,13 +153,25 @@ class EventHandler:
                 if decoded.sender:
                     rx_sender = decoded.sender
 
-                # Cache path_hashes for correlation with on_channel_msg
+                # Cache path_hashes for correlation with on_channel_msg.
+                # Primary key: message_hash (fastest lookup).
                 if decoded.path_hashes and message_hash:
                     self._path_cache[message_hash] = decoded.path_hashes
                     # Evict oldest entries if cache is too large
                     if len(self._path_cache) > self._PATH_CACHE_MAX:
                         oldest = next(iter(self._path_cache))
                         del self._path_cache[oldest]
+
+                # Secondary key: "sender:text[:100]" (fallback when the
+                # message_hash from meshcore and meshcoredecoder disagree).
+                # Only populated for decrypted GroupText packets so we have
+                # reliable sender + text to form the key.
+                if decoded.path_hashes and decoded.is_decrypted and decoded.sender:
+                    ck = f"{decoded.sender}:{decoded.text[:100]}"
+                    self._path_cache_by_content[ck] = decoded.path_hashes
+                    if len(self._path_cache_by_content) > self._PATH_CACHE_MAX:
+                        oldest_ck = next(iter(self._path_cache_by_content))
+                        del self._path_cache_by_content[oldest_ck]
                 
                 # Process decoded message if it's a group text
                 if decoded.payload_type == PayloadType.GroupText and decoded.is_decrypted:
@@ -174,6 +192,11 @@ class EventHandler:
                         self._dedup.mark_content(
                             decoded.sender, decoded.channel_idx, decoded.text,
                         )
+                        # Channel-agnostic sentinel: prevents on_channel_msg from
+                        # storing a duplicate even if its channel_idx or
+                        # message_hash differ from what PacketDecoder resolved.
+                        # Uses sentinel '*' so it cannot clash with real int indices.
+                        self._dedup.mark_content(decoded.sender, '*', decoded.text)
 
                         sender_pubkey = ''
                         if decoded.sender:
@@ -278,6 +301,16 @@ class EventHandler:
         """Handle channel message events."""
         payload = event.payload
 
+        # DIAGNOSTIC — remove after root cause confirmed.
+        # If two lines appear for one incoming packet (different ch_idx),
+        # the meshcore library fires CHANNEL_MSG_RECV once per subscribed
+        # channel, which is the confirmed cause of cross-channel duplicates.
+        debug_print(
+            f"CHANNEL_MSG_RECV: ch_idx={payload.get('channel_idx')!r}, "
+            f"msg_hash={str(payload.get('message_hash', ''))[:12]!r}, "
+            f"text={str(payload.get('text', ''))[:30]!r}"
+        )
+
         debug_print(f"Channel msg payload keys: {list(payload.keys())}")
 
         # Dedup via hash
@@ -295,6 +328,18 @@ class EventHandler:
             msg_text = body_part
         elif raw_text:
             msg_text = raw_text
+
+        # Channel-agnostic guard: on_rx_log already stored this message
+        # (possibly under a different channel_idx due to index-scheme
+        # differences between meshcoredecoder and the meshcore library).
+        # The '*' sentinel is set by on_rx_log only when it successfully
+        # stored the message, so this guard never fires for the deferred
+        # case (channel_idx unresolved in on_rx_log).
+        if sender and self._dedup.is_content_seen(sender, '*', msg_text):
+            debug_print(
+                f"Channel msg suppressed (rxlog stored, channel-agnostic): {sender!r}"
+            )
+            return
 
         # Dedup via content
         ch_idx = payload.get('channel_idx')
@@ -322,7 +367,21 @@ class EventHandler:
 
         # Recover path_hashes from RX_LOG cache (CHANNEL_MSG_RECV
         # does not carry them, but the preceding RX_LOG decode does).
+        # Primary lookup: by message_hash.
         path_hashes = self._path_cache.pop(msg_hash, []) if msg_hash else []
+
+        # Fallback lookup: by "sender:text[:100]" content key.
+        # Handles the case where meshcoredecoder and the meshcore library
+        # compute different message_hash values for the same packet.
+        if not path_hashes and sender and msg_text:
+            ck = f"{sender}:{msg_text[:100]}"
+            path_hashes = self._path_cache_by_content.pop(ck, [])
+            if path_hashes:
+                debug_print(
+                    f"on_channel_msg: path_hashes recovered via content key: "
+                    f"{path_hashes}"
+                )
+
         path_names = self._resolve_path_names(path_hashes)
 
         self._shared.add_message(Message.incoming(

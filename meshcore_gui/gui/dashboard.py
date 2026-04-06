@@ -206,7 +206,7 @@ body.body--light .domca-drawer .q-item { color: #3d6380 !important; }
 body, .q-layout, .q-page {
   min-width: 0 !important;
 }
-.q-drawer { max-width: 80vw !important; width: 260px !important; min-width: 200px !important; }
+.q-drawer { max-width: 85vw !important; width: 360px !important; min-width: 240px !important; }
 
 /* ── Mobile optimisations ── */
 @media (max-width: 640px) {
@@ -329,6 +329,11 @@ class DashboardPage:
         # Channel add dialog panel
         self._channel_panel: ChannelPanel | None = None
 
+        # Channel delete confirmation dialog
+        self._confirm_delete_dialog = None
+        self._confirm_delete_label = None
+        self._pending_delete_cmd: dict | None = None
+
         # Header status label
         self._status_label = None
 
@@ -383,6 +388,22 @@ class DashboardPage:
         )
         self._channel_panel = ChannelPanel(put_cmd)
         self._channel_panel.render()
+
+        # ── Channel delete confirmation dialog ────────────────────
+        self._confirm_delete_dialog = ui.dialog()
+        with self._confirm_delete_dialog:
+            with ui.card().classes('w-full').style('min-width: 280px; max-width: 380px'):
+                ui.label('🗑️ Delete Channel').classes('font-bold text-gray-600 text-base')
+                self._confirm_delete_label = ui.label('').classes('text-sm text-gray-500')
+                with ui.row().classes('gap-2 justify-end w-full'):
+                    ui.button(
+                        'Cancel',
+                        on_click=lambda: self._confirm_delete_dialog.close(),
+                    ).props('flat no-caps')
+                    ui.button(
+                        'Delete',
+                        on_click=self._on_delete_confirmed,
+                    ).props('unelevated color=negative no-caps')
 
         # Inject DOMCA theme (fonts + CSS variables)
         ui.add_head_html(_DOMCA_HEAD)
@@ -586,6 +607,43 @@ class DashboardPage:
             'w-full justify-start domca-sub-btn'
         ).style(_SUB_BTN_STYLE)
 
+    @staticmethod
+    def _make_channel_sub_item(label: str, on_click, on_delete, on_move) -> None:
+        """Create a channel submenu item with inline move and delete buttons.
+
+        Renders a full-width row containing a navigation button (flex-1),
+        a compact move button (↕) and a compact delete button (🗑).
+
+        Args:
+            label:     Button label text (e.g. '[1] #localmesh').
+            on_click:  Callback for navigating to the channel.
+            on_delete: Callback for deleting the channel.
+            on_move:   Callback for opening the move/reindex dialog.
+        """
+        with ui.row().classes('w-full gap-0 items-center').style('padding: 0'):
+            ui.button(
+                label,
+                on_click=on_click,
+            ).props('flat no-caps align=left').classes(
+                'flex-1 justify-start domca-sub-btn'
+            ).style(_SUB_BTN_STYLE)
+            ui.button(
+                '↕',
+                on_click=on_move,
+            ).props('flat dense no-caps').classes(
+                'domca-sub-btn'
+            ).style(
+                "font-size: 0.7rem; opacity: 0.45; min-width: 1.6rem; padding: 0.1rem 0.3rem"
+            )
+            ui.button(
+                '🗑',
+                on_click=on_delete,
+            ).props('flat dense no-caps').classes(
+                'domca-sub-btn'
+            ).style(
+                "font-size: 0.7rem; opacity: 0.45; min-width: 1.6rem; padding: 0.1rem 0.3rem"
+            )
+
     # ------------------------------------------------------------------
     # Dynamic submenu updates (layout — called from _update_ui)
     # ------------------------------------------------------------------
@@ -616,9 +674,16 @@ class DashboardPage:
                     for ch in channels:
                         idx = ch['idx']
                         name = ch['name']
-                        self._make_sub_btn(
+                        self._make_channel_sub_item(
                             f"[{idx}] {name}",
-                            lambda i=idx: self._navigate_panel('messages', channel=i),
+                            on_click=lambda i=idx: self._navigate_panel('messages', channel=i),
+                            on_delete=lambda i=idx, n=name, chs=channels: (
+                                self._open_delete_confirm(i, n, chs)
+                            ),
+                            on_move=lambda i=idx: (
+                                self._channel_panel.open(mode='move', preselect_idx=i)
+                                if self._channel_panel else None
+                            ),
                         )
                     self._make_sub_btn(
                         '＋ Add Channel',
@@ -638,9 +703,16 @@ class DashboardPage:
                     for ch in channels:
                         idx = ch['idx']
                         name = ch['name']
-                        self._make_sub_btn(
+                        self._make_channel_sub_item(
                             f"[{idx}] {name}",
-                            lambda n=name: self._navigate_panel('archive', channel=n),
+                            on_click=lambda n=name: self._navigate_panel('archive', channel=n),
+                            on_delete=lambda i=idx, n=name, chs=channels: (
+                                self._open_delete_confirm(i, n, chs)
+                            ),
+                            on_move=lambda i=idx: (
+                                self._channel_panel.open(mode='move', preselect_idx=i)
+                                if self._channel_panel else None
+                            ),
                         )
 
         # ── Room submenus ──
@@ -798,6 +870,42 @@ class DashboardPage:
         """
         if self._room_server:
             self._room_server.add_room(pubkey, name, password)
+
+    # ------------------------------------------------------------------
+    # Channel delete confirmation (dialog + dispatch)
+    # ------------------------------------------------------------------
+
+    def _open_delete_confirm(self, idx: int, name: str, channels: list) -> None:
+        """Open the delete confirmation dialog for a channel.
+
+        Stores the pending command so ``_on_delete_confirmed`` can dispatch
+        it without needing to capture mutable closure state.
+
+        Args:
+            idx:      Channel index to delete.
+            name:     Channel name (shown in the dialog label).
+            channels: Current channel list snapshot passed to the handler.
+        """
+        self._pending_delete_cmd = {
+            'action': 'del_channel',
+            'idx': idx,
+            'channels': list(channels),
+        }
+        if self._confirm_delete_label:
+            self._confirm_delete_label.text = (
+                f'Remove channel [{idx}] "{name}" from the device? '
+                'Higher-numbered channels will be re-indexed automatically.'
+            )
+        if self._confirm_delete_dialog:
+            self._confirm_delete_dialog.open()
+
+    def _on_delete_confirmed(self) -> None:
+        """Dispatch the pending delete command and close the dialog."""
+        if self._confirm_delete_dialog:
+            self._confirm_delete_dialog.close()
+        if self._pending_delete_cmd is not None:
+            self._shared.put_command(self._pending_delete_cmd)
+            self._pending_delete_cmd = None
 
     # ------------------------------------------------------------------
     # Timer-driven UI update

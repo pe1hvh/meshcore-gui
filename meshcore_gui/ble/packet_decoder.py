@@ -8,6 +8,20 @@ and sender name.
 
 No correlation with CHANNEL_MSG_RECV events is needed.
 
+Channel attribution
+~~~~~~~~~~~~~~~~~~~
+The channel a message belongs to is determined by **which registered key
+successfully decrypts the payload** — not by any channel index or the
+``channel_hash`` embedded in the packet header.  The firmware-embedded
+``channel_hash`` is ignored for attribution because ``ChannelCrypto``
+and the firmware may compute it differently, making hash-based lookup
+unreliable.
+
+Decryption is therefore attempted per-key (one ``MeshCoreDecoder.decode``
+call per registered channel).  For a typical deployment with fewer than
+ten channels this cost is negligible, and the correct channel is always
+identified deterministically.
+
 Channel decryption keys are loaded at startup (fetched from the device
 via ``get_channel()`` or derived from the channel name as fallback).
 """
@@ -17,7 +31,6 @@ from hashlib import sha256
 from typing import Dict, List, Optional
 
 from meshcoredecoder import MeshCoreDecoder
-from meshcoredecoder.crypto.channel_crypto import ChannelCrypto
 from meshcoredecoder.crypto.key_manager import MeshCoreKeyStore
 from meshcoredecoder.types.crypto import DecryptionOptions
 from meshcoredecoder.types.enums import PayloadType
@@ -45,7 +58,7 @@ class DecodedPacket:
         path_hashes:   2-char hex strings, one per repeater.
         sender:        Sender name (GroupText only, after decryption).
         text:          Message body (GroupText only, after decryption).
-        channel_idx:   Channel index (GroupText only, via hash→idx map).
+        channel_idx:   Channel index (GroupText only, resolved by key match).
         timestamp:     Message timestamp (GroupText only).
         is_decrypted:  True if payload was successfully decrypted.
     """
@@ -68,7 +81,13 @@ class DecodedPacket:
 # ---------------------------------------------------------------------------
 
 class PacketDecoder:
-    """Decode raw LoRa packets with channel-key decryption.
+    """Decode raw LoRa packets with per-key channel attribution.
+
+    Channel attribution is done by key matching: the registered secret that
+    successfully decrypts a GroupText packet identifies its channel.  This
+    avoids relying on the ``channel_hash`` mechanism, which requires the
+    MeshCore firmware and ``meshcoredecoder`` to compute identical hashes —
+    a dependency that cannot always be guaranteed.
 
     Usage::
 
@@ -78,14 +97,12 @@ class PacketDecoder:
 
         result = decoder.decode(payload_hex)
         if result and result.is_decrypted:
-            print(result.sender, result.text, result.path_hashes)
+            print(result.sender, result.text, result.channel_idx)
     """
 
     def __init__(self) -> None:
-        self._key_store = MeshCoreKeyStore()
-        self._options: Optional[DecryptionOptions] = None
-        # channel_hash (2-char lower hex) → channel_idx
-        self._hash_to_idx: Dict[str, int] = {}
+        # secret_hex → channel_idx  (primary channel attribution map)
+        self._secret_to_idx: Dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Key management
@@ -105,14 +122,10 @@ class PacketDecoder:
             source:       Label for debug output (e.g. "device", "cache").
         """
         secret_hex = secret_bytes.hex()
-        self._key_store.add_channel_secrets([secret_hex])
-        self._rebuild_options()
-
-        ch_hash = ChannelCrypto.calculate_channel_hash(secret_hex).lower()
-        self._hash_to_idx[ch_hash] = channel_idx
+        self._secret_to_idx[secret_hex] = channel_idx
         debug_print(
-            f"PacketDecoder: key for ch{channel_idx} "
-            f"(hash={ch_hash}, from {source})"
+            f"PacketDecoder: key registered for ch{channel_idx} "
+            f"(source={source}, secret={secret_hex[:8]}…)"
         )
 
     def add_channel_key_from_name(
@@ -133,7 +146,7 @@ class PacketDecoder:
     @property
     def has_keys(self) -> bool:
         """True if at least one channel key has been registered."""
-        return self._options is not None
+        return bool(self._secret_to_idx)
 
     # ------------------------------------------------------------------
     # Decode
@@ -141,6 +154,17 @@ class PacketDecoder:
 
     def decode(self, payload_hex: str) -> Optional[DecodedPacket]:
         """Decode a raw LoRa packet hex string.
+
+        Two-phase approach:
+
+        1. Decode packet **structure** without any key: extracts
+           ``message_hash``, ``payload_type``, ``path_length`` and
+           ``path_hashes``.  These fields are in the unencrypted header.
+
+        2. For GroupText packets, attempt decryption with each registered
+           key individually.  The key that produces a valid decryption
+           **is** the channel identifier — ``channel_idx`` is set directly
+           from the matching key's registration.
 
         Args:
             payload_hex: Hex string from the RX_LOG_DATA event's
@@ -153,14 +177,15 @@ class PacketDecoder:
         if not payload_hex:
             return None
 
+        # ── Phase 1: structural decode (no key required) ──────────────
         try:
-            packet = MeshCoreDecoder.decode(payload_hex, self._options)
+            packet = MeshCoreDecoder.decode(payload_hex, None)
         except Exception as exc:
-            debug_print(f"PacketDecoder: decode error: {exc}")
+            debug_print(f"PacketDecoder: structural decode error: {exc}")
             return None
 
         if not packet.is_valid:
-            debug_print(f"PacketDecoder: invalid: {packet.errors}")
+            debug_print(f"PacketDecoder: invalid packet: {packet.errors}")
             return None
 
         result = DecodedPacket(
@@ -170,32 +195,44 @@ class PacketDecoder:
             path_hashes=list(packet.path) if packet.path else [],
         )
 
-        # --- GroupText decryption ---
-        if packet.payload_type == PayloadType.GroupText:
-            decoded_payload = packet.payload.get("decoded")
-            if decoded_payload and decoded_payload.decrypted:
-                d = decoded_payload.decrypted
-                result.sender = d.get("sender", "") or ""
-                result.text = d.get("message", "") or ""
-                result.timestamp = d.get("timestamp", 0)
-                result.is_decrypted = True
+        # ── Phase 2: per-key decryption (GroupText only) ──────────────
+        if packet.payload_type == PayloadType.GroupText and self._secret_to_idx:
+            for secret_hex, idx in self._secret_to_idx.items():
+                try:
+                    ks = MeshCoreKeyStore()
+                    ks.add_channel_secrets([secret_hex])
+                    opts = DecryptionOptions(key_store=ks)
+                    dec_pkt = MeshCoreDecoder.decode(payload_hex, opts)
+                    if not dec_pkt.is_valid:
+                        continue
+                    dec_payload = dec_pkt.payload.get("decoded")
+                    if dec_payload and dec_payload.decrypted:
+                        d = dec_payload.decrypted
+                        result.sender = d.get("sender", "") or ""
+                        result.text = d.get("message", "") or ""
+                        result.timestamp = d.get("timestamp", 0)
+                        result.channel_idx = idx
+                        result.is_decrypted = True
+                        debug_print(
+                            f"PacketDecoder: GroupText OK — "
+                            f"hash={result.message_hash}, "
+                            f"sender={result.sender!r}, "
+                            f"ch={result.channel_idx} (key-matched), "
+                            f"path={result.path_hashes}, "
+                            f"text={result.text[:40]!r}"
+                        )
+                        break
+                except Exception as exc:
+                    debug_print(
+                        f"PacketDecoder: key for ch{idx} error: {exc}"
+                    )
+                    continue
 
-                # Resolve channel_hash → channel_idx
-                ch_hash = decoded_payload.channel_hash.lower()
-                result.channel_idx = self._hash_to_idx.get(ch_hash)
-
-                debug_print(
-                    f"PacketDecoder: GroupText OK — "
-                    f"hash={result.message_hash}, "
-                    f"sender={result.sender!r}, "
-                    f"ch={result.channel_idx}, "
-                    f"path={result.path_hashes}, "
-                    f"text={result.text[:40]!r}"
-                )
-            else:
+            if not result.is_decrypted:
                 debug_print(
                     f"PacketDecoder: GroupText NOT decrypted "
-                    f"(hash={result.message_hash})"
+                    f"(hash={result.message_hash}, "
+                    f"{len(self._secret_to_idx)} keys tried)"
                 )
 
         return result
@@ -203,14 +240,3 @@ class PacketDecoder:
     def get_payload_type_text(self, payload_type: PayloadType) -> str:
         """Get human-friendly name for a PayloadType enum value."""
         return get_payload_type_name(payload_type)
-    
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
-    def _rebuild_options(self) -> None:
-        """Recreate DecryptionOptions after a key change."""
-        self._options = DecryptionOptions(key_store=self._key_store)
-
-
-

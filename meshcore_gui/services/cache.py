@@ -153,6 +153,20 @@ class DeviceCache:
         self._data["channel_keys"] = keys
         self.save()
 
+    def remove_channel_key(self, channel_idx: int) -> None:
+        """Remove a channel key from the cache and persist.
+
+        No-op if the index is not present.
+
+        Args:
+            channel_idx: Channel slot index whose key should be removed.
+        """
+        keys = self._data.get("channel_keys", {})
+        removed = keys.pop(str(channel_idx), None)
+        if removed is not None:
+            self._data["channel_keys"] = keys
+            self.save()
+
     # ------------------------------------------------------------------
     # Contacts (merge strategy)
     # ------------------------------------------------------------------

@@ -120,7 +120,7 @@ Under the hood it uses `meshcore` as the protocol layer, `meshcoredecoder` for r
 <!-- ADDED: Room Server feature (v5.7.0) -->
 - **Dynamic Channel Discovery** — Channels are automatically discovered from the device at startup via probing, eliminating the need to manually configure `CHANNELS_CONFIG`
 <!-- ADDED: Dynamic channel discovery (v5.7.0) -->
-- **Add Channel** — Add hashtag or private channels directly from the GUI via the `＋ Add Channel` button in the Messages submenu. New private channels generate a shareable QR code and hex key for distribution to other users
+- **Add / Delete Channel** — Add hashtag or private channels directly from the GUI via the `＋ Add Channel` button in the Messages submenu. New private channels generate a shareable QR code and hex key for distribution to other users. Each channel entry shows a 🗑 delete button; removing a channel automatically re-indexes higher slots to keep the list compact
 - **Public REST API** — Read-only JSON endpoints (`/api/v1/stats`, `/api/v1/nodes`, `/api/v1/messages`, `/api/v1/channels`) for external consumers such as statistics dashboards. Private channel messages are unconditionally excluded; no authentication required
 - **Keyword Bot** — Built-in auto-reply bot that responds to configurable keywords on selected channels, with cooldown and loop prevention
 - **Packet Decoding** — Raw LoRa packets from RX log are decoded and decrypted using channel keys, providing message hashes, path hashes and hop data
@@ -320,6 +320,10 @@ Open the **Messages** section in the left drawer and click **＋ Add Channel** a
 | **🔒 Private – Existing** | Join a private channel someone shared with you | Paste the 32-char hex key |
 
 After clicking **Add Channel**, the device is updated and channel discovery re-runs automatically. A new private channel shows a scannable QR code (`meshcore://channel/add?name=…&secret=…`) that the official MeshCore app can read directly.
+
+#### Deleting channels from the GUI
+
+Each channel row in the **Messages** and **Archive** submenus has an inline 🗑 delete button. Clicking it removes the channel slot from the device and automatically re-indexes any higher-numbered channels downward by one position, keeping the list gapless. Private channel keys for renumbered slots are read from the local cache, so no key material is lost.
 
 ### 6.4. Start the GUI
 

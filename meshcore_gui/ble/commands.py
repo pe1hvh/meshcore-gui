@@ -52,6 +52,8 @@ class CommandHandler:
             'send_room_msg': self._cmd_send_room_msg,
             'load_room_history': self._cmd_load_room_history,
             'add_channel': self._cmd_add_channel,
+            'del_channel': self._cmd_del_channel,
+            'move_channel': self._cmd_move_channel,
         }
 
     async def process_all(self) -> None:
@@ -601,6 +603,233 @@ class CommandHandler:
         except Exception as exc:
             self._shared.set_status(f'⚠️ Add channel error: {exc}')
             debug_print(f'add_channel exception: {exc}')
+
+    async def _cmd_del_channel(self, cmd: Dict) -> None:
+        """Delete a channel slot on the MeshCore device and re-index higher slots.
+
+        After deleting index N, all channels with index > N are moved down
+        by one to close any gap in the channel list.
+
+        Expected command dict::
+
+            {
+                'action':   'del_channel',
+                'idx':      int,        # channel slot to delete (1-99)
+                'channels': List[Dict], # snapshot of current channel list
+            }
+
+        Re-indexing uses secrets from the DeviceCache so private channel
+        keys are preserved when slots are renumbered.
+        """
+        idx: int = int(cmd.get('idx', 0))
+        channels: List[Dict] = cmd.get('channels', [])
+
+        if not idx:
+            debug_print('del_channel: no index provided, skipping')
+            return
+
+        # Retrieve cached secrets for re-indexing (JSON keys stored as str)
+        cache_keys: dict = {}
+        if self._cache:
+            cache_keys = self._cache.get_channel_keys()
+
+        async def _clear_slot(slot: int) -> bool:
+            """Clear a device channel slot.
+
+            Tries ``del_channel`` first; falls back to overwriting with an
+            empty name when the pymeshcore library does not expose that
+            command yet.  Returns ``True`` on success.
+            """
+            try:
+                r = await self._mc.commands.del_channel(slot)
+                if r is not None and r.type == EventType.ERROR:
+                    debug_print(f'del_channel: _clear_slot ERROR for [{slot}]')
+                    return False
+                return True
+            except AttributeError:
+                # pymeshcore does not expose del_channel; clear by writing
+                # an empty-name slot which the firmware treats as removed.
+                debug_print(
+                    f'del_channel: del_channel() not in library, '
+                    f'falling back to set_channel("", None) for [{slot}]'
+                )
+                try:
+                    await self._mc.commands.set_channel(slot, '', None)
+                    return True
+                except Exception as fb_exc:
+                    debug_print(f'del_channel: fallback clear failed [{slot}]: {fb_exc}')
+                    return False
+
+        try:
+            # Step 1: clear the target slot on the device
+            ok = await _clear_slot(idx)
+            if not ok:
+                self._shared.set_status(f"⚠️ Failed to delete channel [{idx}]")
+                return
+
+            debug_print(f'del_channel: cleared slot [{idx}]')
+
+            # Step 2: re-index all channels above the deleted slot
+            higher = sorted(
+                [ch for ch in channels if int(ch.get('idx', 0)) > idx],
+                key=lambda c: int(c['idx']),
+            )
+
+            for ch in higher:
+                old_idx: int = int(ch['idx'])
+                new_idx: int = old_idx - 1
+                name: str = ch.get('name', '')
+
+                # JSON stores channel-key indices as strings
+                raw_hex: str = (
+                    cache_keys.get(str(old_idx), '')
+                    or cache_keys.get(old_idx, '')  # type: ignore[call-overload]
+                )
+                secret_bytes: Optional[bytes] = None
+                if raw_hex:
+                    try:
+                        secret_bytes = bytes.fromhex(raw_hex)
+                    except ValueError:
+                        debug_print(f'del_channel: bad cached secret for [{old_idx}]')
+
+                try:
+                    # Move channel to its new (lower) index
+                    r2 = await self._mc.commands.set_channel(new_idx, name, secret_bytes)
+                    if r2 is not None and r2.type == EventType.ERROR:
+                        debug_print(
+                            f'del_channel: re-index ERROR [{old_idx}] -> [{new_idx}]'
+                        )
+                        continue
+
+                    # Persist new key mapping in cache and remove stale old entry
+                    if self._cache and raw_hex:
+                        self._cache.set_channel_key(new_idx, raw_hex)
+                        self._cache.remove_channel_key(old_idx)
+
+                    # Clear the now-vacated original slot
+                    await _clear_slot(old_idx)
+                    debug_print(
+                        f'del_channel: moved [{old_idx}] -> [{new_idx}] ({name})'
+                    )
+
+                except Exception as exc:
+                    debug_print(f'del_channel: re-index exception [{old_idx}]: {exc}')
+
+            self._shared.set_status(f"🗑️ Channel [{idx}] deleted")
+
+            # Small settle delay: the device needs a moment to commit all
+            # slot changes before re-discovery reads them back.  Without
+            # this, _discover_channels may see channels at both the old and
+            # new indices, producing duplicate entries in the channel list.
+            await asyncio.sleep(0.5)
+
+            # Trigger a full channel re-discovery so the GUI is in sync
+            if self._load_data_callback:
+                await self._load_data_callback()
+
+        except Exception as exc:
+            self._shared.set_status(f'⚠️ Delete channel error: {exc}')
+            debug_print(f'del_channel exception: {exc}')
+
+    async def _cmd_move_channel(self, cmd: Dict) -> None:
+        """Move a channel slot to a different index on the MeshCore device.
+
+        Reads the channel secret from the DeviceCache (or fetches it from
+        the device as fallback), writes it to the new index, and clears
+        the old slot.  Both cache entries are updated atomically.
+
+        Expected command dict::
+
+            {
+                'action':   'move_channel',
+                'old_idx':  int,   # current channel slot
+                'new_idx':  int,   # target channel slot
+                'name':     str,   # channel name (from channel list)
+            }
+        """
+        old_idx: int = int(cmd.get('old_idx', 0))
+        new_idx: int = int(cmd.get('new_idx', 0))
+        name: str = (cmd.get('name') or '').strip()
+
+        if not name or old_idx == new_idx:
+            debug_print(
+                f'move_channel: invalid args old={old_idx} new={new_idx} name={name!r}'
+            )
+            return
+
+        # Resolve secret — prefer cache, fall back to device query
+        cache_keys: dict = self._cache.get_channel_keys() if self._cache else {}
+        raw_hex: str = (
+            cache_keys.get(str(old_idx), '')
+            or cache_keys.get(old_idx, '')  # type: ignore[call-overload]
+        )
+        secret_bytes: Optional[bytes] = None
+
+        if raw_hex:
+            try:
+                secret_bytes = bytes.fromhex(raw_hex)
+            except ValueError:
+                debug_print(f'move_channel: bad cached secret for [{old_idx}]')
+                raw_hex = ''
+
+        if not secret_bytes:
+            # Fetch secret directly from the device
+            debug_print(
+                f'move_channel: no cached key for [{old_idx}], fetching from device'
+            )
+            try:
+                r = await self._mc.commands.get_channel(old_idx)
+                if r is not None and r.type != EventType.ERROR:
+                    secret = r.payload.get('channel_secret')
+                    if secret and isinstance(secret, bytes) and len(secret) >= 16:
+                        secret_bytes = secret[:16]
+                        raw_hex = secret_bytes.hex()
+                    elif secret and isinstance(secret, str) and len(secret) >= 32:
+                        try:
+                            secret_bytes = bytes.fromhex(secret)[:16]
+                            raw_hex = secret_bytes.hex()
+                        except ValueError:
+                            pass
+            except Exception as exc:
+                debug_print(f'move_channel: get_channel({old_idx}) failed: {exc}')
+
+        try:
+            # Write channel to new slot
+            r2 = await self._mc.commands.set_channel(new_idx, name, secret_bytes)
+            if r2 is not None and r2.type == EventType.ERROR:
+                self._shared.set_status(
+                    f"\u26a0\ufe0f Failed to move channel [{old_idx}] to [{new_idx}]"
+                )
+                debug_print(f'move_channel: set_channel({new_idx}) ERROR')
+                return
+
+            # Clear old slot
+            try:
+                await self._mc.commands.del_channel(old_idx)
+            except AttributeError:
+                await self._mc.commands.set_channel(old_idx, '', None)
+
+            # Update cache: write new index, remove stale old index
+            if self._cache:
+                if raw_hex:
+                    self._cache.set_channel_key(new_idx, raw_hex)
+                self._cache.remove_channel_key(old_idx)
+
+            self._shared.set_status(
+                f"\u2705 Channel [{old_idx}] \'{name}\' moved to [{new_idx}]"
+            )
+            debug_print(f'move_channel: [{old_idx}] -> [{new_idx}] ({name})')
+
+            # Let device settle before re-discovery
+            await asyncio.sleep(0.5)
+            if self._load_data_callback:
+                await self._load_data_callback()
+
+        except Exception as exc:
+            self._shared.set_status(f'\u26a0\ufe0f Move channel error: {exc}')
+            debug_print(f'move_channel exception: {exc}')
+
+
 
     # ------------------------------------------------------------------
     # Callback for refresh (set by SerialWorker after construction)

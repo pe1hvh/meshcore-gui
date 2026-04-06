@@ -10,6 +10,135 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 
 ---
 
+## [1.19.0] - 2026-04-06
+
+### FIXED
+- **Wrong channel attribution for hashtag channels** (`ble/packet_decoder.py`):
+  `ChannelCrypto.calculate_channel_hash()` produces a different channel identifier
+  than what the MeshCore firmware embeds in packets, causing `_hash_to_idx` to
+  return `None` for all hashtag-channel messages. As a result, `on_channel_msg`
+  fell back to the `channel_idx` from the `CHANNEL_MSG_RECV` event — which was
+  itself incorrect — and messages sent on `#mc-radar` appeared in `#weather` and
+  vice versa.
+  Fix: brute-force channel resolution. When the hash lookup returns `None`, every
+  registered key is tried individually via a single-key keystore. The first key
+  that produces a valid decryption determines the channel index. The result is
+  cached in `_hash_to_idx` for O(1) resolution on all subsequent packets for that
+  channel.
+
+- **Cross-channel message duplication** (`ble/events.py`):
+  A second copy of the same physical packet was stored under a different channel
+  index because two independent dedup guards both failed simultaneously: (1) the
+  `message_hash` from `meshcoredecoder` differed from the one in the
+  `CHANNEL_MSG_RECV` event payload (two separate libraries), breaking hash-based
+  dedup; (2) the `channel_idx` resolved by `PacketDecoder` differed from the
+  `channel_idx` reported by the event, breaking content-based dedup.
+  Fix: when `on_rx_log` successfully stores a message, it now also marks a
+  channel-agnostic sentinel key (`'*'`) in `DualDeduplicator`. `on_channel_msg`
+  checks this sentinel before storing and suppresses the message if set, regardless
+  of hash or channel_idx differences between the two systems.
+
+- **Empty `path_hashes` on hashtag channels** (`ble/events.py`):
+  `_path_cache` is keyed by the `message_hash` from `meshcoredecoder`, but
+  `on_channel_msg` performed the lookup with the `message_hash` from `meshcore`
+  (different value), causing `_path_cache.pop()` to always return `[]`.
+  Fix: secondary `_path_cache_by_content` keyed by `"sender:text[:100]"` as
+  fallback. Path hashes are now recovered even when the two hash values disagree.
+
+- **Stale channel key in cache after `del_channel` reindex** (`ble/commands.py`,
+  `services/cache.py`): After moving a channel slot from `old_idx` to `new_idx`,
+  the cache entry for `old_idx` was never removed. On the next startup, both the
+  old and the new index had the same secret, causing the same channel to appear
+  twice in the cache and the last channel not to be displayed.
+  Fix: new `DeviceCache.remove_channel_key(idx)` method; called after each slot
+  move in `_cmd_del_channel`. Added `asyncio.sleep(0.5)` before re-discovery to
+  let the device commit all slot changes before `_discover_channels` reads them.
+
+### ADDED
+- **Channel Move / Reindex** (`gui/panels/channel_panel.py`, `ble/commands.py`,
+  `gui/dashboard.py`): New mode `↕️ Move / Reindex` in the Channel Manager dialog.
+  The user selects a source channel from a dropdown and a target index from the
+  number field. A `↕` button appears inline next to `🗑` for each channel in both
+  the Messages and Archive submenus.
+  `_cmd_move_channel` reads the channel secret from `DeviceCache` (or fetches it
+  directly from the device as fallback), writes to the new slot, clears the old
+  slot, and updates both cache entries atomically before triggering re-discovery.
+
+### CHANGED
+- `gui/panels/channel_panel.py`: Dialog title changed from `📡 Add Channel` to
+  `📡 Channel Manager`; submit button renamed from `Add Channel` to `Confirm`.
+- `gui/dashboard.py`: `_make_channel_sub_item()` extended with `on_move` callback
+  and inline `↕` button; both Messages and Archive submenus pass the callback.
+- `config.py`: version bump `1.18.1 → 1.19.0`.
+
+### IMPACT
+- `ble/packet_decoder.py`: `_secret_to_idx` dict added; `_resolve_channel_by_brute_force()`
+  helper added; fallback invoked in `decode()` when hash lookup fails. O(n_channels)
+  cost on first packet per channel; O(1) thereafter.
+- `ble/events.py`: `_path_cache_by_content` dict added; sentinel mark added in
+  `on_rx_log`; sentinel check and content-key path fallback added in `on_channel_msg`.
+- `ble/commands.py`: `move_channel` registered in handler dict; `_cmd_move_channel()`
+  added; `_cmd_del_channel()` calls `remove_channel_key()` and includes settle delay.
+- `services/cache.py`: `remove_channel_key(idx)` added — no-op when key absent.
+- `gui/panels/channel_panel.py`: `_move_section`, `_move_select` widgets added;
+  `open()` accepts `mode` and `preselect_idx` parameters; `_submit_move()` added.
+- `gui/dashboard.py`: `_make_channel_sub_item()` signature extended with `on_move`.
+
+---
+
+## [1.18.1] - 2026-04-05
+
+### FIXED
+- **Drawer width** (`gui/dashboard.py`): increased from 300 px to 360 px so that
+  longer channel names such as `[19] #radio-zend-amateurs` fit without truncation.
+- **`del_channel` library fallback** (`ble/commands.py`): `_cmd_del_channel` now
+  catches `AttributeError` when `mc.commands.del_channel()` is not available in
+  the installed pymeshcore version and falls back to overwriting the slot with an
+  empty name via `set_channel(idx, '', None)`, which the firmware treats as removal.
+- **Delete confirmation dialog** (`gui/dashboard.py`): clicking 🗑 now opens an
+  "Are you sure?" dialog (Cancel / Delete) before dispatching the `del_channel`
+  command, preventing accidental removals.
+
+### CHANGED
+- `config.py`: version bump `1.18.0 → 1.18.1`.
+
+---
+
+## [1.18.0] - 2026-04-05
+
+### ADDED
+- **Channel delete button** (`gui/dashboard.py`): each channel entry in the
+  MESSAGES and ARCHIVE submenus now shows an inline 🗑 delete button next to
+  the channel name. Clicking it queues a `del_channel` command for the BLE
+  worker without requiring any additional confirmation dialog.
+- **`del_channel` command handler** (`ble/commands.py`): new
+  `_cmd_del_channel()` async method that deletes the target channel slot via
+  `mc.commands.del_channel(idx)` and then re-indexes all higher-numbered
+  channels by one position using `set_channel` + `del_channel`. Secrets for
+  private channels are read from the `DeviceCache` so no key material is lost
+  during renumbering. A full channel re-discovery is triggered afterwards via
+  `_load_data_callback()`.
+
+### CHANGED
+- **Drawer width** (`gui/dashboard.py`): left navigation panel widened from
+  260 px to 300 px (min-width 200 px → 220 px) for better readability of
+  channel names.
+- `config.py`: version bump `1.17.1 → 1.18.0`.
+
+### IMPACT
+- `gui/dashboard.py`: new static method `_make_channel_sub_item()`;
+  `_update_submenus()` uses it instead of `_make_sub_btn()` for channel rows.
+  All existing submenu logic (ALL, DM, ＋ Add Channel, rooms) is unchanged.
+- `ble/commands.py`: one new handler registered; no existing handlers touched.
+
+### RATIONALE
+- Users need a quick way to remove channels directly from the navigation menu
+  without opening a separate dialog.
+- Re-indexing keeps the channel list compact (no sparse gaps) which matches
+  MeshCore firmware expectations and the visual convention of sequential indices.
+
+---
+
 ## [1.17.1] - 2026-04-04
 
 ### FIXED

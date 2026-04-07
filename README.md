@@ -1,5 +1,5 @@
-# MeshCore GUI — Native USB & BLE
-### Cross-frequency bridge included — no MQTT, no broker, no cloud. Just LoRa ↔ LoRa.
+# MeshCore GUI — All-in-One MeshCore Platform
+### Monitor, message, bridge, automate and publish — no cloud, no broker, just LoRa.
 ![Status](https://img.shields.io/badge/Status-Production-green.svg)
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
@@ -10,7 +10,7 @@
 <img width="920" height="769" alt="image" src="https://github.com/user-attachments/assets/ff38b97f-557b-4217-abce-aaec68a90c35" />
 
 
-A graphical user interface for MeshCore mesh network devices with native USB serial and Bluetooth Low Energy (BLE) support, for on your desktop or as a headless service on your local network.
+A full-featured desktop platform for MeshCore mesh radio devices. Connects via USB serial or Bluetooth LE, runs headless on a Raspberry Pi, and brings together a real-time dashboard, message archive, channel manager, BBS, bot, cross-frequency bridge and public REST API — all in a single self-contained Python application.
 
 ## Table of Contents
 
@@ -43,6 +43,7 @@ A graphical user interface for MeshCore mesh network devices with native USB ser
   - [7.8. Migrating Existing Data](#78-migrating-existing-data)
   - [7.9. Raspberry Pi 5 Notes](#79-raspberry-pi-5-notes)
 - [8. Configuration](#8-configuration)
+  - [8.1. Data Directory (`~/.meshcore-gui/`)](#81-data-directory-meshcore-gui)
 - [9. Functionality](#9-functionality)
   - [9.1. Device Info](#91-device-info)
   - [9.2. Contacts](#92-contacts)
@@ -57,52 +58,51 @@ A graphical user interface for MeshCore mesh network devices with native USB ser
   - [9.11. RX Log](#911-rx-log)
   - [9.12. Actions](#912-actions)
   - [9.13. Public REST API](#913-public-rest-api)
+  - [9.14. BBS — Bulletin Board System](#914-bbs--bulletin-board-system)
 - [10. Architecture](#10-architecture)
 - [11. Cross-Frequency Bridge](#11-cross-frequency-bridge)
   - [11.1. Bridge Overview](#111-bridge-overview)
   - [11.2. Quick Start](#112-quick-start)
   - [11.3. Bridge Configuration](#113-bridge-configuration)
   - [11.4. systemd Service](#114-systemd-service)
-- [12. BBS — Bulletin Board System](#12-bbs--bulletin-board-system)
-- [13. Known Limitations](#13-known-limitations)
-- [14. Troubleshooting](#14-troubleshooting)
-  - [14.1. Linux](#141-linux)
-    - [14.1.1. Serial Quick Fixes](#1411-serial-quick-fixes)
-    - [14.1.2. BLE Quick Fixes](#1412-ble-quick-fixes)
-  - [14.2. macOS](#142-macos)
-  - [14.3. Windows](#143-windows)
-  - [14.4. All Platforms](#144-all-platforms)
-- [15. Development](#15-development)
-  - [15.1. Debug Mode](#151-debug-mode)
-  - [15.2. Project Structure](#152-project-structure)
-- [16. Roadmap](#16-roadmap)
-- [17. Disclaimer](#17-disclaimer)
-- [18. License](#18-license)
-- [19. Author](#19-author)
-- [20. Acknowledgments](#20-acknowledgments)
+- [12. Known Limitations](#12-known-limitations)
+- [13. Troubleshooting](#13-troubleshooting)
+  - [13.1. Linux](#131-linux)
+    - [13.1.1. Serial Quick Fixes](#1311-serial-quick-fixes)
+    - [13.1.2. BLE Quick Fixes](#1312-ble-quick-fixes)
+  - [13.2. macOS](#132-macos)
+  - [13.3. Windows](#133-windows)
+  - [13.4. All Platforms](#134-all-platforms)
+- [14. Development](#14-development)
+  - [14.1. Debug Mode](#141-debug-mode)
+  - [14.2. Project Structure](#142-project-structure)
+- [15. Roadmap](#15-roadmap)
+- [16. Disclaimer](#16-disclaimer)
+- [17. License](#17-license)
+- [18. Author](#18-author)
+- [19. Acknowledgments](#19-acknowledgments)
 ---
 
 ## 1. Why This Project Exists
 
-MeshCore devices like the SenseCAP T1000-E can be managed through two interfaces: USB serial and BLE (Bluetooth Low Energy). The official companion apps communicate with devices over BLE, but they are mobile-only. For desktop or headless operation, USB serial is the most reliable option and works on all platforms.
+MeshCore devices like the SenseCAP T1000-E can be managed through two interfaces: USB serial and BLE (Bluetooth Low Energy). The official companion apps communicate over BLE but are mobile-only. For desktop or headless operation there was nothing — this project fills that gap.
 
-This project provides a **native desktop GUI** that connects to your MeshCore device over **USB serial or Bluetooth LE**:
+What started as a basic serial GUI has grown into a comprehensive platform. Today it covers the full operator workflow:
 
-- **Dual transport** — auto-detects the connection type from the device argument: serial port path → USB serial, MAC address → Bluetooth LE
-- **Serial mode** — requires Serial Companion firmware on the device; works on all platforms
-- **BLE mode** — connects wirelessly via Bluetooth Low Energy with automatic PIN pairing; requires Linux with BlueZ (D-Bus). **Note:** recent BlueZ versions (5.66+) may cause connection instability — see [5.1. System Dependencies](#51-system-dependencies) for details
-- **Cross-platform** — written in Python using cross-platform libraries, runs on Linux, macOS and Windows (serial mode); BLE mode is Linux-only
-- **Headless capable** — since the interface is web-based (powered by NiceGUI), it also runs headless on devices like a Raspberry Pi, accessible from any browser on your local network
-- **Message archive** — all messages are persisted to disk with configurable retention, so you maintain a searchable history of mesh traffic
-- **Bots and observation** — run a keyword-triggered auto-reply bot or passively observe mesh traffic 24/7
-- **Room Server support** — login to Room Servers directly from the GUI with dedicated message panels per room
-- **Cross-frequency bridge** — connect two MeshCore devices on different frequencies with an independent bridge daemon that forwards channel messages bidirectionally, with zero changes to the main codebase
-
-> **Note:** This project is under active development. Not all features from the official MeshCore Companion apps have been implemented yet. Contributions and feedback are welcome.
-
-> **Note:** This application has been tested on Linux (Ubuntu 24.04) and Raspberry Pi 5 (Debian Bookworm, headless) with both serial and BLE transports. macOS and Windows should work for serial mode since all dependencies (`nicegui`, `meshcore`) are cross-platform, but this has not been verified. BLE mode requires Linux with BlueZ. Feedback and contributions for other platforms are welcome.
+- **Connect** — dual transport, auto-detected: USB serial or Bluetooth LE with automatic PIN pairing
+- **Monitor** — real-time dashboard with device info, contacts, map, channel messages, DMs and raw RX log
+- **Manage nodes** — pin contacts, bulk-clean stale nodes, control auto-add behaviour
+- **Manage channels** — add hashtag or private channels from the GUI, generate and share QR codes, delete and re-index slots
+- **Archive** — all messages and RX log entries persisted to disk with configurable retention; searchable via the archive viewer
+- **Automate** — keyword bot with configurable replies, cooldown and private-contact mode
+- **Bulletin Board** — offline BBS with DM-based commands, category and region filtering, and automatic abbreviations
+- **Bridge** — standalone cross-frequency bridge daemon connecting two devices on different frequencies, with loop prevention and its own dashboard
+- **Publish** — read-only REST API exposing stats, nodes, messages and channels for external dashboards; private channel messages are unconditionally excluded
+- **Headless** — the web-based interface (NiceGUI) runs on any platform, accessible from any browser on your local network; ideal for a Raspberry Pi as a permanent mesh node
 
 Under the hood it uses `meshcore` as the protocol layer, `meshcoredecoder` for raw LoRa packet decryption and route extraction, and `NiceGUI` for the web-based interface.
+
+> **Note:** Tested on Linux (Ubuntu 24.04) and Raspberry Pi 5 (Debian Bookworm, headless) with both serial and BLE transports. macOS and Windows should work for serial mode — all core dependencies are cross-platform — but this has not been verified. BLE mode requires Linux with BlueZ. Feedback and contributions for other platforms are welcome.
 
 
 ## 2. Features
@@ -111,25 +111,22 @@ Under the hood it uses `meshcore` as the protocol layer, `meshcoredecoder` for r
 - **Interactive Map** — Leaflet map with markers for own position and contacts
 - **Channel Messages** — Send and receive messages on channels
 - **Direct Messages** — Click on a contact to send a DM
-- **Contact Maintenance** — Pin/unpin contacts to protect them from deletion, bulk-delete unpinned contacts from the device, and toggle automatic contact addition from mesh adverts
+- **Channel Management** — Channels are automatically discovered at startup. Add hashtag or private channels directly from the GUI; new private channels generate a shareable QR code and hex key. Each channel has an inline 🗑 delete button that automatically re-indexes remaining slots
+- **Contact Management** — Pin/unpin contacts to protect them from deletion, individual and bulk-delete unpinned contacts, and toggle automatic contact addition from mesh adverts
 - **Message Filtering** — Filter messages per channel via checkboxes
 - **Message Route Visualization** — Click any message to open a detailed route page showing the path (hops) through the mesh network on an interactive map, with a hop summary, route table and reply panel
 - **Message Archive** — All messages and RX log entries are persisted to disk with configurable retention. Browse archived messages via the archive viewer with filters (channel, time range, text search), pagination and inline route tables
-<!-- ADDED: Message Archive feature was missing from features list -->
-- **Room Server Support** — Login to Room Servers directly from the GUI. Each Room Server gets a dedicated panel with message display, send functionality and login/logout controls. Passwords are stored securely outside the repository. Message author attribution correctly resolves the real sender from signed messages
-<!-- ADDED: Room Server feature (v5.7.0) -->
-- **Dynamic Channel Discovery** — Channels are automatically discovered from the device at startup via probing, eliminating the need to manually configure `CHANNELS_CONFIG`
-<!-- ADDED: Dynamic channel discovery (v5.7.0) -->
-- **Add / Delete Channel** — Add hashtag or private channels directly from the GUI via the `＋ Add Channel` button in the Messages submenu. New private channels generate a shareable QR code and hex key for distribution to other users. Each channel entry shows a 🗑 delete button; removing a channel automatically re-indexes higher slots to keep the list compact
+- **Room Server Support** — Login to Room Servers directly from the GUI. Each Room Server gets a dedicated panel with message display, send functionality and login/logout controls. Passwords are stored securely outside the repository
+- **BBS — Bulletin Board System** — Offline message board with DM-based commands (`!p`, `!r`, `!s`), category and region filtering, automatic abbreviations and a channel-based whitelist. See [9.14. BBS](#914-bbs--bulletin-board-system) for full documentation
+- **Keyword Bot** — Built-in auto-reply bot that responds to configurable keywords on selected channels, with cooldown, private-contact mode and loop prevention
+- **Cross-Frequency Bridge** — Standalone bridge daemon (`meshcore_bridge`) connects two devices on different frequencies by forwarding messages bidirectionally on a configurable channel. Runs as a separate process with its own dashboard, YAML configuration and systemd service installer. See [11. Cross-Frequency Bridge](#11-cross-frequency-bridge) for details
 - **Public REST API** — Read-only JSON endpoints (`/api/v1/stats`, `/api/v1/nodes`, `/api/v1/messages`, `/api/v1/channels`) for external consumers such as statistics dashboards. Private channel messages are unconditionally excluded; no authentication required
-- **Keyword Bot** — Built-in auto-reply bot that responds to configurable keywords on selected channels, with cooldown and loop prevention
 - **Packet Decoding** — Raw LoRa packets from RX log are decoded and decrypted using channel keys, providing message hashes, path hashes and hop data
 - **Message Deduplication** — Dual-strategy dedup (hash-based and content-based) prevents duplicate messages from appearing
-- **Local Cache** — Device info, contacts and channel keys are cached to disk (`~/.meshcore-gui/cache/`) so the GUI is instantly populated on startup from the last known state, even before the serial link connects. Contacts from the device are merged with cached contacts so offline nodes are preserved. Channel keys that fail to load at startup are retried in the background every 30 seconds
+- **Local Cache** — Device info, contacts and channel keys are cached to disk so the GUI is instantly populated on startup from the last known state, even before the device connects. Offline nodes are preserved; missing channel keys are retried in the background
 - **Periodic Contact Refresh** — Contacts are automatically refreshed from the device at a configurable interval (default: 5 minutes) and merged with the cache
-- **Threaded Architecture** — Device communication in separate thread for stable UI
 - **Dual Transport** — Auto-detects USB serial or Bluetooth LE from the device argument; BLE includes automatic PIN pairing and bond management
-- **Cross-Frequency Bridge** — Standalone bridge daemon (`meshcore_bridge`) connects two devices on different frequencies by forwarding messages on a configurable bridge channel. Runs as a separate process with its own DOMCA-themed dashboard, YAML configuration, loop prevention and systemd service installer. Requires zero changes to meshcore_gui. See [11. Cross-Frequency Bridge](#11-cross-frequency-bridge) for details
+- **Headless / Multi-instance** — Web-based interface accessible from any browser; run multiple instances simultaneously on different ports for multiple devices
 
 ## 3. Screenshots
 
@@ -441,14 +438,22 @@ A systemd service starts automatically on boot, restarts on crashes, and integra
 
 #### 7.5.1. Automated Setup
 
+If you have not yet created a virtual environment, use the venv setup script first:
+
+```bash
+bash install_scripts/install_venv.sh
+```
+
+This creates `venv/` and installs all core dependencies (`nicegui`, `meshcore`, `bleak`, `meshcoredecoder`) in one step.
+
 Use the appropriate installer for your transport:
 
 ```bash
 # Serial connection
-bash install_serial.sh
+bash install_scripts/install_serial.sh
 
 # BLE connection
-bash install_ble_stable.sh
+bash install_scripts/install_ble_stable.sh
 ```
 
 **Serial environment variables** (optional):
@@ -638,12 +643,58 @@ Ensure your user has permission to access the serial device (e.g. member of `dia
 | `--ssl` | CLI flag | Enable HTTPS with auto-generated self-signed certificate |
 | `--debug-on` | CLI flag | Enable verbose debug logging |
 
+## 8.1. Data Directory (`~/.meshcore-gui/`)
+
+All persistent data is stored under `~/.meshcore-gui/` in your home directory. Each file is plain JSON (or SQLite for the BBS), human-readable and safe to inspect. The directory is created automatically on first run.
+
+```
+~/.meshcore-gui/
+├── cache/
+│   └── <ADDRESS>.json          # Device cache: contacts, channel keys, device info
+│                               # Populated at startup; read back instantly if offline
+├── pins/
+│   └── <ADDRESS>_pins.json     # Pinned contact public keys per device
+│                               # Pinned contacts are protected from bulk delete
+├── archive/
+│   ├── <ADDRESS>_messages.json # All received channel and DM messages (retained per MESSAGE_RETENTION_DAYS)
+│   └── <ADDRESS>_rxlog.json    # Raw RX log entries (retained per RXLOG_RETENTION_DAYS)
+├── room_passwords/
+│   └── <ADDRESS>.json          # Room Server passwords per device (managed via GUI)
+├── bot/
+│   └── _<dev_id>_bot.json      # Bot channel selection and settings per device
+├── bbs/
+│   ├── bbs_config.json         # BBS settings: channels, categories, regions, whitelist
+│   └── bbs_messages.db         # BBS message store (SQLite, WAL mode)
+└── logs/
+    └── <ADDRESS>_meshcore_gui.log  # Rotating debug log (max 20 MB, only with --debug-on)
+```
+
+`<ADDRESS>` is derived from the device argument: a serial port like `/dev/ttyUSB0` becomes `_dev_ttyUSB0`, a BLE address like `AA:BB:CC:DD:EE:FF` becomes `AA_BB_CC_DD_EE_FF`. This means each device gets its own set of files.
+
+**Useful maintenance commands:**
+
+```bash
+# Clear the device cache (forces a fresh read from the device on next startup)
+rm ~/.meshcore-gui/cache/*.json
+
+# Remove a specific device's archive to free disk space
+rm ~/.meshcore-gui/archive/AA_BB_CC_DD_EE_FF_*.json
+
+# View the BBS config
+cat ~/.meshcore-gui/bbs/bbs_config.json
+```
+
+> **Tip:** When moving to a new machine or a different Raspberry Pi, copy the entire `~/.meshcore-gui/` directory to preserve your pinned contacts, room passwords, bot configuration and message history.
+
 ## 9. Functionality
 
 ### 9.1. Device Info
 - Name, frequency, SF/BW, TX power, location, firmware version
 
 ### 9.2. Contacts
+
+> **Note:** In MeshCore firmware and protocol documentation, network participants are called *nodes*. The GUI uses the term *contacts* for the same concept — every node that your device has seen or exchanged adverts with appears here as a contact.
+
 - List of known nodes with type and location
 - Click on a contact to send a DM (or add a Room Server panel for type=3 contacts)
 <!-- CHANGED: Contact click now dispatches by type (v5.7.0) -->
@@ -845,9 +896,123 @@ curl "http://<meshcore-ip>:8081/api/v1/messages?limit=5"
 ]
 ```
 
+### 9.14. BBS — Bulletin Board System
+
+MeshCore GUI includes an offline BBS that lets mesh nodes exchange structured messages by category, with optional region tagging.
+
+#### Access model
+
+The operator links one or more channels to the BBS. Anyone who sends a message on a configured BBS channel is automatically added to the whitelist. After that, they can send commands via **Direct Message** to the BBS node — the channel itself stays clean.
+
+```
+First contact:  !bbs help  on the configured channel
+                → node sees the public key → whitelists it
+After that:     !p U need assistance  as DM to the node
+                → processed, reply sent back via DM
+```
+
+Anyone who has never sent a message on a configured channel is not on the whitelist and is silently ignored.
+
+#### Settings
+
+Open via the gear icon (⚙) in the BBS panel, or navigate to `/bbs-settings`.
+
+```
+BBS Settings
+──────────────────────────────────────────
+Channels:    ☑ [1] NoodNet Zwolle
+             ☑ [2] NoodNet Dalfsen
+             ☐ [3] NoodNet OV
+Categories:  URGENT, MEDICAL, LOGISTICS, STATUS, GENERAL
+Retain:      48 hours
+[Save]
+
+▶ Advanced
+  Regions (comma-separated)
+  Allowed keys (DM-BBS whitelist)
+```
+
+- **Channels** — check all channels whose participants should have access to the BBS. Multiple channels can be selected.
+- **Categories** — comma-separated list of valid category tags.
+- **Retain** — message retention in hours (default 48).
+- **Advanced → Regions** — optional region tags for geographic filtering.
+- **Advanced → Allowed keys** — manual whitelist override; leave empty to rely on auto-learned keys only.
+
+#### Command syntax
+
+##### Short syntax
+
+| Command | Description |
+|---|---|
+| `!p <cat> <text>` | Post a message |
+| `!p <region> <cat> <text>` | Post with region |
+| `!r` | Read 5 most recent messages (all categories) |
+| `!r <cat>` | Read filtered by category |
+| `!r <cat> <from-to>` | Read with range, e.g. `!r U 6-10` |
+| `!r <region> <cat> <from-to>` | Read filtered by region, category and range |
+| `!s <cat> <query>` | Search messages in a category |
+| `!s <region> <cat> <query>` | Search with region filter |
+| `!h` | Show help and abbreviation table |
+
+Category abbreviations are computed automatically as the shortest unique prefix within the configured list. Example with `URGENT, MEDICAL, LOGISTICS, STATUS, GENERAL`:
+
+```
+U=URGENT  M=MEDICAL  L=LOGISTICS  S=STATUS  G=GENERAL
+```
+
+If two categories share the same leading letters (e.g. `MEDICAL` and `MISSING`), longer prefixes are calculated automatically: `ME` and `MI`. The `!r` (without arguments) and `!h` / `!bbs help` replies always include the current abbreviation table.
+
+**Range pagination** — messages are returned newest first, 1-indexed:
+
+| Range | Returns |
+|---|---|
+| `!r U 1-5` | Messages 1–5 (same as `!r U`) |
+| `!r U 6-10` | Messages 6–10 |
+| `!r U 15-40` | Messages 15–40 |
+
+**Search** — case-insensitive substring match across message bodies, all results returned:
+
+```
+!s U assistance         → all URGENT messages containing "assistance"
+!s Zwolle U water       → all URGENT messages in region Zwolle containing "water"
+```
+
+##### Full syntax
+
+| Command | Description |
+|---|---|
+| `!bbs help` | Show commands and abbreviation table |
+| `!bbs post <category> <text>` | Post a message |
+| `!bbs post <region> <category> <text>` | Post with region |
+| `!bbs read` | Read 5 most recent messages |
+| `!bbs read <category>` | Read filtered by category |
+| `!bbs read <category> <from-to>` | Read with range |
+| `!bbs read <region> <category> <from-to>` | Read filtered by region, category and range |
+
+##### Example help reply
+
+```
+BBS [NoodNet Zwolle, NoodNet Dalfsen] | !p [cat] [text] | !r [cat] [1-5] | !s [cat] [query] | U=URGENT M=MEDICAL L=LOGISTICS S=STATUS G=GENERAL
+```
+
+#### Error handling
+
+| Situation | Reply |
+|---|---|
+| Unknown category | Lists valid categories and abbreviations |
+| Ambiguous abbreviation | Lists all matching categories |
+| Sender not on whitelist | Silent drop — no reply |
+
+#### Storage
+
+```
+~/.meshcore-gui/bbs/bbs_messages.db    — SQLite message store (WAL mode)
+~/.meshcore-gui/bbs/bbs_config.json    — Board configuration
+```
+
 ## 10. Architecture
 
-<!-- CHANGED: Architecture diagram updated — added RoomServerPanel and RoomPasswordStore (v5.7.0) -->
+<!-- CHANGED: Architecture diagram updated — added BBS, ChannelService, PublicAPIService, MapSnapshotService -->
 
 ```
 ┌─────────────────┐     ┌─────────────────┐
@@ -868,11 +1033,15 @@ curl "http://<meshcore-ip>:8081/api/v1/messages?limit=5"
 │  │  Panels   │  │  │  │   │   Bot   │   │
 │  │  RoutePage│  │  │  │   │  Dedup  │   │
 │  │ ArchivePg │  │  │  │   │  Cache  │   │
-│  │ RoomSrvPnl│  │  │  │   └─────────┘   │
-│  └───────────┘  │  │  │   ┌─────────┐   │
-│                 │  │  │   │Reconnect│   │
+│  │ RoomSrvPnl│  │  │  │   │  BBS   │   │
+│  │  BBSPanel │  │  │  │   └─────────┘   │
+│  │  BotPanel │  │  │  │   ┌─────────┐   │
+│  └───────────┘  │  │  │   │Reconnect│   │
 │                 │  │  │   │  Loop   │   │
-│                 │  │  │   └─────────┘   │
+│  ┌───────────┐  │  │  │   └─────────┘   │
+│  │  REST API │  │  │  │                 │
+│  │ /api/v1/  │  │  │  │                 │
+│  └───────────┘  │  │  │                 │
 └─────────────────┘  │  └─────────────────┘
               ┌──────┴──────┐
               │ SharedData  │     ┌───────────────┐
@@ -886,7 +1055,9 @@ curl "http://<meshcore-ip>:8081/api/v1/messages?limit=5"
               │ (~/.meshcore│     │  Cleaner      │
               │ -gui/       │     │ RoomPassword  │
               │  archive/)  │     │  Store        │
-              └─────────────┘     └───────────────┘
+              └─────────────┘     │ ChannelService│
+                                  │ MapSnapshot   │
+                                  └───────────────┘
 ```
 
 - **Worker (Serial/BLE)**: Runs in separate thread with its own asyncio loop. Auto-detected transport: `SerialWorker` for USB serial, `BLEWorker` for Bluetooth LE (with PIN agent and bond management). Both share a common base class with disconnect detection, auto-reconnect and background key retry
@@ -899,12 +1070,17 @@ curl "http://<meshcore-ip>:8081/api/v1/messages?limit=5"
 - **MessageArchive**: Persistent storage for messages and RX log with configurable retention and automatic cleanup
 - **PinStore**: Persistent pin state storage per device (JSON-backed)
 - **ContactCleanerService**: Bulk-delete logic for unpinned contacts with statistics
+- **ChannelService**: Manages channel discovery, add, delete and re-indexing; persists channel keys to the device cache
+- **BbsService**: Bulletin Board System — processes DM commands, manages the SQLite message store and whitelist
+- **PublicApiService**: Aggregates data from SharedData and MessageArchive for the REST API; enforces privacy filtering (no private channel messages)
+- **MapSnapshotService**: Builds a point-in-time snapshot of node positions and device state for use by the REST API `/api/v1/nodes` endpoint
 - **RoomServerPanel**: Per-room-server card management with login/logout, message display and send functionality
 - **RoomPasswordStore**: Persistent Room Server password storage per device in `~/.meshcore-gui/room_passwords/` (JSON-backed, analogous to PinStore)
 - **SharedData**: Thread-safe data sharing between serial worker and GUI via Protocol interfaces
 - **DashboardPage**: Main GUI with modular panels (device, contacts, map, messages, etc.)
 - **RoutePage**: Standalone route visualization page opened per message
 - **ArchivePage**: Archive viewer with filters, pagination and inline route tables
+- **REST API** (`/api/v1/`): Read-only NiceGUI/FastAPI endpoints served alongside the dashboard; see [9.13. Public REST API](#913-public-rest-api)
 - **Communication**: Via command queue (GUI→worker) and shared state with flags (worker→GUI)
 
 ## 11. Cross-Frequency Bridge
@@ -997,133 +1173,17 @@ CLI options: `--config=PATH`, `--port=PORT`, `--debug-on`, `--help`.
 Install the bridge as a systemd daemon for production use:
 
 ```bash
-sudo bash install_bridge.sh
+sudo bash install_scripts/install_bridge.sh
 sudo nano /etc/meshcore/bridge_config.yaml
 sudo systemctl start meshcore-bridge
 sudo systemctl enable meshcore-bridge
 ```
 
-To uninstall: `sudo bash install_bridge.sh --uninstall`
+To uninstall: `sudo bash install_scripts/install_bridge.sh --uninstall`
 
 For full documentation including architecture details, troubleshooting and assumptions, see [BRIDGE.md](BRIDGE.md).
 
-## 12. BBS — Bulletin Board System
-
-MeshCore GUI includes an offline BBS that lets mesh nodes exchange structured messages by category, with optional region tagging.
-
-### Access model
-
-The operator links one or more channels to the BBS. Anyone who sends a message on a configured BBS channel is automatically added to the whitelist. After that, they can send commands via **Direct Message** to the BBS node — the channel itself stays clean.
-
-```
-First contact:  !bbs help  on the configured channel
-                → node sees the public key → whitelists it
-After that:     !p U need assistance  as DM to the node
-                → processed, reply sent back via DM
-```
-
-Anyone who has never sent a message on a configured channel is not on the whitelist and is silently ignored.
-
-### Settings
-
-Open via the gear icon (⚙) in the BBS panel, or navigate to `/bbs-settings`.
-
-```
-BBS Settings
-──────────────────────────────────────────
-Channels:    ☑ [1] NoodNet Zwolle
-             ☑ [2] NoodNet Dalfsen
-             ☐ [3] NoodNet OV
-Categories:  URGENT, MEDICAL, LOGISTICS, STATUS, GENERAL
-Retain:      48 hours
-[Save]
-
-▶ Advanced
-  Regions (comma-separated)
-  Allowed keys (DM-BBS whitelist)
-```
-
-- **Channels** — check all channels whose participants should have access to the BBS. Multiple channels can be selected.
-- **Categories** — comma-separated list of valid category tags.
-- **Retain** — message retention in hours (default 48).
-- **Advanced → Regions** — optional region tags for geographic filtering.
-- **Advanced → Allowed keys** — manual whitelist override; leave empty to rely on auto-learned keys only.
-
-### Command syntax
-
-#### Short syntax
-
-| Command | Description |
-|---|---|
-| `!p <cat> <text>` | Post a message |
-| `!p <region> <cat> <text>` | Post with region |
-| `!r` | Read 5 most recent messages (all categories) |
-| `!r <cat>` | Read filtered by category |
-| `!r <cat> <from-to>` | Read with range, e.g. `!r U 6-10` |
-| `!r <region> <cat> <from-to>` | Read filtered by region, category and range |
-| `!s <cat> <query>` | Search messages in a category |
-| `!s <region> <cat> <query>` | Search with region filter |
-| `!h` | Show help and abbreviation table |
-
-Category abbreviations are computed automatically as the shortest unique prefix within the configured list. Example with `URGENT, MEDICAL, LOGISTICS, STATUS, GENERAL`:
-
-```
-U=URGENT  M=MEDICAL  L=LOGISTICS  S=STATUS  G=GENERAL
-```
-
-If two categories share the same leading letters (e.g. `MEDICAL` and `MISSING`), longer prefixes are calculated automatically: `ME` and `MI`. The `!r` (without arguments) and `!h` / `!bbs help` replies always include the current abbreviation table.
-
-**Range pagination** — messages are returned newest first, 1-indexed:
-
-| Range | Returns |
-|---|---|
-| `!r U 1-5` | Messages 1–5 (same as `!r U`) |
-| `!r U 6-10` | Messages 6–10 |
-| `!r U 15-40` | Messages 15–40 |
-
-**Search** — case-insensitive substring match across message bodies, all results returned:
-
-```
-!s U assistance         → all URGENT messages containing "assistance"
-!s Zwolle U water       → all URGENT messages in region Zwolle containing "water"
-```
-
-#### Full syntax
-
-| Command | Description |
-|---|---|
-| `!bbs help` | Show commands and abbreviation table |
-| `!bbs post <category> <text>` | Post a message |
-| `!bbs post <region> <category> <text>` | Post with region |
-| `!bbs read` | Read 5 most recent messages |
-| `!bbs read <category>` | Read filtered by category |
-| `!bbs read <category> <from-to>` | Read with range |
-| `!bbs read <region> <category> <from-to>` | Read filtered by region, category and range |
-
-#### Example help reply
-
-```
-BBS [NoodNet Zwolle, NoodNet Dalfsen] | !p [cat] [text] | !r [cat] [1-5] | !s [cat] [query] | U=URGENT M=MEDICAL L=LOGISTICS S=STATUS G=GENERAL
-```
-
-### Error handling
-
-| Situation | Reply |
-|---|---|
-| Unknown category | Lists valid categories and abbreviations |
-| Ambiguous abbreviation | Lists all matching categories |
-| Sender not on whitelist | Silent drop — no reply |
-
-### Storage
-
-```
-~/.meshcore-gui/bbs/bbs_messages.db    — SQLite message store (WAL mode)
-~/.meshcore-gui/bbs/bbs_config.json    — Board configuration
-```
-
----
-
-## 13. Known Limitations
+## 12. Known Limitations
 
 1. **Channel discovery timing** — Dynamic channel discovery probes the device at startup; on very slow links (especially BLE), some channels may be missed on first attempt. Channels are retried in the background and cached for subsequent startups when `CHANNEL_CACHE_ENABLED = True`
 2. **Initial load time** — GUI waits for device data before the first render is complete (mitigated by cache: if cached data exists, the GUI populates instantly)
@@ -1133,13 +1193,13 @@ BBS [NoodNet Zwolle, NoodNet Dalfsen] | !p [cat] [text] | !r [cat] [1-5] | !s [c
 5. **BLE Linux only** — BLE mode requires Linux with BlueZ and D-Bus. macOS and Windows are not supported for BLE connections because the PIN agent relies on the D-Bus system bus
 6. **BlueZ 5.66+ instability** — Recent BlueZ versions (shipped with Ubuntu 24.04, Debian Bookworm, Raspberry Pi OS Bookworm) can cause BLE connection instability, pairing failures and unexpected disconnects. USB serial is not affected and is recommended as the most reliable transport
 
-## 14. Troubleshooting
+## 13. Troubleshooting
 
-### 14.1. Linux
+### 13.1. Linux
 
 For Linux troubleshooting, start by checking device permissions and that the correct device argument is used.
 
-#### 14.1.1. Serial Quick Fixes
+#### 13.1.1. Serial Quick Fixes
 
 ##### GUI remains empty / serial connection fails
 
@@ -1166,7 +1226,7 @@ For Linux troubleshooting, start by checking device permissions and that the cor
    python meshcore_gui.py /dev/ttyUSB0
    ```
 
-#### 14.1.2. BLE Quick Fixes
+#### 13.1.2. BLE Quick Fixes
 
 ##### GUI remains empty / BLE connection fails
 
@@ -1256,30 +1316,30 @@ If the version is 5.66 or higher, you have several options:
    ```
    Restart Bluetooth after editing: `sudo systemctl restart bluetooth`
 
-### 14.2. macOS
+### 13.2. macOS
 
 - Ensure the device shows up under `/dev/tty.usb*`, `/dev/tty.usbserial*`, or `/dev/tty.usbmodem*`
 - Close any other app that might be using the serial port
 
-### 14.3. Windows
+### 13.3. Windows
 
 - Confirm the COM port in Device Manager → Ports (COM & LPT)
 - Close any other app that might be using the COM port
 
-### 14.4. All Platforms
+### 13.4. All Platforms
 
-#### 14.4.1. Device Not Found
+#### 13.4.1. Device Not Found
 
 **Serial:** Make sure the MeshCore device is powered on, running Serial Companion firmware, and the correct serial port is selected.
 
 **BLE:** Ensure the device is powered on and discoverable (`bluetoothctl scan on`). Check that the MAC address is correct and that the BLE PIN matches (default: `123456`). On Linux, verify D-Bus permissions — see `docs/ble/BLE_ARCHITECTURE.md` for details.
 
-#### 14.4.2. Messages Not Arriving
+#### 13.4.2. Messages Not Arriving
 
 - Check if your channels are correctly configured
 - Use `meshcli` to verify that messages are arriving
 
-#### 14.4.3. Clearing the Cache
+#### 13.4.3. Clearing the Cache
 
 If cached data causes issues (e.g. stale contacts), delete the cache file:
 
@@ -1289,9 +1349,9 @@ rm ~/.meshcore-gui/cache/*.json
 
 The cache will be recreated on the next successful serial connection.
 
-## 15. Development
+## 14. Development
 
-### 15.1. Debug Mode
+### 14.1. Debug Mode
 
 Enable via command line flag:
 
@@ -1303,19 +1363,20 @@ Or set `DEBUG = True` in `meshcore_gui/config.py`.
 
 Debug output is written to both stdout and a per-device rotating log file at `~/.meshcore-gui/logs/<ADDRESS>_meshcore_gui.log` (e.g. `F0_9E_9E_75_A3_01_meshcore_gui.log`).
 
-### 15.2. Project Structure
+### 14.2. Project Structure
 
-<!-- CHANGED: Project structure updated — added archive_page.py and message_archive.py -->
+<!-- CHANGED: Project structure updated — added api/, bbs_panel, bot_panel, channel_service, bbs_config_store, bot_config_store, map_snapshot_service, public_api_service, install_scripts/ -->
 
 ```
 meshcore-gui/
 ├── meshcore_gui.py                  # Entry point (auto-detects Serial or BLE)
-├── install_ble_stable.sh            # BLE installer (systemd service for BLE connections)
-├── install_serial.sh                # Serial installer (systemd service for serial connections)
 ├── meshcore_gui/                    # Application package
 │   ├── __init__.py
 │   ├── __main__.py                  # Alternative entry: python -m meshcore_gui
-│   ├── config.py                    # OPERATOR_CALLSIGN, LANDING_SVG_PATH, DEBUG flag, channel discovery settings (MAX_CHANNELS, CHANNEL_CACHE_ENABLED), SERIAL_* defaults, BLE_PIN, TRANSPORT mode, RECONNECT_* settings, refresh interval, retention settings, BOT_DEVICE_NAME, per-device log file naming
+│   ├── config.py                    # All settings: callsign, transport, channels, bot, API, retention, paths
+│   ├── api/                         # REST API layer
+│   │   ├── __init__.py
+│   │   └── routes.py                # Read-only /api/v1/ endpoints registered on the NiceGUI app
 │   ├── ble/                         # Connection layer (serial + BLE transport)
 │   │   ├── __init__.py
 │   │   ├── worker.py                # _BaseWorker + SerialWorker + BLEWorker + create_worker() factory; thread lifecycle, cache-first startup, disconnect detection, auto-reconnect, background key retry
@@ -1344,18 +1405,42 @@ meshcore-gui/
 │   │       ├── filter_panel.py      # Channel filters and bot toggle
 │   │       ├── messages_panel.py    # Filtered message display with archive button
 │   │       ├── actions_panel.py     # Refresh and advert buttons
+│   │       ├── bbs_panel.py         # BBS enable/configure panel (channel selection, settings link)
+│   │       ├── bot_panel.py         # Bot enable/configure panel (channel selection, private mode)
+│   │       ├── channel_panel.py     # Add Channel dialog (Hashtag / Private New / Private Existing)
 │   │       ├── room_server_panel.py # Per-room-server card with login/logout and messages
 │   │       └── rxlog_panel.py       # RX log table
 │   └── services/                    # Business logic
 │       ├── __init__.py
+│       ├── bbs_config_store.py      # BBS configuration persistence (~/.meshcore-gui/bbs/bbs_config.json)
+│       ├── bbs_service.py           # BBS engine: command parsing, whitelist, SQLite store, category abbreviations
 │       ├── bot.py                   # Keyword-triggered auto-reply bot
-│       ├── cache.py                 # Local JSON cache per device
+│       ├── bot_config_store.py      # Bot channel/mode persistence per device (~/.meshcore-gui/bot/)
+│       ├── cache.py                 # Local JSON cache per device (~/.meshcore-gui/cache/)
+│       ├── channel_service.py       # Channel discovery, add, delete, re-indexing and key caching
 │       ├── contact_cleaner.py       # Bulk-delete logic for unpinned contacts
 │       ├── dedup.py                 # Message deduplication
-│       ├── message_archive.py       # Persistent message and RX log archive
-│       ├── pin_store.py             # Persistent pin state storage per device
+│       ├── device_identity.py       # Device address normalisation helpers
+│       ├── map_snapshot_service.py  # Builds node-position snapshots for the REST API
+│       ├── message_archive.py       # Persistent message and RX log archive with retention and cleanup
+│       ├── pin_store.py             # Persistent pin state storage per device (~/.meshcore-gui/pins/)
+│       ├── public_api_service.py    # Data aggregation layer for /api/v1/ (enforces privacy filtering)
 │       ├── room_password_store.py   # Persistent Room Server password storage per device
 │       └── route_builder.py         # Route data construction
+├── install_scripts/                 # Installer shell scripts
+│   ├── install_venv.sh              # Create venv and install core Python dependencies
+│   ├── install_serial.sh            # systemd service installer for serial connections
+│   ├── install_ble_stable.sh        # systemd service installer for BLE connections (includes D-Bus policy)
+│   ├── install_bridge.sh            # systemd service installer for the cross-frequency bridge
+│   └── install_observer.sh          # systemd service installer for the observer daemon (in development)
+├── meshcore_gui/static/             # Static assets served by NiceGUI
+│   ├── icon.svg
+│   ├── icon-192.png
+│   ├── icon-512.png
+│   ├── landing_default.svg          # Default landing page graphic (operator-replaceable)
+│   ├── manifest.json                # PWA manifest
+│   ├── leaflet_map_panel.js         # Leaflet map integration
+│   └── leaflet_map_panel.css
 ├── docs/
 │   ├── TROUBLESHOOTING.md           # BLE troubleshooting guide (detailed)
 │   ├── MeshCore_GUI_Design.docx     # Design document
@@ -1375,7 +1460,6 @@ meshcore-gui/
 │           ├── status_panel.py      # Device A/B connection status + statistics
 │           └── log_panel.py         # Forwarded message log
 ├── bridge_config.yaml               # Bridge configuration template (YAML)
-├── install_bridge.sh                # Bridge systemd service installer
 ├── BRIDGE.md                        # Bridge documentation
 ├── .gitattributes
 ├── .gitignore
@@ -1384,31 +1468,31 @@ meshcore-gui/
 └── README.md
 ```
 
-## 16. Roadmap
+## 15. Roadmap
 
 This project is under active development. The most common features from the official MeshCore Companion apps are being implemented gradually. Planned additions include:
 
 - [x] **Cross-frequency bridge** — standalone daemon connecting two devices on different frequencies via configurable channel forwarding (see [11. Cross-Frequency Bridge](#11-cross-frequency-bridge))
-- [x] **BBS — Bulletin Board System** — offline message board with DM-based commands, category/region filtering and automatic abbreviations (see [12. BBS](#12-bbs--bulletin-board-system))
-- [ ] **Observer mode** — passively monitor mesh traffic without transmitting, useful for network analysis, coverage mapping and long-term logging
+- [x] **BBS — Bulletin Board System** — offline message board with DM-based commands, category/region filtering and automatic abbreviations (see [9.14. BBS](#914-bbs--bulletin-board-system))
+- [ ] **Observer mode** — passively monitor mesh traffic without transmitting, useful for network analysis, coverage mapping and long-term logging. The systemd installer (`install_scripts/install_observer.sh`) is already available; the daemon itself is in development
 - [ ] **Room Server administration** — authenticate as admin to manage Room Server settings and users directly from the GUI
 - [ ] **Repeater management** — connect to repeater nodes to view status and adjust configuration
 
 Have a feature request or want to contribute? Open an issue or submit a pull request.
 
-## 17. Disclaimer
+## 16. Disclaimer
 
 This is an **independent community project** and is not affiliated with or endorsed by the official [MeshCore](https://github.com/meshcore-dev) development team. It is built on top of the open-source `meshcore` Python library.
 
-## 18. License
+## 17. License
 
 MIT License - see LICENSE file
 
-## 19. Author
+## 18. Author
 
 **PE1HVH** — [GitHub](https://github.com/pe1hvh)
 
-## 20. Acknowledgments
+## 19. Acknowledgments
 
 - [MeshCore](https://github.com/meshcore-dev) — Mesh networking firmware and protocol
 - [meshcore_py](https://github.com/meshcore-dev/meshcore_py) — Python bindings for MeshCore

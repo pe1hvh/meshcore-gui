@@ -1,17 +1,32 @@
 #!/usr/bin/env bash
 # ============================================================================
-# MeshCore GUI — Serial Installer
+# MeshCore GUI — Serial Installer (multi-instance)
 # ============================================================================
 #
 # Installs a systemd service for the serial-based MeshCore GUI.
-# Automatically detects paths and the current user.
+# The service name is derived from the serial port, so multiple instances
+# can coexist on the same machine.
 #
 # Usage:
 #   bash install_scripts/install_serial.sh         # from project root
 #   cd install_scripts && bash install_serial.sh   # from install_scripts/
 #
-# Optional:
-#   bash install_scripts/install_serial.sh --uninstall
+# Optional env vars:
+#   SERIAL_PORT=/dev/ttyUSB0   Serial device (will prompt if omitted)
+#   WEB_PORT=8081               NiceGUI web port (default: 8081)
+#   BAUD=115200                 Baud rate (default: 115200)
+#   SERIAL_CX_DLY=0.1          Serial connect delay (default: 0.1)
+#   DEBUG_ON=yes|no             Enable debug logging (will prompt if omitted)
+#
+# Examples — two instances on the same machine:
+#   SERIAL_PORT=/dev/ttyUSB0 WEB_PORT=8081 bash install_scripts/install_serial.sh
+#   SERIAL_PORT=/dev/ttyUSB1 WEB_PORT=8082 bash install_scripts/install_serial.sh
+#
+# Uninstall a specific instance:
+#   SERIAL_PORT=/dev/ttyUSB0 bash install_scripts/install_serial.sh --uninstall
+#
+# List all installed instances:
+#   bash install_scripts/install_serial.sh --list
 #
 # Requirements:
 #   - meshcore-gui project with venv/ directory
@@ -26,7 +41,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 info()  { echo -e "${BLUE}[INFO]${NC}  $*"; }
 ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
@@ -41,15 +56,66 @@ else
     PROJECT_DIR="${SCRIPT_DIR}"
 fi
 
+# ── List mode ──
+if [[ "${1:-}" == "--list" ]]; then
+    echo ""
+    echo "Installed MeshCore GUI instances:"
+    echo "─────────────────────────────────────────────────"
+    found=0
+    for f in /etc/systemd/system/meshcore-gui-*.service; do
+        [[ -f "$f" ]] || continue
+        name="$(basename "$f" .service)"
+        status="$(systemctl is-active "$name" 2>/dev/null || echo inactive)"
+        port="$(grep -oP '(?<=--port=)\S+' "$f" 2>/dev/null || echo '?')"
+        device="$(grep -oP '(?<=ExecStart=.{60,200} )/dev/\S+' "$f" 2>/dev/null | head -1 || echo '?')"
+        echo "  ${name}"
+        echo "    device : ${device}"
+        echo "    port   : ${port}"
+        echo "    status : ${status}"
+        echo ""
+        found=1
+    done
+    if [[ $found -eq 0 ]]; then
+        echo "  (none found)"
+    fi
+    echo "─────────────────────────────────────────────────"
+    exit 0
+fi
+
+# ── Resolve serial port (needed for service name) ──
+SERIAL_PORT="${SERIAL_PORT:-}"
+if [[ -z "${SERIAL_PORT}" ]]; then
+    echo ""
+    echo -e "${YELLOW}Serial device not specified.${NC}"
+    echo "You can specify it in two ways:"
+    echo ""
+    echo "  1. As an environment variable:"
+    echo "     SERIAL_PORT=/dev/ttyACM0 bash $0"
+    echo ""
+    echo "  2. Enter manually:"
+    read -rp "     Serial device (e.g. /dev/ttyACM0 or /dev/ttyUSB0): " SERIAL_PORT
+    echo ""
+fi
+
+if [[ -z "${SERIAL_PORT}" ]]; then
+    error "No serial device specified. Aborted."
+fi
+
+# Derive a safe service name from the device path
+# e.g. /dev/ttyUSB1 → meshcore-gui-ttyUSB1
+DEVICE_SLUG="$(basename "${SERIAL_PORT}")"
+SERVICE_NAME="meshcore-gui-${DEVICE_SLUG}"
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+
 # ── Uninstall mode ──
 if [[ "${1:-}" == "--uninstall" ]]; then
-    info "Removing meshcore-gui service..."
-    sudo systemctl stop meshcore-gui 2>/dev/null || true
-    sudo systemctl disable meshcore-gui 2>/dev/null || true
-    sudo rm -f /etc/systemd/system/meshcore-gui.service
+    info "Removing ${SERVICE_NAME}..."
+    sudo systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
+    sudo systemctl disable "${SERVICE_NAME}" 2>/dev/null || true
+    sudo rm -f "${SERVICE_FILE}"
     sudo systemctl daemon-reload
     sudo systemctl reset-failed 2>/dev/null || true
-    ok "Service removed"
+    ok "Service '${SERVICE_NAME}' removed"
     exit 0
 fi
 
@@ -85,25 +151,6 @@ else
     error "Cannot determine entry point."
 fi
 
-# Serial port (env or prompt)
-SERIAL_PORT="${SERIAL_PORT:-}"
-if [[ -z "${SERIAL_PORT}" ]]; then
-    echo ""
-    echo -e "${YELLOW}Serial device not specified.${NC}"
-    echo "You can specify it in two ways:"
-    echo ""
-    echo "  1. As an environment variable:"
-    echo "     SERIAL_PORT=/dev/ttyACM0 bash $0"
-    echo ""
-    echo "  2. Enter manually:"
-    read -rp "     Serial device (e.g. /dev/ttyACM0 or /dev/ttyUSB0): " SERIAL_PORT
-    echo ""
-fi
-
-if [[ -z "${SERIAL_PORT}" ]]; then
-    error "No serial device specified. Aborted."
-fi
-
 # Optional settings
 BAUD="${BAUD:-115200}"
 SERIAL_CX_DLY="${SERIAL_CX_DLY:-0.1}"
@@ -132,6 +179,11 @@ if ! id -nG "${CURRENT_USER}" | grep -qw "dialout"; then
     warn "  (then log out/in)"
 fi
 
+# Warn if this service already exists
+if [[ -f "${SERVICE_FILE}" ]]; then
+    warn "Service '${SERVICE_NAME}' already exists and will be overwritten."
+fi
+
 # Summary
 echo ""
 echo "═══════════════════════════════════════════════════"
@@ -146,6 +198,7 @@ echo " Baudrate:     ${BAUD}"
 echo " CX delay:     ${SERIAL_CX_DLY}"
 echo " Web port:     ${WEB_PORT}"
 echo " Debug:        ${DEBUG_ON}"
+echo " Service name: ${SERVICE_NAME}"
 echo "═══════════════════════════════════════════════════"
 echo ""
 read -rp "Continue? [y/N] " confirm
@@ -187,11 +240,10 @@ ok "Python files are syntactically correct"
 
 # ── Step 3: Install systemd service ──
 info "Step 3/3: Installing systemd service..."
-SERVICE_FILE="/etc/systemd/system/meshcore-gui.service"
 
 sudo tee "${SERVICE_FILE}" > /dev/null << SERVICE_EOF
 [Unit]
-Description=MeshCore GUI (Serial)
+Description=MeshCore GUI (${SERIAL_PORT})
 
 [Service]
 Type=simple
@@ -206,8 +258,8 @@ WantedBy=multi-user.target
 SERVICE_EOF
 
 sudo systemctl daemon-reload
-sudo systemctl enable meshcore-gui
-ok "meshcore-gui.service installed and enabled"
+sudo systemctl enable "${SERVICE_NAME}"
+ok "'${SERVICE_NAME}' installed and enabled"
 
 # ── Done ──
 echo ""
@@ -216,14 +268,17 @@ echo -e " ${GREEN}Installation complete!${NC}"
 echo "═══════════════════════════════════════════════════"
 echo ""
 echo " Commands:"
-echo "   sudo systemctl start meshcore-gui      # Start"
-echo "   sudo systemctl stop meshcore-gui       # Stop"
-echo "   sudo systemctl restart meshcore-gui    # Restart"
-echo "   sudo systemctl status meshcore-gui     # Status"
-echo "   journalctl -u meshcore-gui -f          # Live logs"
+echo "   sudo systemctl start   ${SERVICE_NAME}"
+echo "   sudo systemctl stop    ${SERVICE_NAME}"
+echo "   sudo systemctl restart ${SERVICE_NAME}"
+echo "   sudo systemctl status  ${SERVICE_NAME}"
+echo "   journalctl -u ${SERVICE_NAME} -f"
 echo ""
-echo " Uninstall:"
-echo "   bash install_scripts/install_serial.sh --uninstall"
+echo " All instances:"
+echo "   bash install_scripts/install_serial.sh --list"
+echo ""
+echo " Uninstall this instance:"
+echo "   SERIAL_PORT=${SERIAL_PORT} bash install_scripts/install_serial.sh --uninstall"
 echo ""
 echo "═══════════════════════════════════════════════════"
 
@@ -231,14 +286,14 @@ echo "════════════════════════�
 echo ""
 read -rp "Start service now? [y/N] " start_now
 if [[ "${start_now}" == "y" || "${start_now}" == "Y" ]]; then
-    sudo systemctl start meshcore-gui
+    sudo systemctl start "${SERVICE_NAME}"
     sleep 2
-    if systemctl is-active --quiet meshcore-gui; then
+    if systemctl is-active --quiet "${SERVICE_NAME}"; then
         ok "Service is running!"
         echo ""
-        info "View live logs: journalctl -u meshcore-gui -f"
+        info "View live logs: journalctl -u ${SERVICE_NAME} -f"
     else
         warn "Service could not start. Check logs:"
-        echo "  journalctl -u meshcore-gui --no-pager -n 20"
+        echo "  journalctl -u ${SERVICE_NAME} --no-pager -n 20"
     fi
 fi

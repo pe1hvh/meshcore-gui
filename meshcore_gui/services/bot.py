@@ -123,7 +123,12 @@ class MeshBot:
         self._enabled = enabled_check
         self._config_store = config_store
         self._pinned_check = pinned_check
-        self._last_reply: float = 0.0
+        # Per-sender cooldown tracker.
+        # Key: sender name (str); Value: timestamp of last reply (float).
+        # Replaces the previous single-float global cooldown which caused the
+        # bot to silently ignore all senders for BOT_COOLDOWN_SECONDS after
+        # replying to the first one.
+        self._last_reply_per_sender: Dict[str, float] = {}
 
     def check_and_reply(
         self,
@@ -143,7 +148,7 @@ class MeshBot:
             2.   Message is on the configured channel.
             3.   Sender is not the bot itself.
             4.   Sender name does not end with 'Bot' (prevent loops).
-            5.   Cooldown period has elapsed.
+            5.   Per-sender cooldown period has elapsed.
             6.   Message text contains a recognised keyword.
 
         Note: BBS commands (``!bbs``, ``!p``, ``!r``) are NOT handled here.
@@ -194,10 +199,14 @@ class MeshBot:
             debug_print(f"BOT: skipping message from other bot '{sender}'")
             return
 
-        # Guard 5: cooldown?
+        # Guard 5: per-sender cooldown.
+        # Each sender gets an independent cooldown window so a reply to one
+        # node does not silence the bot for all other nodes simultaneously.
         now = time.time()
-        if now - self._last_reply < self._config.cooldown_seconds:
-            debug_print("BOT: cooldown active, skipping")
+        sender_key = sender or ""
+        last_for_sender = self._last_reply_per_sender.get(sender_key, 0.0)
+        if now - last_for_sender < self._config.cooldown_seconds:
+            debug_print(f"BOT: cooldown active for '{sender}', skipping")
             return
 
         # Guard 6: keyword match
@@ -215,7 +224,12 @@ class MeshBot:
             path=path_str,
         )
 
-        self._last_reply = now
+        self._last_reply_per_sender[sender_key] = now
+        # Evict oldest entry when the dict grows too large (prevents unbounded
+        # memory use in long-running sessions with many unique senders).
+        if len(self._last_reply_per_sender) > 200:
+            oldest = min(self._last_reply_per_sender, key=self._last_reply_per_sender.get)
+            del self._last_reply_per_sender[oldest]
 
         self._sink({
             "action": "send_message",
@@ -252,16 +266,28 @@ class MeshBot:
         """Return the effective channel set.
 
         When a :class:`BotConfigStore` is present, its channel selection
-        is always authoritative — including an empty set (bot silent on
-        all channels until the user saves a selection in the BOT panel).
-        The hardcoded :attr:`BotConfig.channels` fallback is only used
-        when no config store is wired (e.g. in unit tests).
+        is authoritative — **unless the stored set is empty**, in which case
+        the hardcoded :attr:`BotConfig.channels` fallback is used.  An empty
+        stored set means the user has not yet saved a channel selection in the
+        BOT panel; the bot should still respond on the default channels rather
+        than being silently deaf.
+
+        The :attr:`BotConfigStore` fallback is only bypassed entirely when no
+        config store is wired (e.g. in unit tests).
 
         Returns:
             Frozenset of active channel indices.
         """
         if self._config_store is not None:
-            return frozenset(self._config_store.get_settings().channels)
+            stored = frozenset(self._config_store.get_settings().channels)
+            if stored:
+                return stored
+            # Empty set → fall through to BotConfig defaults (see BotSettings
+            # docstring: "Empty set means 'use BotConfig defaults'").
+            debug_print(
+                "BOT: no channels saved in config store — "
+                "falling back to BotConfig defaults"
+            )
         return self._config.channels
 
     @staticmethod

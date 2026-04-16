@@ -334,9 +334,25 @@ class _BaseWorker(abc.ABC):
             if channels:
                 self._channels = channels
                 self.shared.set_channels(channels)
-                debug_print(f"Cache → channels: {[c['name'] for c in channels]}")
+                debug_print(f"Cache -> channels: {[c['name'] for c in channels]}")
         else:
-            debug_print("Channel cache disabled — skipping cached channels")
+            # CHANNEL_CACHE_ENABLED is off, but channel names are always cached
+            # independently. Use them to pre-populate the GUI so channel names
+            # are visible immediately, before BLE discovery completes.
+            cached_names = self._cache.get_channel_names()
+            if cached_names:
+                name_channels = [
+                    {"idx": idx, "name": name}
+                    for idx, name in sorted(cached_names.items())
+                ]
+                self._channels = name_channels
+                self.shared.set_channels(name_channels)
+                debug_print(
+                    f"Cache -> channel names (fallback): "
+                    f"{[c['name'] for c in name_channels]}"
+                )
+            else:
+                debug_print("Channel cache disabled and no cached names -- skipping")
 
         contacts = self._cache.get_contacts()
         if contacts:
@@ -350,9 +366,20 @@ class _BaseWorker(abc.ABC):
                 secret_bytes = bytes.fromhex(secret_hex)
                 if len(secret_bytes) >= 16:
                     self._decoder.add_channel_key(idx, secret_bytes[:16], source="cache")
-                    debug_print(f"Cache → channel key [{idx}]")
+                    debug_print(f"Cache -> channel key [{idx}]")
             except (ValueError, TypeError) as exc:
-                debug_print(f"Cache → bad channel key [{idx_str}]: {exc}")
+                debug_print(f"Cache -> bad channel key [{idx_str}]: {exc}")
+
+        # Derive decoder keys for hashtag channels from their cached names.
+        # Hashtag keys are never stored in channel_keys (they are derived from
+        # the name), so we reconstruct them here to ensure the decoder can
+        # decrypt hashtag channel messages before BLE discovery completes.
+        cached_names = self._cache.get_channel_names()
+        cached_key_indices = {int(k) for k in self._cache.get_channel_keys()}
+        for idx, name in cached_names.items():
+            if name.startswith("#") and idx not in cached_key_indices:
+                self._decoder.add_channel_key_from_name(idx, name)
+                debug_print(f"Cache -> hashtag key derived for [{idx}] {name}")
 
         cached_orig_name = self._cache.get_original_device_name()
         if cached_orig_name:
@@ -584,6 +611,9 @@ class _BaseWorker(abc.ABC):
 
         self._channels = discovered
         self.shared.set_channels(discovered)
+        # Always persist channel names regardless of CHANNEL_CACHE_ENABLED,
+        # so the GUI can display them immediately on next startup.
+        self._cache.set_channel_names({ch["idx"]: ch["name"] for ch in discovered})
         if CHANNEL_CACHE_ENABLED:
             self._cache.set_channels(discovered)
             debug_print("Channel list cached to disk")

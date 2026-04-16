@@ -10,6 +10,52 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 
 ---
 
+
+## [1.20.1] - 2026-04-15
+
+### Fixed
+- **Bot global cooldown blocked all senders** (`services/bot.py`):
+  `_last_reply` was a single float, so a reply to any node would start a
+  5-second silence window for *all* other nodes. During testing with multiple
+  contacts, only the first `#test` message received a bot reply; subsequent
+  messages from different senders were silently dropped by Guard 5.
+  Fix: replaced `_last_reply: float` with `_last_reply_per_sender: Dict[str, float]`.
+  Each sender now has an independent cooldown window; a reply to one node
+  does not affect any other node. LRU eviction caps the dict at 200 entries
+  to prevent unbounded memory growth in long-running sessions.
+
+- **Bot deaf on first run when no channels saved** (`services/bot.py`):
+  `_get_active_channels()` returned an empty frozenset when `BotConfigStore`
+  had no saved channel selection (i.e. the user had never clicked
+  "💾 Save channels"). The bot was therefore silent on all channels despite
+  the BOT panel showing all channels pre-checked. The `BotSettings.channels`
+  docstring already documented this as the intended fallback case, but the
+  code did not implement it.
+  Fix: `_get_active_channels()` now falls back to `BotConfig.channels`
+  (`{1, 4}` — `#test` and `#bot`) when the stored set is empty, matching
+  the documented intent.
+
+---
+
+## [1.20.0] - 2026-04-10
+
+### Changed
+- `services/device_identity.py`: `device_identity.json` upgraded from v1
+  (single flat object) to v2 (dict keyed by `source_device`).  Multiple
+  GUI instances running on different serial ports (e.g. `/dev/ttyUSB0` and
+  `/dev/ttyUSB1`) each write their own entry without overwriting each other.
+- `write_device_identity()` now reads the existing file before writing,
+  updating only the entry for the current `source_device`.
+- `read_device_identity()` accepts an optional `source_device` parameter:
+  returns a single entry dict when specified, or the full multi-device dict
+  when called without arguments.
+- `_load_raw()` (internal) handles v1 → v2 migration transparently on first
+  write: the old flat object is re-keyed under its `source_device` value.
+- Console output now includes the device path:
+  `📝 Device identity saved → ~/.meshcore-gui/device_identity.json [/dev/ttyUSB1]`.
+- No changes to `ble/worker.py` or any other module — API is fully backward
+  compatible.
+
 ## [1.19.0] - 2026-04-06
 
 ### FIXED

@@ -168,6 +168,41 @@ class DeviceCache:
             self.save()
 
     # ------------------------------------------------------------------
+    # Channel names
+    # ------------------------------------------------------------------
+
+    def get_channel_names(self) -> Dict[int, str]:
+        """Return cached channel names as ``{idx: name}``.
+
+        Always available regardless of ``CHANNEL_CACHE_ENABLED``.
+        Keys are returned as integers for direct use as channel indices.
+        """
+        raw: Dict[str, str] = self._data.get("channel_names", {})
+        result: Dict[int, str] = {}
+        for k, v in raw.items():
+            try:
+                result[int(k)] = v
+            except (ValueError, TypeError):
+                pass
+        return result
+
+    def set_channel_names(self, names: Dict[int, str]) -> None:
+        """Store a complete channel-name mapping and persist to disk.
+
+        Replaces any previously cached names with the supplied mapping.
+        Intended to be called after every successful channel discovery so
+        the most recent names are always available at next startup,
+        independent of ``CHANNEL_CACHE_ENABLED``.
+
+        Args:
+            names: Mapping of channel index to channel name,
+                   e.g. ``{0: "Public", 1: "#localmesh"}``.
+        """
+        self._data["channel_names"] = {str(k): v for k, v in names.items()}
+        self.save()
+        debug_print(f"Cache: channel names saved: {names}")
+
+    # ------------------------------------------------------------------
     # Contacts (merge strategy)
     # ------------------------------------------------------------------
 

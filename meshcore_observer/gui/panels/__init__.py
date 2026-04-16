@@ -1,1 +1,0 @@
-"""Observer dashboard panels."""

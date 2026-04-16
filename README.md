@@ -449,11 +449,38 @@ This creates `venv/` and installs all core dependencies (`nicegui`, `meshcore`, 
 Use the appropriate installer for your transport:
 
 ```bash
-# Serial connection
+# Serial connection — single device (will prompt for serial port)
 bash install_scripts/install_serial.sh
 
 # BLE connection
 bash install_scripts/install_ble_stable.sh
+```
+
+**Serial — single device with explicit port:**
+
+```bash
+SERIAL_PORT=/dev/ttyUSB0 WEB_PORT=8081 bash install_scripts/install_serial.sh
+```
+
+**Serial — multiple devices on the same machine:**
+
+Each device gets its own systemd service, named after its serial port (e.g. `meshcore-gui-ttyUSB1`). Assign a unique web port per instance:
+
+```bash
+SERIAL_PORT=/dev/ttyUSB1 WEB_PORT=8081 bash install_scripts/install_serial.sh
+SERIAL_PORT=/dev/ttyUSB2 WEB_PORT=8082 bash install_scripts/install_serial.sh
+```
+
+**List all installed serial instances:**
+
+```bash
+bash install_scripts/install_serial.sh --list
+```
+
+**Uninstall a specific serial instance:**
+
+```bash
+SERIAL_PORT=/dev/ttyUSB1 bash install_scripts/install_serial.sh --uninstall
 ```
 
 **Serial environment variables** (optional):
@@ -572,7 +599,9 @@ For example: `http://raspberrypi5nas:8081` or `http://192.168.2.234:8081`. This 
 
 ### 7.7. Running Multiple Instances
 
-You can run multiple instances simultaneously (e.g. for different MeshCore devices) by assigning each a different port:
+You can run multiple instances simultaneously (e.g. for different MeshCore devices) by assigning each a different port.
+
+#### Foreground / background (manual)
 
 ```bash
 # Two serial devices
@@ -582,6 +611,39 @@ python meshcore_gui.py /dev/ttyUSB1 --port=8082 --baud=115200 &
 # Mixed: serial + BLE
 python meshcore_gui.py /dev/ttyACM0 --port=8081 &
 python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --port=8082 &
+```
+
+#### systemd — multiple services (recommended for production)
+
+`install_serial.sh` derives the service name from the serial port, so each device gets its own independent service that starts on boot and restarts on failure:
+
+```bash
+SERIAL_PORT=/dev/ttyUSB1 WEB_PORT=8081 bash install_scripts/install_serial.sh
+SERIAL_PORT=/dev/ttyUSB2 WEB_PORT=8082 bash install_scripts/install_serial.sh
+```
+
+This creates two services: `meshcore-gui-ttyUSB1` and `meshcore-gui-ttyUSB2`.
+
+**Manage individual instances:**
+
+```bash
+sudo systemctl start   meshcore-gui-ttyUSB1
+sudo systemctl stop    meshcore-gui-ttyUSB2
+sudo systemctl restart meshcore-gui-ttyUSB1
+sudo systemctl status  meshcore-gui-ttyUSB2
+journalctl -u meshcore-gui-ttyUSB1 -f
+```
+
+**List all installed instances:**
+
+```bash
+bash install_scripts/install_serial.sh --list
+```
+
+**Uninstall one instance:**
+
+```bash
+SERIAL_PORT=/dev/ttyUSB1 bash install_scripts/install_serial.sh --uninstall
 ```
 
 Each instance gets its own log file, cache and archive, all keyed by the device identifier (serial port or BLE address).

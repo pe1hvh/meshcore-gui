@@ -11,6 +11,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.20.2] - 2026-04-19
+
+### Fixed
+- **Public API omitted `sender_pubkey` and `path_names` from the message payload**
+  (`services/public_api_service.py`):
+  `get_messages_payload()` built each item dict with `sender`, `text`,
+  `timestamp`, `hops` and `path_hashes`, but silently dropped the already-
+  resolved `sender_pubkey` and `path_names` fields that `BleEventHandler`
+  writes to every archived message (see `_resolve_path_names()` in
+  `ble/events.py` and the archive schema in `services/message_archive.py`
+  lines 135–137). Downstream consumers were therefore forced to re-resolve
+  path hashes themselves using only the 1-byte path-hash prefix — a lookup
+  that collides heavily in networks with more than ~256 nodes and yields
+  the wrong repeater name, type and coordinates on nearly every hop. The
+  `sender_pubkey` omission had a similar effect on the sender column:
+  clients could only match on display-name, which is ambiguous when two
+  nodes share a name stem (e.g. `NL-OV-ZWO-LGH-PD5WB` vs the mobile
+  variant `NL-OV-ZWO-LGH-PD5WB-MOB`).
+  Fix: added `"sender_pubkey"` and `"path_names"` to the item dict. Both
+  fields are read straight from the archive — no new resolution logic is
+  introduced, so there is no additional cost on the hot path. The response
+  schema change is additive: existing clients that ignore unknown keys
+  continue to work unchanged.
+
+### Changed
+- `config.py`: version bump `1.20.1 → 1.20.2`.
+
+---
+
 ## [1.20.1] - 2026-04-15
 
 ### Fixed

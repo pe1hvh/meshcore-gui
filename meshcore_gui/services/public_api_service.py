@@ -261,14 +261,16 @@ def get_messages_payload(
     items: List[Dict[str, Any]] = []
     for i, msg in enumerate(page):
         items.append({
-            "id": offset + i + 1,                          # 1-based stable ID
-            "channel_idx": msg.get("channel"),
-            "channel_name": msg.get("channel_name", ""),
-            "sender": msg.get("sender", ""),
-            "text": msg.get("text", ""),
-            "timestamp": msg.get("timestamp_utc"),
-            "hops": msg.get("path_len", 0) or 0,
-            "path_hashes": msg.get("path_hashes") or [],
+            "id":            offset + i + 1,                          # 1-based stable ID
+            "channel_idx":   msg.get("channel"),
+            "channel_name":  msg.get("channel_name", ""),
+            "sender":        msg.get("sender", ""),
+            "sender_pubkey": msg.get("sender_pubkey", "") or "",
+            "text":          msg.get("text", ""),
+            "timestamp":     msg.get("timestamp_utc"),
+            "hops":          msg.get("path_len", 0) or 0,
+            "path_hashes":   msg.get("path_hashes") or [],
+            "path_names":    msg.get("path_names")  or [],
         })
 
     return {

@@ -18,6 +18,7 @@ from meshcore_gui.gui.panels import (
     ActionsPanel,
     BbsPanel,
     BotPanel,
+    ChannelBackupPanel,
     ChannelPanel,
     ContactsPanel,
     DevicePanel,
@@ -298,10 +299,11 @@ class DashboardPage:
         shared: SharedDataReader for data access and command dispatch.
     """
 
-    def __init__(self, shared: SharedDataReader, pin_store: PinStore, room_password_store: RoomPasswordStore, bot_config_store: BotConfigStore | None = None) -> None:
+    def __init__(self, shared: SharedDataReader, pin_store: PinStore, room_password_store: RoomPasswordStore, bot_config_store: BotConfigStore | None = None, device_id: str = "") -> None:
         self._shared = shared
         self._pin_store = pin_store
         self._room_password_store = room_password_store
+        self._device_id = device_id
 
         # BBS service and config store (singletons shared with bot routing)
         self._bbs_config_store = BbsConfigStore()
@@ -328,6 +330,9 @@ class DashboardPage:
 
         # Channel add dialog panel
         self._channel_panel: ChannelPanel | None = None
+
+        # Channel backup / restore dialogs
+        self._channel_backup_panel: ChannelBackupPanel | None = None
 
         # Channel delete confirmation dialog
         self._confirm_delete_dialog = None
@@ -389,6 +394,11 @@ class DashboardPage:
         self._channel_panel = ChannelPanel(put_cmd)
         self._channel_panel.render()
 
+        self._channel_backup_panel = ChannelBackupPanel(
+            self._device_id, put_cmd
+        )
+        self._channel_backup_panel.render()
+
         # ── Channel delete confirmation dialog ────────────────────
         self._confirm_delete_dialog = ui.dialog()
         with self._confirm_delete_dialog:
@@ -448,6 +458,20 @@ class DashboardPage:
                     self._make_sub_btn(
                         '＋ Add Channel',
                         lambda: self._channel_panel.open() if self._channel_panel else None,
+                    )
+                    self._make_sub_btn(
+                        '💾 Backup Channels',
+                        lambda: (
+                            self._channel_backup_panel.open_backup()
+                            if self._channel_backup_panel else None
+                        ),
+                    )
+                    self._make_sub_btn(
+                        '📥 Restore Channels',
+                        lambda: (
+                            self._channel_backup_panel.open_restore()
+                            if self._channel_backup_panel else None
+                        ),
                     )
 
             # ── 🏠 ROOMS (expandable with room submenu) ───────────
@@ -688,6 +712,20 @@ class DashboardPage:
                     self._make_sub_btn(
                         '＋ Add Channel',
                         lambda: self._channel_panel.open() if self._channel_panel else None,
+                    )
+                    self._make_sub_btn(
+                        '💾 Backup Channels',
+                        lambda: (
+                            self._channel_backup_panel.open_backup()
+                            if self._channel_backup_panel else None
+                        ),
+                    )
+                    self._make_sub_btn(
+                        '📥 Restore Channels',
+                        lambda: (
+                            self._channel_backup_panel.open_restore()
+                            if self._channel_backup_panel else None
+                        ),
                     )
 
             # Rebuild Archive submenu
@@ -940,6 +978,8 @@ class DashboardPage:
                 self._update_submenus(data)
                 if self._channel_panel:
                     self._channel_panel.update(data)
+                if self._channel_backup_panel:
+                    self._channel_backup_panel.update(data)
 
             if self._active_panel == 'device':
                 if data['device_updated'] or is_first:

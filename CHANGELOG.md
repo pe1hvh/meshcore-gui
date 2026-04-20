@@ -11,6 +11,76 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.21.0] - 2026-04-20
+
+### Added
+- **Local channel backup & restore** (`services/channel_backup_store.py`,
+  `gui/panels/channel_backup_panel.py`):
+  Channels can now be snapshotted to a local JSON file and restored after
+  a firmware reflash, NVS erase or device replacement. The operator no
+  longer needs to externally note down each slot's PSK before flashing.
+
+  - New store `ChannelBackupStore` writes to
+    `~/.meshcore-gui/channel_backups/_<safe_dev_id>_channels.json`,
+    mirroring the `BotConfigStore` / `PinStore` per-device filename
+    convention so multiple nodes coexist without conflict.
+  - Data is sourced exclusively from `DeviceCache`
+    (`channel_keys` + `channel_names`) plus the live channel snapshot
+    from `SharedData`. No new BLE/serial protocol calls are introduced
+    — restore reuses the existing `add_channel` command handler via
+    the worker command queue.
+  - On-disk schema: `{schema_version, device_id, firmware_version,
+    exported_at, channels: [{slot_idx, name, psk_hex}]}`. Schema version
+    is pinned at `1`; `ChannelBackupStore._parse()` rejects unknown
+    versions so older clients fail fast when the format changes.
+  - The schema is intentionally distinct from the public REST API's
+    channel payload: backups include every slot (public, hashtag, and
+    private) because local recovery is the whole point, while
+    `public_api_service` continues to filter out private channels as
+    before. Backup files never leave `~/.meshcore-gui/` and are not
+    exposed by the API route layer.
+  - New panel `ChannelBackupPanel` adds two dialogs accessed from the
+    Messages submenu:
+    - **💾 Backup Channels** — one-click export with pre/post summary
+      showing how many slots were written and, critically, how many had
+      no cached PSK (those cannot be restored without manual input —
+      the dialog surfaces the count so the operator is not caught out).
+    - **📥 Restore Channels** — loads the device's own backup file by
+      default, or an uploaded `.json` file for cross-device restores
+      (e.g. migrating from an old Heltec V3 to a new one after
+      firmware flashing). Entries are classified into
+      `restorable` / `conflict` / `identical` / `skipped` buckets
+      **before** any device write happens, so the operator sees in
+      advance which slots will be overwritten and which have no PSK.
+      Confirm dispatches one `add_channel` command per entry through
+      the normal worker queue.
+
+### Changed
+- `gui/dashboard.py`: `DashboardPage.__init__` now accepts an optional
+  `device_id` parameter (default `""`). This is threaded through to
+  `ChannelBackupPanel` so the backup store can namespace its file to
+  the correct node. All existing call sites were updated; the
+  parameter is keyword-compatible so external callers that did not
+  supply it continue to work unchanged.
+- `__main__.py`: added module-level `_device_id` so the `@ui.page('/')`
+  handler (which recreates `DashboardPage` per client session) can
+  pass the device identifier into the dashboard constructor.
+- `config.py`: version bump `1.20.2 → 1.21.0`.
+
+### Not changed (deliberately out of scope)
+- No automatic or scheduled backups — the operator triggers a backup
+  explicitly before risky operations. Auto-backup on channel changes
+  was considered and deferred; the cache already persists channel
+  keys on every write, so an on-demand export is sufficient.
+- No cloud/remote storage and no integration with `domca.nl`. Backup
+  files contain private channel PSKs and are therefore strictly local.
+- No new BLE/serial commands. Restore is purely a replay of existing
+  `add_channel` operations; the firmware is unaware that a bulk
+  restore is happening.
+
+---
+
+
 ## [1.20.2] - 2026-04-19
 
 ### Fixed

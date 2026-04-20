@@ -59,6 +59,7 @@ A full-featured desktop platform for MeshCore mesh radio devices. Connects via U
   - [9.12. Actions](#912-actions)
   - [9.13. Public REST API](#913-public-rest-api)
   - [9.14. BBS — Bulletin Board System](#914-bbs--bulletin-board-system)
+  - [9.15. Channel Backup & Restore](#915-channel-backup--restore)
 - [10. Architecture](#10-architecture)
 - [11. Cross-Frequency Bridge](#11-cross-frequency-bridge)
   - [11.1. Bridge Overview](#111-bridge-overview)
@@ -111,7 +112,7 @@ Under the hood it uses `meshcore` as the protocol layer, `meshcoredecoder` for r
 - **Interactive Map** — Leaflet map with markers for own position and contacts
 - **Channel Messages** — Send and receive messages on channels
 - **Direct Messages** — Click on a contact to send a DM
-- **Channel Management** — Channels are automatically discovered at startup. Add hashtag or private channels directly from the GUI; new private channels generate a shareable QR code and hex key. Each channel has an inline 🗑 delete button that automatically re-indexes remaining slots
+- **Channel Management** — Channels are automatically discovered at startup. Add hashtag or private channels directly from the GUI; new private channels generate a shareable QR code and hex key. Each channel has an inline 🗑 delete button that automatically re-indexes remaining slots. **Channel Backup & Restore** writes the full channel table (names + PSKs) to a local JSON file so channels can be recreated after a firmware reflash, NVS erase or device swap, with a pre-write diff that classifies entries as restorable / conflict / identical / skipped before anything is written to the device
 - **Contact Management** — Pin/unpin contacts to protect them from deletion, individual and bulk-delete unpinned contacts, and toggle automatic contact addition from mesh adverts
 - **Message Filtering** — Filter messages per channel via checkboxes
 - **Message Route Visualization** — Click any message to open a detailed route page showing the path (hops) through the mesh network on an interactive map, with a hop summary, route table and reply panel
@@ -727,6 +728,9 @@ All persistent data is stored under `~/.meshcore-gui/` in your home directory. E
 ├── bbs/
 │   ├── bbs_config.json         # BBS settings: channels, categories, regions, whitelist
 │   └── bbs_messages.db         # BBS message store (SQLite, WAL mode)
+├── channel_backups/
+│   └── _<dev_id>_channels.json # Local channel backup (names + PSKs) per device
+│                               # Created on demand from 💾 Backup Channels; never transmitted
 └── logs/
     └── <ADDRESS>_meshcore_gui.log  # Rotating debug log (max 20 MB, only with --debug-on)
 ```
@@ -1071,6 +1075,61 @@ BBS [NoodNet Zwolle, NoodNet Dalfsen] | !p [cat] [text] | !r [cat] [1-5] | !s [c
 ~/.meshcore-gui/bbs/bbs_messages.db    — SQLite message store (WAL mode)
 ~/.meshcore-gui/bbs/bbs_config.json    — Board configuration
 ```
+
+### 9.15. Channel Backup & Restore
+
+Channels on a MeshCore device are held in the on-board NVS partition, which is erased on every firmware flash that does not explicitly preserve it. A private channel PSK is a 16-byte secret that only exists on the device and in the local GUI cache (`~/.meshcore-gui/cache/<ADDRESS>.json` → `channel_keys`). Without a backup, reflashing means every private channel is gone and has to be re-shared with every peer who already knew the old PSK.
+
+The Channel Backup & Restore feature turns this from a risky operation into a two-click round-trip. Backups are local-only, device-scoped, and written on demand.
+
+**When to use it**
+
+- Before flashing new firmware on a Heltec V3 or any board where the NVS partition may be wiped.
+- Before physically replacing a node (e.g. swapping a dead SenseCAP Solar P1-Pro for a new one).
+- Before experimenting with firmware build flags that touch the channel subsystem, such as raising `MAX_GROUP_CHANNELS` beyond the default.
+
+**Creating a backup**
+
+In the left drawer, expand **MESSAGES** and click **💾 Backup Channels**. The dialog reports how many active channels the device currently has, and on confirm writes a JSON file to `~/.meshcore-gui/channel_backups/_<dev_id>_channels.json`. The post-export summary shows the split between entries that include a cached PSK (restorable automatically) and entries without one — the latter can happen for slots that were never fully resolved by `get_channel()`, and those will need manual re-entry on restore.
+
+File format:
+
+```json
+{
+  "schema_version": 1,
+  "device_id": "/dev/ttyUSB1",
+  "firmware_version": "v1.14.0",
+  "exported_at": "2026-04-20T12:34:56+00:00",
+  "channels": [
+    { "slot_idx": 0, "name": "Public",    "psk_hex": "8b3387e9c5cdea6ac9e5edbaa115cd72" },
+    { "slot_idx": 1, "name": "#test",     "psk_hex": "5d41402abc4b2a76b9719d911017c592" },
+    { "slot_idx": 4, "name": "teamalpha", "psk_hex": "fd3a1e..." }
+  ]
+}
+```
+
+Data is sourced exclusively from the local `DeviceCache` (PSKs + names) and the live channel snapshot. No BLE or serial round-trip is required — the cache is already populated by the normal discovery cycle, so the backup is effectively instant.
+
+**Restoring a backup**
+
+Click **📥 Restore Channels**. The dialog automatically loads the backup for the currently connected device, or a different file when you use the **Load different file…** upload (useful when migrating from a dead node to a replacement). Before any write happens, every backup entry is diffed against the device's current state and classified:
+
+| Category | Meaning | Action on confirm |
+| --- | --- | --- |
+| ✅ Restorable | Slot is empty on the device | Channel is added |
+| ⚠️ Conflict | Slot is occupied with a different name or PSK | Existing slot is overwritten |
+| ✓ Identical | Slot already matches the backup | Re-sent as a no-op; triggers cache refresh |
+| ⊘ Skipped | Backup entry has no PSK | Not written — requires manual re-entry |
+
+Review the preview, then click **Write to device**. Under the hood, restore is purely a replay of the existing `add_channel` command, one call per entry, dispatched through the normal worker queue. There is no new BLE or serial protocol code; if a single add succeeds interactively, a restore of N channels works the same way N times.
+
+**Cross-device restore**
+
+The **Load different file…** upload in the Restore dialog accepts any backup produced by another MeshCore GUI instance. The diff still runs against the *currently connected* device, so the preview always reflects exactly what will land on the hardware in front of you. This is the intended path for replacing a broken node: export from the old node (or use its last backup file), connect the new node, upload the old backup, confirm.
+
+**Privacy note**
+
+Backup files contain private channel PSKs and are therefore stored strictly locally in `~/.meshcore-gui/channel_backups/`. They are never included in the public REST API response and never leave the host. The existing domca.nl privacy filter (Public + Hashtag channels only in the public API) continues to apply unchanged — `public_api_service` does not read from the backup directory at all.
 
 ## 10. Architecture
 
@@ -1470,6 +1529,7 @@ meshcore-gui/
 │   │       ├── bbs_panel.py         # BBS enable/configure panel (channel selection, settings link)
 │   │       ├── bot_panel.py         # Bot enable/configure panel (channel selection, private mode)
 │   │       ├── channel_panel.py     # Add Channel dialog (Hashtag / Private New / Private Existing)
+│   │       ├── channel_backup_panel.py # Channel Backup & Restore dialogs (export PSKs, preview diff, restore)
 │   │       ├── room_server_panel.py # Per-room-server card with login/logout and messages
 │   │       └── rxlog_panel.py       # RX log table
 │   └── services/                    # Business logic
@@ -1480,6 +1540,7 @@ meshcore-gui/
 │       ├── bot_config_store.py      # Bot channel/mode persistence per device (~/.meshcore-gui/bot/)
 │       ├── cache.py                 # Local JSON cache per device (~/.meshcore-gui/cache/)
 │       ├── channel_service.py       # Channel discovery, add, delete, re-indexing and key caching
+│       ├── channel_backup_store.py  # Channel backup/restore store (~/.meshcore-gui/channel_backups/)
 │       ├── contact_cleaner.py       # Bulk-delete logic for unpinned contacts
 │       ├── dedup.py                 # Message deduplication
 │       ├── device_identity.py       # Device address normalisation helpers

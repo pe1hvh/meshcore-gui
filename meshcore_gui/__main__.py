@@ -62,13 +62,14 @@ _archive_page = None
 _pin_store = None
 _room_password_store = None
 _bot_config_store = None
+_device_id = ""
 
 
 @ui.page('/')
 def _page_dashboard():
     """NiceGUI page handler — main dashboard."""
     if _shared and _pin_store and _room_password_store:
-        DashboardPage(_shared, _pin_store, _room_password_store, _bot_config_store).render()
+        DashboardPage(_shared, _pin_store, _room_password_store, _bot_config_store, _device_id).render()
 
 
 @ui.page('/route/{msg_key}')
@@ -167,7 +168,7 @@ def main():
     Parses CLI arguments, auto-detects the transport, initialises all
     components and starts the NiceGUI server.
     """
-    global _shared, _dashboard, _route_page, _bbs_settings_page, _archive_page, _pin_store, _room_password_store, _bot_config_store
+    global _shared, _dashboard, _route_page, _bbs_settings_page, _archive_page, _pin_store, _room_password_store, _bot_config_store, _device_id
 
     args, flags = _parse_flags(sys.argv[1:])
 
@@ -265,11 +266,12 @@ def main():
     print("=" * 55)
 
     # ── Assemble components ──
+    _device_id = device_id
     _shared = SharedData(device_id)
     _pin_store = PinStore(device_id)
     _room_password_store = RoomPasswordStore(device_id)
     _bot_config_store = BotConfigStore(device_id)
-    _dashboard = DashboardPage(_shared, _pin_store, _room_password_store, _bot_config_store)
+    _dashboard = DashboardPage(_shared, _pin_store, _room_password_store, _bot_config_store, device_id)
     _route_page = RoutePage(_shared)
     _archive_page = ArchivePage(_shared)
     from meshcore_gui.services.bbs_config_store import BbsConfigStore as _BCS

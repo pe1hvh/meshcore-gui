@@ -11,7 +11,63 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
-## [1.21.0] - 2026-04-20
+## [1.22.0] - 2026-04-21
+
+### Added
+- **Drawer channel-list sort toggle** (`services/channel_sort_store.py`,
+  `services/channel_service.py`, `gui/dashboard.py`):
+  The drawer Messages and Archive submenus can now be sorted either by
+  channel index (the native MeshCore order, default) or alphabetically
+  by channel name. The choice is exposed as a single sub-button per
+  submenu labelled `↕ Sort: index` / `↕ Sort: name` and is shared
+  between both submenus so a single click reorders both lists at once.
+
+  - New store `ChannelSortStore` persists the preference to
+    `~/.meshcore-gui/channel_sort.json` so it survives application
+    restarts. The store is global (not per-device) because the sort
+    mode is a pure UI concern.
+  - New pure helper `sort_channels(channels, mode)` in
+    `services/channel_service.py`. The Public channel (`idx == 0`) is
+    always pinned to the top regardless of mode; moving it during an
+    alphabetical sort would be confusing as it is the default broadcast
+    slot. Sort-by-name is case-insensitive (`str.casefold`).
+  - The dashboard submenu fingerprint now includes the sort mode so a
+    user-initiated toggle forces a rebuild even when the channel list
+    itself has not changed. After toggling, the dashboard calls
+    `_update_submenus` immediately with a fresh SharedData snapshot so
+    the reorder is visible without waiting for the next 500 ms tick.
+
+### Changed
+- `CHANNEL_SORT_MODE_DEFAULT` added to `config.py` as the factory
+  default for the sort mode (``"index"``). Used by `ChannelSortStore`
+  on first run and when the stored file is missing or contains an
+  invalid value.
+- `VERSION` bumped `1.21.0` → `1.22.0` (MINOR: new backwards-compatible
+  feature).
+
+### Impact
+- No BLE/worker changes; SharedData and the BLE command pipeline are
+  untouched.
+- The `ChannelPanel` Move/Reindex dropdown is intentionally NOT
+  affected — that list is an admin tool for operators who know which
+  slot they want, not a navigation aid.
+- The (unused but still present) `FilterPanel` is not touched.
+- Existing drawer submenu functionality — delete/move per-channel
+  buttons, Add/Backup/Restore buttons, DM and ALL entries — is
+  preserved unchanged.
+
+### Rationale
+Operators with a large number of channels reported needing a way to
+find a specific channel quickly. Index order is fine for small
+deployments but becomes unwieldy above ~10 channels. Alphabetical
+order provides a predictable scan path; keeping Public pinned at the
+top preserves the mental model of "slot 0 is the broadcast channel".
+Persistence across restarts avoids forcing the user to re-select the
+preferred order every session.
+
+
+---
+
 
 ### Added
 - **Local channel backup & restore** (`services/channel_backup_store.py`,

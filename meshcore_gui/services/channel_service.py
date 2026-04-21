@@ -14,6 +14,7 @@ import base64
 import io
 import os
 from hashlib import sha256
+from typing import Dict, List
 from urllib.parse import urlencode
 
 
@@ -135,3 +136,58 @@ def generate_qr_base64(name: str, secret: bytes) -> str:
 
     except ImportError:
         return ""
+
+
+# ---------------------------------------------------------------------------
+# Sorting helpers
+# ---------------------------------------------------------------------------
+
+# Sort-mode string constants. Exposed here so both the GUI layer and the
+# :class:`ChannelSortStore` can share the same vocabulary without one
+# having to import the other.
+CHANNEL_SORT_BY_INDEX: str = "index"
+CHANNEL_SORT_BY_NAME: str = "name"
+
+
+def sort_channels(channels: List[Dict], mode: str) -> List[Dict]:
+    """Return a new channel list sorted according to ``mode``.
+
+    The Public channel (``idx == 0``) is always pinned to the top of
+    the returned list regardless of the requested mode. Public is the
+    default broadcast slot and moving it would be confusing when the
+    list is used for quick navigation.
+
+    The input list is not mutated; each dict reference is copied across
+    unchanged so the ``idx`` and ``name`` fields — and any other
+    channel metadata — remain coupled.
+
+    Args:
+        channels: Channel dicts as produced by SharedData. Each dict is
+            expected to contain at least an ``idx`` (int) and a
+            ``name`` (str).
+        mode:     Either :data:`CHANNEL_SORT_BY_INDEX` to keep the
+            ascending-index order (the native MeshCore ordering) or
+            :data:`CHANNEL_SORT_BY_NAME` for case-insensitive
+            alphabetical order. Unknown values fall back to index mode.
+
+    Returns:
+        A new list. The Public channel (if present) is first, followed
+        by the remaining channels in the order dictated by ``mode``.
+    """
+    if not channels:
+        return []
+
+    public = [ch for ch in channels if ch.get("idx") == 0]
+    rest = [ch for ch in channels if ch.get("idx") != 0]
+
+    if mode == CHANNEL_SORT_BY_NAME:
+        rest_sorted = sorted(
+            rest, key=lambda ch: (ch.get("name") or "").casefold()
+        )
+    else:
+        # SORT_BY_INDEX (default). An explicit sort guarantees a
+        # deterministic order even if the upstream list is not already
+        # ordered by index.
+        rest_sorted = sorted(rest, key=lambda ch: ch.get("idx", 0))
+
+    return public + rest_sorted

@@ -31,6 +31,12 @@ from meshcore_gui.gui.archive_page import ArchivePage
 from meshcore_gui.services.bbs_config_store import BbsConfigStore
 from meshcore_gui.services.bbs_service import BbsCommandHandler, BbsService
 from meshcore_gui.services.bot_config_store import BotConfigStore
+from meshcore_gui.services.channel_service import (
+    CHANNEL_SORT_BY_INDEX,
+    CHANNEL_SORT_BY_NAME,
+    sort_channels,
+)
+from meshcore_gui.services.channel_sort_store import ChannelSortStore
 from meshcore_gui.services.pin_store import PinStore
 from meshcore_gui.services.room_password_store import RoomPasswordStore
 
@@ -316,6 +322,10 @@ class DashboardPage:
         # share the same device-scoped file.  Falls back to a default-scoped
         # instance when not provided (e.g. unit tests, legacy callers).
         self._bot_config_store = bot_config_store if bot_config_store is not None else BotConfigStore()
+
+        # Channel sort preference store — global (not per-device) UI setting
+        # driving the drawer Messages/Archive submenu order.
+        self._channel_sort_store = ChannelSortStore()
 
         # Panels (created fresh on each render)
         self._device: DevicePanel | None = None
@@ -669,6 +679,41 @@ class DashboardPage:
             )
 
     # ------------------------------------------------------------------
+    # Channel sort helpers (drawer submenu)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _sort_btn_label(mode: str) -> str:
+        """Return the display label for the sort-toggle sub-button.
+
+        The label reflects the CURRENT sort mode, so the user sees at a
+        glance how the list is ordered; clicking the button switches to
+        the other mode.
+
+        Args:
+            mode: Current sort mode string.
+
+        Returns:
+            A label suitable for passing to :meth:`_make_sub_btn`.
+        """
+        if mode == CHANNEL_SORT_BY_NAME:
+            return '↕ Sort: name'
+        return '↕ Sort: index'
+
+    def _toggle_channel_sort(self) -> None:
+        """Flip the drawer channel sort mode and refresh both submenus.
+
+        Persists the new mode via :class:`ChannelSortStore`, invalidates
+        the submenu fingerprint to force a rebuild, and triggers an
+        immediate refresh so the user sees the reordered list without
+        waiting for the next 500 ms dashboard tick.
+        """
+        self._channel_sort_store.toggle_mode()
+        self._last_channel_fingerprint = None
+        data = self._shared.get_snapshot()
+        self._update_submenus(data)
+
+    # ------------------------------------------------------------------
     # Dynamic submenu updates (layout — called from _update_ui)
     # ------------------------------------------------------------------
 
@@ -680,10 +725,18 @@ class DashboardPage:
         """
         # ── Channel submenus (Messages + Archive) ──
         channels = data.get('channels', [])
-        ch_fingerprint = tuple((ch['idx'], ch['name']) for ch in channels)
+        sort_mode = self._channel_sort_store.get_mode()
+        # Sort mode is part of the fingerprint so a user-initiated
+        # toggle forces a rebuild even when the channel list itself is
+        # unchanged.
+        ch_fingerprint = (
+            tuple((ch['idx'], ch['name']) for ch in channels),
+            sort_mode,
+        )
 
         if ch_fingerprint != self._last_channel_fingerprint and channels:
             self._last_channel_fingerprint = ch_fingerprint
+            sorted_channels = sort_channels(channels, sort_mode)
 
             # Rebuild Messages submenu
             if self._msg_sub_container:
@@ -695,7 +748,11 @@ class DashboardPage:
                     self._make_sub_btn(
                         'DM', lambda: self._navigate_panel('messages', channel='DM')
                     )
-                    for ch in channels:
+                    self._make_sub_btn(
+                        self._sort_btn_label(sort_mode),
+                        self._toggle_channel_sort,
+                    )
+                    for ch in sorted_channels:
                         idx = ch['idx']
                         name = ch['name']
                         self._make_channel_sub_item(
@@ -738,7 +795,11 @@ class DashboardPage:
                     self._make_sub_btn(
                         'DM', lambda: self._navigate_panel('archive', channel='DM')
                     )
-                    for ch in channels:
+                    self._make_sub_btn(
+                        self._sort_btn_label(sort_mode),
+                        self._toggle_channel_sort,
+                    )
+                    for ch in sorted_channels:
                         idx = ch['idx']
                         name = ch['name']
                         self._make_channel_sub_item(

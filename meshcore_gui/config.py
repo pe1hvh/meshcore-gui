@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.21.0"
+VERSION: str = "1.22.0"
 
 
 # ==============================================================================
@@ -279,7 +279,7 @@ def debug_data(label: str, obj: Any) -> None:
 
 # Maximum number of channel slots to probe on the device.
 # MeshCore supports up to 8 channels (indices 0-7).
-MAX_CHANNELS: int = 100
+MAX_CHANNELS: int = 255
 
 # Enable or disable caching of the channel list to disk.
 # When False (default), channels are always fetched fresh from the
@@ -407,6 +407,25 @@ RXLOG_RETENTION_DAYS: int = 7
 # Retention period for contacts (in days).
 # Contacts not seen for longer than this are removed from cache.
 CONTACT_RETENTION_DAYS: int = 90
+
+
+# ==============================================================================
+# CHANNEL LIST SORT
+# ==============================================================================
+
+# Default sort mode for the drawer channel submenus (Messages and Archive).
+# This value is applied the first time the application is run or whenever
+# the stored preference file is missing/corrupt; once the user toggles
+# the sort control the chosen mode is persisted to
+# ``~/.meshcore-gui/channel_sort.json`` by :class:`ChannelSortStore`.
+#
+# Accepted values:
+#   "index" — ascending channel index (native MeshCore order, default)
+#   "name"  — case-insensitive alphabetical by channel name
+#
+# The Public channel (idx 0) is always rendered at the top regardless
+# of this setting; see :func:`sort_channels` in services/channel_service.py.
+CHANNEL_SORT_MODE_DEFAULT: str = "index"
 
 
 # BBS channel configuration is managed at runtime via BbsConfigStore.

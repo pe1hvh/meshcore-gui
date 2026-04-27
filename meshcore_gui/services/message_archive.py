@@ -60,6 +60,9 @@ class MessageArchive:
         
         self._messages_path = ARCHIVE_DIR / f"{safe_name}_messages.json"
         self._rxlog_path = ARCHIVE_DIR / f"{safe_name}_rxlog.json"
+        # Append-only JSONL stream for external consumers (e.g. meshcore-watchlist).
+        # One JSON object per line, written immediately on every RX entry.
+        self._rxlog_jsonl_path = ARCHIVE_DIR / f"{safe_name}_rxlog.jsonl"
         
         # In-memory batch buffers (flushed periodically)
         self._message_buffer: List[Dict] = []
@@ -176,7 +179,17 @@ class MessageArchive:
             }
             
             self._rxlog_buffer.append(entry_dict)
-            
+
+            # Append-only JSONL stream write (real-time consumer source).
+            # Direct write — no batch — for sub-second stream latency.
+            # Failure here must not affect the buffered JSON archive path.
+            try:
+                ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+                with self._rxlog_jsonl_path.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry_dict, ensure_ascii=False) + "\n")
+            except OSError as exc:
+                debug_print(f"Archive: JSONL append error: {exc}")
+
             # Flush if batch size reached
             if len(self._rxlog_buffer) >= self._batch_size:
                 self._flush_rxlog()
@@ -409,6 +422,43 @@ class MessageArchive:
         
         except (json.JSONDecodeError, OSError) as exc:
             debug_print(f"Archive: error cleaning up rxlog: {exc}")
+
+        # Cleanup JSONL stream file as well (same retention policy).
+        # Read all lines, filter on timestamp_utc, rewrite atomically.
+        if not self._rxlog_jsonl_path.exists():
+            return
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=RXLOG_RETENTION_DAYS)
+            kept_lines: List[str] = []
+            original_lines = 0
+            with self._rxlog_jsonl_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.rstrip("\n")
+                    if not line:
+                        continue
+                    original_lines += 1
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        # Skip corrupt line, do not retain.
+                        continue
+                    if self._is_newer_than(rec.get("timestamp_utc"), cutoff):
+                        kept_lines.append(line)
+
+            if len(kept_lines) < original_lines:
+                tmp_path = self._rxlog_jsonl_path.with_suffix(".jsonl.tmp")
+                tmp_path.write_text(
+                    "\n".join(kept_lines) + ("\n" if kept_lines else ""),
+                    encoding="utf-8",
+                )
+                tmp_path.replace(self._rxlog_jsonl_path)
+                debug_print(
+                    f"Archive: JSONL cleanup removed "
+                    f"{original_lines - len(kept_lines)} old entries "
+                    f"(retained: {len(kept_lines)})"
+                )
+        except OSError as exc:
+            debug_print(f"Archive: error cleaning up rxlog JSONL: {exc}")
 
     # ------------------------------------------------------------------
     # Utilities

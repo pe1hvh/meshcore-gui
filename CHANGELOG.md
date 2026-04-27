@@ -11,6 +11,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.22.1] - 2026-04-27
+
+### Added
+- **JSONL stream output for the RX log** (`services/message_archive.py`):
+  Every received LoRa packet is now also written immediately to an
+  append-only JSON Lines file at
+  `~/.meshcore-gui/archive/<device>_rxlog.jsonl`, one JSON object per
+  line. This provides a real-time data source for separate local
+  services (such as `meshcore-watchlist`) that want to consume the raw
+  RX feed without depending on the GUI's internal batched JSON file
+  format.
+
+  - The new file lives alongside the existing `<device>_rxlog.json`.
+    The original batched archive (60 s flush interval, atomic rewrite)
+    is unchanged so the GUI, the public REST API and `domca.nl` keep
+    working without modification.
+  - Writes are direct (no buffer) so end-to-end latency from radio
+    reception to JSONL line is sub-second, suitable for live
+    monitoring use cases.
+  - A failure on the JSONL append path is logged via `debug_print` and
+    does not affect the buffered JSON archive — the two paths are
+    independent.
+
+### Changed
+- `_cleanup_rxlog()` now also rewrites the JSONL stream file to drop
+  entries older than `RXLOG_RETENTION_DAYS`. Same retention policy as
+  the existing JSON archive; corrupt lines (e.g. a partial last line
+  after a crash) are skipped during cleanup.
+- `VERSION` bumped `1.22.0` → `1.22.1` (PATCH: additive feature, fully
+  backwards-compatible).
+
+### Impact
+- No BLE/worker changes; SharedData and the BLE command pipeline are
+  untouched.
+- No public REST API changes; `domca.nl` ingest is unaffected.
+- Existing consumers of `<device>_rxlog.json` see no difference.
+- Disk usage increases modestly (one additional file per device,
+  same retention window). On a Raspberry Pi 5 with SSD the extra
+  per-packet I/O is negligible.
+
+---
+
+
 ## [1.22.0] - 2026-04-21
 
 ### Added

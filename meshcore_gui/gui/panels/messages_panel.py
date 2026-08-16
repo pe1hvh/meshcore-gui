@@ -31,6 +31,9 @@ class MessagesPanel:
         # Active channel set by drawer submenu (None = all)
         self._active_channel = None
         self._channel_label = None
+        # Raised when the send selector still has to follow a new
+        # active channel; see _sync_send_channel().
+        self._send_channel_pending = False
 
     # -- Properties (same as FilterPanel originals) --------------------
 
@@ -49,12 +52,21 @@ class MessagesPanel:
     def set_active_channel(self, channel) -> None:
         """Set the active channel filter from the drawer submenu.
 
+        Besides filtering the message list, this also points the send
+        selector at the channel being viewed, so a reply defaults to the
+        channel the conversation is on instead of always to Public.
+
         Args:
             channel: None for all messages, 'DM' for DM only,
                      or int for a specific channel index.
         """
+        previous = self._active_channel
         self._active_channel = channel
         self._last_fingerprint = None  # force rebuild on next update
+
+        if channel != previous:
+            # New selection: the send selector must follow it once.
+            self._send_channel_pending = True
 
         # Update the header label
         if self._channel_label:
@@ -70,6 +82,46 @@ class MessagesPanel:
                         name = f"[{ch['idx']}] {ch['name']}"
                         break
                 self._channel_label.text = f'\U0001f4ac Messages — {name}'
+
+        self._sync_send_channel(channel)
+
+    def _sync_send_channel(self, channel) -> None:
+        """Point the send selector at *channel* when that is meaningful.
+
+        Applied at most once per drawer selection.  ``set_active_channel``
+        is re-invoked from ``update_filters`` on every dashboard tick, so
+        syncing unconditionally would overwrite a manual choice twice per
+        second.  The pending flag is therefore raised only when the active
+        channel actually changes, and lowered once the selector has been
+        updated — which also lets the sync retry on a later tick when the
+        channel options were not loaded yet at page-load time.
+
+        Only a concrete channel index is a valid send target, so the
+        selector is left untouched for the 'All' view (``None``) and for
+        the DM view (``'DM'``, which is not an option key).  A channel
+        absent from the options — still loading, or a slot vacated by the
+        post-discovery cache sync — leaves the current selection intact
+        rather than falling back to Public.
+
+        Note:
+            ``bool`` is a subclass of ``int`` in Python, so it is
+            excluded explicitly.
+
+        Args:
+            channel: None, 'DM', or a channel index.
+        """
+        if not self._send_channel_pending or self._channel_select is None:
+            return
+        if isinstance(channel, bool) or not isinstance(channel, int):
+            self._send_channel_pending = False
+            return
+        if channel not in (self._channel_select.options or {}):
+            return  # options not loaded yet — retry on a later tick
+        self._send_channel_pending = False
+        if self._channel_select.value == channel:
+            return  # unchanged — skip DOM update
+        self._channel_select.value = channel
+        self._channel_select.update()
 
     # -- Render --------------------------------------------------------
 

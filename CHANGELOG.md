@@ -11,6 +11,53 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.22.4] - 2026-08-16 — Main-page send selector follows the active channel
+
+### Fixed
+- 🛠 **Send selector on the dashboard stayed on Public regardless of the
+  channel being viewed** (`gui/panels/messages_panel.py`):  selecting a
+  channel in the drawer submenu routes through
+  `MessagesPanel.set_active_channel()`, which filtered the message list
+  and rewrote the header label but never touched the send selector.
+  `update_channel_options()` did not compensate: its corrective branch
+  (`if self._channel_select.value not in opts`) only fires for a value
+  that has disappeared from the options, and `0` (Public) is always
+  present.  Viewing `#noodnet-ov` and pressing Send therefore published
+  on Public.  `set_active_channel()` now points the selector at the
+  active channel via the new `_sync_send_channel()` helper.
+
+### Impact
+- The sync is applied at most once per drawer selection.
+  `set_active_channel()` is re-invoked from `update_filters()` on every
+  500 ms dashboard tick, so an unconditional sync would overwrite a
+  manual selector choice twice per second; a pending flag, raised only
+  when the active channel actually changes, prevents that.  The flag
+  stays raised while the channel is absent from the options, so the
+  sync retries on a later tick — this covers page load with
+  `?panel=messages&channel=N`, where `set_active_channel()` runs before
+  the options are populated.
+- The 'All' (`None`) and 'DM' (`'DM'`) views leave the selector
+  untouched: neither is a valid send target, and `'DM'` is not an
+  option key.  A channel index missing from the options likewise leaves
+  the current selection intact instead of falling back to Public.
+- No public method signature changed; `_sync_send_channel()` is private
+  and `set_active_channel()` keeps its contract.
+- `VERSION` bumped `1.22.3` → `1.22.4` (PATCH: backwards-compatible
+  bugfix).
+
+### Rationale
+1.22.3 fixed the reply selector on the route page but not this one —
+the bug report's phrase "klik ik vanuit #noodnet-ov" refers to the
+drawer submenu on the main page, where a second, independent selector
+lives (the send row that moved from `InputPanel` into `MessagesPanel`).
+The drawer is the only place that knows which channel the user is
+looking at, so `set_active_channel()` is the correct place to keep the
+selector in step; deriving it anywhere else would reintroduce the
+list-position guesswork that caused the original mis-sends.
+
+---
+
+
 ## [1.22.3] - 2026-08-16 — Reply defaults to the message's own channel + dated message timestamps
 
 ### Fixed

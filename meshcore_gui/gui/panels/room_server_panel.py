@@ -495,7 +495,7 @@ class RoomServerPanel:
             for msg in display:
                 direction = '→' if msg.direction == 'out' else '←'
                 sender = self._resolve_sender_name(msg.sender or '', contacts)
-                line = f"{msg.time} {direction} {sender}: {msg.text}"
+                line = f"{msg.display_timestamp()} {direction} {sender}: {msg.text}"
 
                 ui.label(line).classes(
                     'text-xs leading-tight px-1'

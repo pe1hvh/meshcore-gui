@@ -143,6 +143,28 @@ class PacketDecoder:
         secret_bytes = sha256(channel_name.encode("utf-8")).digest()[:16]
         self.add_channel_key(channel_idx, secret_bytes, source=f"name '{channel_name}'")
 
+    def remove_channel_key(self, channel_idx: int) -> None:
+        """Remove every registered key whose mapping points at *channel_idx*.
+
+        Used by the BLE worker after channel discovery to drop stale entries
+        for slots that are no longer active on the device (e.g. after a
+        delete or move).  Removing all mappings for the index — instead of a
+        specific secret — keeps the decoder consistent even when the same
+        slot was previously registered with multiple secrets across the
+        session (cache load + device confirmation may both succeed and leave
+        two entries for the same idx if the secret bytes differ).
+
+        Args:
+            channel_idx: Channel index to evict from the decoder.
+        """
+        stale = [s for s, idx in self._secret_to_idx.items() if idx == channel_idx]
+        for secret_hex in stale:
+            del self._secret_to_idx[secret_hex]
+        if stale:
+            debug_print(
+                f"PacketDecoder: removed {len(stale)} key(s) for ch{channel_idx}"
+            )
+
     @property
     def has_keys(self) -> bool:
         """True if at least one channel key has been registered."""

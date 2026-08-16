@@ -127,6 +127,7 @@ class MessageArchive:
             # Convert to dict and add UTC timestamp
             msg_dict = {
                 "time": msg.time,
+                "date": msg.date,
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                 "sender": msg.sender,
                 "text": msg.text,

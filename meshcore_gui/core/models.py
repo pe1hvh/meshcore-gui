@@ -29,7 +29,7 @@ class Message:
     """A channel message or direct message (DM).
 
     Attributes:
-        time:          Formatted timestamp (HH:MM:SS).
+        time:          Formatted local time (HH:MM:SS).
         sender:        Display name of the sender.
         text:          Message body.
         channel:       Channel index, or ``None`` for a DM.
@@ -42,6 +42,11 @@ class Message:
                        captured at receive time so the archive is self-contained.
         message_hash:  Deterministic packet identifier (hex string).
         channel_name:  Human-readable channel name (resolved at add time).
+        date:          Formatted local date (YYYY-MM-DD).  Added in 1.22.3;
+                       empty for messages archived by older versions, in which
+                       case :meth:`from_dict` derives it from ``timestamp_utc``.
+                       Declared last so positional construction stays
+                       backward-compatible.
     """
 
     time: str
@@ -56,6 +61,7 @@ class Message:
     path_names: List[str] = field(default_factory=list)
     message_hash: str = ""
     channel_name: str = ""
+    date: str = ""
 
     @staticmethod
     def from_dict(d: dict) -> "Message":
@@ -80,14 +86,63 @@ class Message:
             path_names=d.get("path_names", []),
             message_hash=d.get("message_hash", ""),
             channel_name=d.get("channel_name", ""),
+            date=d.get("date") or Message._date_from_timestamp(
+                d.get("timestamp_utc")
+            ),
         )
 
-    # -- Timestamp helper ------------------------------------------------
+    # -- Timestamp helpers -----------------------------------------------
 
     @staticmethod
     def now_timestamp() -> str:
-        """Current time formatted as ``HH:MM:SS``."""
+        """Current local time formatted as ``HH:MM:SS``."""
         return datetime.now().strftime('%H:%M:%S')
+
+    @staticmethod
+    def now_date() -> str:
+        """Current local date formatted as ``YYYY-MM-DD``."""
+        return datetime.now().strftime('%Y-%m-%d')
+
+    @staticmethod
+    def _date_from_timestamp(timestamp_utc: Optional[str]) -> str:
+        """Derive a local ``YYYY-MM-DD`` date from an ISO UTC timestamp.
+
+        Backward-compatibility helper for archive entries written before
+        the ``date`` field existed.  The archive stores ``timestamp_utc``
+        for every message, so the date can be recovered; it is converted
+        to local time first so it matches the local ``time`` field around
+        midnight.
+
+        Args:
+            timestamp_utc: ISO-8601 timestamp string, or ``None``.
+
+        Returns:
+            Local date as ``YYYY-MM-DD``, or an empty string when the
+            timestamp is missing or unparseable.
+        """
+        if not timestamp_utc:
+            return ""
+        try:
+            parsed = datetime.fromisoformat(timestamp_utc)
+        except (ValueError, TypeError):
+            return ""
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone()
+        return parsed.strftime('%Y-%m-%d')
+
+    def display_timestamp(self) -> str:
+        """Return the display timestamp for this message.
+
+        Produces ``YYYY-MM-DD HH:MM:SS`` when the date is known, and
+        falls back to the bare ``HH:MM:SS`` time for legacy messages
+        that carry no date information.
+
+        Returns:
+            Formatted timestamp string.
+        """
+        if self.date:
+            return f"{self.date} {self.time}"
+        return self.time
 
     # -- Factory methods -------------------------------------------------
 
@@ -99,6 +154,7 @@ class Message:
         channel: Optional[int],
         *,
         time: str = "",
+        date: str = "",
         snr: Optional[float] = None,
         path_len: int = 0,
         sender_pubkey: str = "",
@@ -112,7 +168,8 @@ class Message:
             sender:        Display name of the sender.
             text:          Message body.
             channel:       Channel index, or ``None`` for a DM.
-            time:          Optional pre-generated timestamp (default: now).
+            time:          Optional pre-generated time (default: now).
+            date:          Optional pre-generated date (default: today).
             snr:           Signal-to-noise ratio (dB).
             path_len:      Hop count from the LoRa frame header.
             sender_pubkey: Full public key of the sender (hex string).
@@ -122,6 +179,7 @@ class Message:
         """
         return cls(
             time=time or cls.now_timestamp(),
+            date=date or cls.now_date(),
             sender=sender,
             text=text,
             channel=channel,
@@ -151,6 +209,7 @@ class Message:
         """
         return cls(
             time=cls.now_timestamp(),
+            date=cls.now_date(),
             sender='Me',
             text=text,
             channel=channel,
@@ -168,10 +227,11 @@ class Message:
     ) -> str:
         """Format as a single display line for the messages panel.
 
-        Produces the same output as the original ``messages_panel.py``
-        inline formatting, e.g.::
+        The line opens with :meth:`display_timestamp`, which prefixes the
+        local date when it is known (legacy archive entries without a
+        date fall back to time only), e.g.::
 
-            12:34:56 ← [Public] [2h✓] PE1ABC: Hello mesh!
+            2026-08-16 12:34:56 ← [Public] [2h✓] PE1ABC: Hello mesh!
 
         When *show_channel* is ``False`` the ``[channel]`` / ``[DM]``
         tag is omitted (useful when the panel header already indicates
@@ -210,9 +270,11 @@ class Message:
 
         sender_display = f"{sender_prefix}{self.sender}" if self.sender else ''
 
+        stamp = self.display_timestamp()
+
         if self.sender:
-            return f"{self.time} {direction} {ch_label}{hop_tag}{sender_display}: {self.text}"
-        return f"{self.time} {direction} {ch_label}{hop_tag}{self.text}"
+            return f"{stamp} {direction} {ch_label}{hop_tag}{sender_display}: {self.text}"
+        return f"{stamp} {direction} {ch_label}{hop_tag}{self.text}"
 
 
 # ---------------------------------------------------------------------------

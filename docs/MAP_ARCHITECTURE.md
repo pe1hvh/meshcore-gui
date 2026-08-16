@@ -10,6 +10,8 @@ NiceGUI acts only as a container and data provider.
 
 This architecture prevents map resets, marker flicker, and viewport jumps during the 500 ms dashboard refresh cycle.
 
+The rationale and binding rules for this approach are recorded in **`docs/adr/ADR-001-browser-managed-leaflet.md`**.
+
 ---
 
 # Architecture
@@ -174,26 +176,6 @@ This prevents marker flicker during the refresh loop.
 
 ---
 
-# Important Constraints
-
-Developers must **not**:
-
-* recreate the Leaflet map inside the dashboard refresh loop
-* call `L.map(...)` from snapshot handlers, retry loops or timer callbacks
-* embed theme state in snapshots
-* call Leaflet APIs directly from Python
-* force viewport resets during normal snapshot updates
-* place the device marker inside the contact cluster layer
-
-Violating these rules will reintroduce:
-
-* disappearing maps
-* marker flicker
-* viewport resets
-* theme resets
-
----
-
 # Reconnect Behaviour
 
 When the NiceGUI connection temporarily drops:
@@ -229,3 +211,4 @@ Browser → map lifecycle
 
 This prevents UI refresh cycles from interfering with map state and ensures smooth rendering even with frequent dashboard updates.
 
+Binding constraints (what developers must and must not do) are listed in **`docs/adr/ADR-001-browser-managed-leaflet.md`** under "Consequences → Bindende uitvloeisels".

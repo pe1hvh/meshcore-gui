@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.22.1"
+VERSION: str = "1.22.3"
 
 
 # ==============================================================================
@@ -402,7 +402,7 @@ MESSAGE_RETENTION_DAYS: int = 30
 
 # Retention period for RX log entries (in days).
 # RX log entries older than this are automatically removed during cleanup.
-RXLOG_RETENTION_DAYS: int = 7
+RXLOG_RETENTION_DAYS: int = 14
 
 # Retention period for contacts (in days).
 # Contacts not seen for longer than this are removed from cache.

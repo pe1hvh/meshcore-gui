@@ -129,3 +129,48 @@ rm ~/.meshcore-gui/logs/_dev_ttyUSB1_meshcore_gui.log
 rm ~/.meshcore-gui/pins/_dev_ttyUSB1_pins.json
 rm ~/.meshcore-gui/room_passwords/_dev_ttyUSB1_rooms.json
 ```
+
+## Troubleshooting
+
+### Port already in use
+
+If meshcore-gui fails to start with:
+
+```
+ERROR: [Errno 98] error while attempting to bind on address ('0.0.0.0', 8081): address already in use
+```
+
+a previous instance is still running, or the port hasn't been released yet.
+
+**Quick fix — kill previous instance and free the port:**
+
+```bash
+pkill -9 -f meshcore_gui
+sleep 3
+lsof -i :8081
+```
+
+If `lsof` returns nothing, the port is free. Start the service again:
+
+```bash
+sudo systemctl restart meshcore-gui-device1
+```
+
+**If the port is still in use after killing**, sometimes TCP sockets linger
+in `TIME_WAIT` state. Wait 30 seconds:
+
+```bash
+sleep 30
+lsof -i :8081
+```
+
+**Running in background with nohup (for foreground tests, not the systemd
+flow above):** always redirect output to a log file so you can diagnose:
+
+```bash
+# Good - keeps logs for debugging
+nohup python meshcore_gui.py /dev/ttyUSB0 --debug-on --port=8081 > ~/meshcore.log 2>&1 &
+
+# Bad - hides all errors
+nohup python meshcore_gui.py /dev/ttyUSB0 --debug-on --port=8081 > /dev/null 2>&1 &
+```

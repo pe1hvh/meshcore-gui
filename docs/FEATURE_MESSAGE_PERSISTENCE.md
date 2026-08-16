@@ -8,6 +8,8 @@
 
 This feature implements persistent storage for all incoming messages, RX log entries, and contacts with configurable retention periods. The system uses a dual-layer architecture to balance real-time UI performance with comprehensive data retention.
 
+The architectural decision (why two layers, why independent locks, lock-ordering rules, schema-evolution policy) is recorded in **`docs/adr/ADR-005-dual-layer-persistence.md`**. This document is the feature reference: storage format, API, performance, testing.
+
 ## Architecture
 
 ```
@@ -28,14 +30,6 @@ This feature implements persistent storage for all incoming messages, RX log ent
 │   - Separate Lock (no contention)   │
 └─────────────────────────────────────┘
 ```
-
-### Design Principles
-
-1. **Separation of Concerns**: SharedData handles real-time UI updates, MessageArchive handles persistence
-2. **Thread Safety**: Independent locks prevent contention between UI and archiving
-3. **Batch Writes**: Buffered writes reduce disk I/O (flushes every 10 items or 60 seconds)
-4. **Configurable Retention**: Automatic cleanup based on configurable periods
-5. **Backward Compatibility**: SharedData API unchanged, archive is optional
 
 ## Storage Format
 
@@ -207,17 +201,14 @@ Cleanup is non-blocking and runs in the background worker thread.
 
 ## Thread Safety
 
-### Lock Ordering
-1. SharedData acquires its lock
-2. SharedData calls MessageArchive methods
-3. MessageArchive acquires its own lock
+Lock-ordering rules (SharedData → MessageArchive) and the rationale for
+two independent locks are documented in
+**`docs/adr/ADR-005-dual-layer-persistence.md`**.
 
-This ordering prevents deadlocks.
-
-### Concurrent Access
-- SharedData lock: Protects in-memory buffers
-- MessageArchive lock: Protects file writes and batch buffers
-- Independent locks prevent contention
+In short:
+- SharedData lock protects in-memory buffers
+- MessageArchive lock protects file writes and batch buffers
+- Locks are independent — no contention between UI and archiving
 
 ## Error Handling
 

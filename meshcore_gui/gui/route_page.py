@@ -172,7 +172,7 @@ class RoutePage:
             f'Message Route — {sender_icon} {sender} ({direction})'
         ).classes('font-bold text-lg')
         ui.label(
-            f"{msg.time}  {sender_icon} {sender}: {msg.text[:120]}"
+            f"{msg.display_timestamp()}  {sender_icon} {sender}: {msg.text[:120]}"
         ).classes('text-sm text-gray-600')
 
     @staticmethod
@@ -453,7 +453,7 @@ class RoutePage:
         prefilled = ''.join(parts)
 
         ch_options = {ch['idx']: f"[{ch['idx']}] {ch['name']}" for ch in data['channels']}
-        default_ch = data['channels'][0]['idx'] if data['channels'] else 0
+        default_ch = self._default_reply_channel(msg, ch_options)
 
         with ui.card().classes('w-full'):
             ui.label('📤 Reply').classes('font-bold text-gray-600')
@@ -472,6 +472,30 @@ class RoutePage:
                         inp.value = ''
 
                 ui.button('Send', on_click=send).classes('bg-blue-500 text-white')
+
+    @staticmethod
+    def _default_reply_channel(msg: Message, ch_options: Dict[int, str]) -> int:
+        """Determine the channel the reply select should default to.
+
+        The reply belongs on the channel the message arrived on, so that
+        opening the route page from e.g. ``#noodnet-ov`` pre-selects that
+        channel instead of the first entry in the channel list.
+
+        Falls back to the first available channel when the message is a
+        DM (``channel is None``) or when its channel index is no longer
+        present on the device — a slot can be vacated by the
+        post-discovery cache sync introduced in 1.22.2.
+
+        Args:
+            msg:        The message this route page was opened for.
+            ch_options: ``{channel_idx: label}`` options for the select.
+
+        Returns:
+            Channel index to pre-select.
+        """
+        if msg.channel is not None and msg.channel in ch_options:
+            return msg.channel
+        return next(iter(ch_options), 0)
 
     @staticmethod
     def _find_sender_contact(msg: Message, contacts: Dict) -> Optional[tuple]:

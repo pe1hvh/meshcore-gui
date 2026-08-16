@@ -202,8 +202,15 @@ class ChannelBackupStore:
                 except (ValueError, TypeError):
                     continue
 
-            # Union of all indices we know about
-            all_indices = sorted(set(name_by_idx) | set(psk_by_idx))
+            # Active-only export: the dialog promises "every channel currently
+            # known to this GUI", i.e. the named (active) slots.  Empty-name
+            # slots that still happen to carry a PSK in the cache (firmware-
+            # initialised slots, or stale entries from older runs) must NOT be
+            # exported, otherwise a backup of a 3-channel device would contain
+            # 100 entries and decoder pollution would persist across restores.
+            # PSKs are still looked up from cache, but only for slots that
+            # have a name in name_by_idx.
+            all_indices = sorted(name_by_idx)
 
             entries: List[ChannelBackupEntry] = []
             for idx in all_indices:

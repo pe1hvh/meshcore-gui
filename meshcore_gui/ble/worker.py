@@ -618,6 +618,33 @@ class _BaseWorker(abc.ABC):
             self._cache.set_channels(discovered)
             debug_print("Channel list cached to disk")
 
+        # Post-discovery sync: drop stale cache + decoder entries for slots
+        # that are no longer active (no name) on the device.  Without this,
+        # firmware-initialised slots and historical entries accumulate
+        # forever — leading to backups containing 100 channels when the
+        # device only has 3, and to brute-force decoder pollution that has
+        # been observed to mis-route messages to vacated slot indices.
+        # Safety net: only sync when at least one non-Public channel was
+        # discovered, so a transient discovery failure (which falls back to
+        # ``[{"idx": 0, "name": "Public"}]`` above) does not wipe the cache.
+        if len(discovered) >= 2:
+            valid_indices = {int(ch["idx"]) for ch in discovered}
+            removed = 0
+            for idx_str in list(self._cache.get_channel_keys()):
+                try:
+                    idx = int(idx_str)
+                except (ValueError, TypeError):
+                    continue
+                if idx not in valid_indices:
+                    self._cache.remove_channel_key(idx)
+                    self._decoder.remove_channel_key(idx)
+                    removed += 1
+            if removed:
+                print(
+                    f"{pfx}: 🧹 Cleaned {removed} stale channel key(s) "
+                    f"from cache and decoder"
+                )
+
         print(f"{pfx}: Channels discovered: {[c['name'] for c in discovered]}")
         print(f"{pfx}: PacketDecoder ready — has_keys={self._decoder.has_keys}")
         if confirmed:

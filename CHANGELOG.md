@@ -11,6 +11,136 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.22.3] - 2026-08-16 — Reply defaults to the message's own channel + dated message timestamps
+
+### Fixed
+- 🛠 **Route page reply select ignored the message's channel**
+  (`gui/route_page.py`):  `_render_send_panel` derived its default from
+  the *position* in the channel list (`data['channels'][0]['idx']`,
+  normally Public) instead of from the message the page was opened for.
+  Opening the route of a `#noodnet-ov` message and pressing Send without
+  touching the select therefore published the reply on the wrong
+  channel.  The default now comes from `msg.channel` via the new
+  `_default_reply_channel()` helper, which falls back to the first
+  available channel for DMs (`channel is None`) and for channel indices
+  that are no longer present on the device — a slot can be vacated by
+  the post-discovery cache sync added in 1.22.2.
+
+### Added
+- ✨ **`Message.date` field** (`core/models.py`):  local date as
+  `YYYY-MM-DD`, populated by `Message.incoming()` and
+  `Message.outgoing()`.  Declared last in the dataclass so positional
+  construction stays backward-compatible, and defaulted to `""` so
+  existing callers are unaffected.
+- ✨ **`Message.now_date()` and `Message.display_timestamp()`**
+  (`core/models.py`):  `display_timestamp()` is the single formatting
+  authority for message timestamps — it returns
+  `YYYY-MM-DD HH:MM:SS` when the date is known and degrades to the bare
+  `HH:MM:SS` when it is not.
+- ✨ **`date` persisted in the message archive**
+  (`services/message_archive.py`):  `add_message` writes the field
+  alongside `time` and `timestamp_utc`.
+
+### Changed
+- 🔄 **Message lines now show the date before the time**
+  (`core/models.py`, `gui/route_page.py`,
+  `gui/panels/room_server_panel.py`):  `Message.format_line()` opens
+  with `display_timestamp()`, so the dashboard messages panel and the
+  archive page pick the change up automatically.  The route page
+  message-info header and the room-server message list, which format
+  their own lines, were switched to the same helper for consistency.
+
+### Impact
+- Archive JSON gains one field; the schema stays additive, so older
+  archives load unchanged and the domca.nl collector is unaffected.
+  Entries written before this release carry no `date`, so
+  `Message.from_dict()` derives one from `timestamp_utc`, converted to
+  local time so it matches the local `time` field across midnight.
+  When `timestamp_utc` is absent or unparseable the date stays empty and
+  the line renders exactly as it did in 1.22.2.
+- Message display lines are ~11 characters wider.  No public method
+  signature changed; `Message.incoming()` gained an optional
+  keyword-only `date` parameter.
+- `VERSION` bumped `1.22.2` → `1.22.3` (PATCH: backwards-compatible
+  bugfix plus an additive, defaulted model field).
+
+### Rationale
+The reply select is on a page that exists to show *one specific*
+message, so the message — not the channel list ordering — is the correct
+source for the default; deriving it from list position was a latent
+mis-send waiting to happen.  For the timestamp, the date could not be
+shown by editing a label: `Message` simply had no date, because
+`now_timestamp()` produces `HH:MM:SS` only.  The date existed solely as
+`timestamp_utc` in the archive layer and was not read back by
+`from_dict()`.  Adding a first-class `date` field fixes the cause rather
+than papering over it at each render site, and routing every render site
+through `display_timestamp()` keeps the format in one place.
+
+---
+
+
+## [1.22.2] - 2026-05-04 — Backup honors live channel set + post-discovery cache cleanup
+
+### Fixed
+- 🛠 **Channel backup exported empty-name slots** (`services/channel_backup_store.py`):
+  `export_from_cache` built its index list from the union of cached
+  channel names and cached PSKs.  On a device with `MAX_GROUP_CHANNELS=100`
+  firmware-initialised slots, the cache could hold up to 100 PSKs while
+  only 3 slots were actually named — producing a backup file with 97
+  empty-name entries that contradicted the dialog's promise ("This
+  device reports 3 active channels").  The export now uses the
+  named-slot set (`name_by_idx`) as the sole authority for which slots
+  to write; PSKs continue to be looked up from cache, but only for
+  named slots.
+- 🛠 **PacketDecoder accumulated stale keys across sessions**
+  (`ble/worker.py`, `ble/packet_decoder.py`):  `_discover_channels` now
+  performs a post-discovery sync that drops any cache entry and any
+  decoder mapping for slots that did not appear in the discovered
+  channel set.  Without this, brute-force key matching ran across all
+  100 keys per packet and could mis-route messages to vacated slot
+  indices, which in turn caused the bot's channel guard to silently
+  reject legitimate replies (the symptom previously workaround-fixed
+  by manually wiping `~/.meshcore-gui/cache/`).  A safety net skips
+  the sync when fewer than two channels were discovered, so a
+  transient discovery failure (which falls back to the Public-only
+  list) does not wipe the cache.
+
+### Added
+- **`PacketDecoder.remove_channel_key(channel_idx)`**
+  (`ble/packet_decoder.py`):  removes every registered secret whose
+  mapping points at the given index.  Used by the post-discovery sync;
+  also available for future delete/move flows that want to evict keys
+  from the in-memory decoder without waiting for the next discovery.
+
+### Changed
+- `VERSION` bumped `1.22.1` → `1.22.2` (PATCH: backwards-compatible
+  bug fix).
+
+### Impact
+- Existing on-disk cache files are not migrated automatically; the
+  first successful discovery after upgrading will prune stale entries
+  in place.
+- Backup files written by 1.22.1 that contain empty-name entries
+  remain readable by Restore — `diff_against_device` still classifies
+  empty-PSK entries as `skipped`, so no destructive change happens on
+  re-import.
+- No public API or BLE protocol changes.  No GUI panel changes.  The
+  bot, BBS, channel-add/move/delete flows, REST API, and `domca.nl`
+  ingest are untouched.
+
+### Rationale
+The dialog text already advertised "every channel currently known to
+this GUI" but the implementation broadcast PSK presence as proof of
+existence, leading to silent divergence between what the dialog
+promised and what the file contained.  The cache-cleanup half of the
+fix removes the underlying source of that divergence and, as a side
+effect, eliminates the brute-force decoder pollution that was the
+root cause of the bot-not-replying behaviour observed before manual
+cache wipes.
+
+---
+
+
 ## [1.22.1] - 2026-04-27
 
 ### Added

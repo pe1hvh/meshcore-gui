@@ -19,11 +19,11 @@
 #   DEBUG_ON=yes|no             Enable debug logging (will prompt if omitted)
 #
 # Examples — two instances on the same machine:
-#   SERIAL_PORT=/dev/ttyUSB0 WEB_PORT=8081 bash install_scripts/install_serial.sh
-#   SERIAL_PORT=/dev/ttyUSB1 WEB_PORT=8082 bash install_scripts/install_serial.sh
+#   SERIAL_PORT=/dev/ttyUSB1 WEB_PORT=8081 bash install_scripts/install_serial.sh
+#   SERIAL_PORT=/dev/ttyUSB2 WEB_PORT=8082 bash install_scripts/install_serial.sh
 #
 # Uninstall a specific instance:
-#   SERIAL_PORT=/dev/ttyUSB0 bash install_scripts/install_serial.sh --uninstall
+#   SERIAL_PORT=/dev/ttyUSB1 bash install_scripts/install_serial.sh --uninstall
 #
 # List all installed instances:
 #   bash install_scripts/install_serial.sh --list

@@ -41,6 +41,7 @@ import meshcore_gui.config as _config
 from meshcore_gui.config import (
     DEFAULT_TIMEOUT,
     CHANNEL_CACHE_ENABLED,
+    CHANNEL_DISCOVERY_ABORT_THRESHOLD,
     CONTACT_REFRESH_SECONDS,
     MAX_CHANNELS,
     RECONNECT_BASE_DELAY,
@@ -58,6 +59,12 @@ from meshcore_gui.services.bbs_service import BbsCommandHandler, BbsService
 from meshcore_gui.services.bbs_config_store import BbsConfigStore
 from meshcore_gui.services.bot_config_store import BotConfigStore
 from meshcore_gui.services.cache import DeviceCache
+from meshcore_gui.services.channel_discovery import (
+    ChannelDiscoveryResult,
+    merge_with_cached_names,
+    name_map_to_channels,
+    stale_key_indices,
+)
 from meshcore_gui.services.dedup import DualDeduplicator
 from meshcore_gui.services.device_identity import write_device_identity
 from meshcore_gui.services.pin_store import PinStore
@@ -553,10 +560,18 @@ class _BaseWorker(abc.ABC):
     # ── channel discovery ─────────────────────────────────────────
 
     async def _discover_channels(self) -> None:
-        """Discover channels and load their keys from the device."""
+        """Discover channels and load their keys from the device.
+
+        The scan records which slots the device actually answered for.
+        Only those slots carry authority over the persisted channel
+        names: an unanswered slot leaves its cached name untouched, so a
+        device that is unresponsive — or is not the expected companion
+        node — can no longer erase the channel list.
+        """
         pfx = self._log_prefix
         self.shared.set_status("🔄 Discovering channels...")
-        discovered: List[Dict] = []
+        result = ChannelDiscoveryResult()
+        discovered = result.channels
         cached_keys = self._cache.get_channel_keys()
 
         confirmed: list[str] = []
@@ -570,15 +585,22 @@ class _BaseWorker(abc.ABC):
 
             if payload is None:
                 consecutive_errors += 1
-                if consecutive_errors >= 3:
+                if consecutive_errors >= CHANNEL_DISCOVERY_ABORT_THRESHOLD:
                     debug_print(
                         f"Channel discovery: {consecutive_errors} consecutive "
                         f"empty slots at idx {idx}, stopping"
                     )
+                    # Higher slots were never probed — the scan result is
+                    # partial and must not be treated as authoritative.
+                    result.complete = False
                     break
                 continue
 
             consecutive_errors = 0
+            # The device responded for this slot, so its verdict is
+            # authoritative — both for an active channel and for an
+            # empty slot (a channel deleted on the device).
+            result.answered.add(idx)
             name = payload.get("name") or payload.get("channel_name") or ""
             if not name.strip():
                 debug_print(f"Channel [{idx}]: response OK but no name — skipping (undefined slot)")
@@ -605,45 +627,69 @@ class _BaseWorker(abc.ABC):
 
             await asyncio.sleep(0.3)
 
-        if not discovered:
-            discovered = [{"idx": 0, "name": "Public"}]
-            print(f"{pfx}: ⚠️ No channels discovered, using default Public channel")
+        # Merge with the cached names before publishing anything.  Slots
+        # the device answered for are taken from the scan; slots it
+        # stayed silent about keep their cached name.  A scan that
+        # confirmed nothing therefore leaves the channel list exactly as
+        # it was instead of collapsing it to a bare "Public".
+        cached_names = self._cache.get_channel_names()
+        merged_names = merge_with_cached_names(result, cached_names)
+
+        if result.is_empty:
+            retained = len(merged_names)
+            if retained:
+                print(
+                    f"{pfx}: ⚠️  Channel discovery got no response — "
+                    f"keeping {retained} cached channel(s)"
+                )
+            else:
+                merged_names = {0: "Public"}
+                print(
+                    f"{pfx}: ⚠️ No channels discovered and no cache, "
+                    f"using default Public channel"
+                )
+        elif not result.complete:
+            debug_print(
+                f"Channel discovery incomplete — {len(result.answered)} slot(s) "
+                f"confirmed, cached names retained for the rest"
+            )
+
+        discovered = name_map_to_channels(merged_names)
 
         self._channels = discovered
         self.shared.set_channels(discovered)
         # Always persist channel names regardless of CHANNEL_CACHE_ENABLED,
         # so the GUI can display them immediately on next startup.
-        self._cache.set_channel_names({ch["idx"]: ch["name"] for ch in discovered})
+        self._cache.set_channel_names(merged_names)
         if CHANNEL_CACHE_ENABLED:
             self._cache.set_channels(discovered)
             debug_print("Channel list cached to disk")
 
         # Post-discovery sync: drop stale cache + decoder entries for slots
-        # that are no longer active (no name) on the device.  Without this,
-        # firmware-initialised slots and historical entries accumulate
-        # forever — leading to backups containing 100 channels when the
-        # device only has 3, and to brute-force decoder pollution that has
-        # been observed to mis-route messages to vacated slot indices.
-        # Safety net: only sync when at least one non-Public channel was
-        # discovered, so a transient discovery failure (which falls back to
-        # ``[{"idx": 0, "name": "Public"}]`` above) does not wipe the cache.
-        if len(discovered) >= 2:
-            valid_indices = {int(ch["idx"]) for ch in discovered}
-            removed = 0
-            for idx_str in list(self._cache.get_channel_keys()):
-                try:
-                    idx = int(idx_str)
-                except (ValueError, TypeError):
-                    continue
-                if idx not in valid_indices:
-                    self._cache.remove_channel_key(idx)
-                    self._decoder.remove_channel_key(idx)
-                    removed += 1
-            if removed:
-                print(
-                    f"{pfx}: 🧹 Cleaned {removed} stale channel key(s) "
-                    f"from cache and decoder"
-                )
+        # the device reported as vacant.  Without this, firmware-initialised
+        # slots and historical entries accumulate forever — leading to
+        # backups containing 100 channels when the device only has 3, and to
+        # brute-force decoder pollution that has been observed to mis-route
+        # messages to vacated slot indices.
+        # Only slots the device actually answered for are eligible: a slot
+        # that timed out or returned ERROR says nothing about whether its
+        # channel still exists, so its key is left in place.
+        cached_key_indices: Set[int] = set()
+        for idx_str in self._cache.get_channel_keys():
+            try:
+                cached_key_indices.add(int(idx_str))
+            except (ValueError, TypeError):
+                continue
+
+        stale = stale_key_indices(result, cached_key_indices)
+        for idx in stale:
+            self._cache.remove_channel_key(idx)
+            self._decoder.remove_channel_key(idx)
+        if stale:
+            print(
+                f"{pfx}: 🧹 Cleaned {len(stale)} stale channel key(s) "
+                f"from cache and decoder"
+            )
 
         print(f"{pfx}: Channels discovered: {[c['name'] for c in discovered]}")
         print(f"{pfx}: PacketDecoder ready — has_keys={self._decoder.has_keys}")

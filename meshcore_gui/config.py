@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.22.4"
+VERSION: str = "1.22.5"
 
 
 # ==============================================================================
@@ -289,6 +289,13 @@ MAX_CHANNELS: int = 255
 # Note: channel *keys* (for packet decryption) are always cached
 # regardless of this setting.
 CHANNEL_CACHE_ENABLED: bool = False
+
+# Number of consecutive unanswered channel slots after which discovery
+# aborts.  A slot counts as unanswered when the device times out or
+# returns ERROR; slots the device answers for (even empty ones) reset
+# the counter.  Raising this makes discovery more patient with a slow
+# device at the cost of a longer startup scan.
+CHANNEL_DISCOVERY_ABORT_THRESHOLD: int = 3
 
 
 # ==============================================================================

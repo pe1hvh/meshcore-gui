@@ -11,6 +11,68 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.22.5] - 2026-08-31 — Failed channel discovery no longer erases the channel list
+
+### Fixed
+- 🛠 **All channels except Public disappeared after a reboot**
+  (`ble/worker.py`, `services/channel_discovery.py`): `_discover_channels()`
+  persisted its result unconditionally. When the device returned ERROR on
+  every probed slot, the scan aborted, fell back to
+  `[{"idx": 0, "name": "Public"}]`, and wrote that single entry over the
+  cached channel names — `DeviceCache.set_channel_names()` replaces the
+  whole mapping rather than merging into it. Because
+  `CHANNEL_CACHE_ENABLED` is off by default, those names are the only
+  channel source at startup, so the loss was permanent and took out both
+  the Messages and the Archive submenu, which share one `data['channels']`
+  source. The observed failure left nine cached channel *keys* intact
+  (written per index) beside a single cached *name*.
+
+### Added
+- `services/channel_discovery.py` — `ChannelDiscoveryResult` dataclass
+  plus `merge_with_cached_names()`, `name_map_to_channels()` and
+  `stale_key_indices()`. Pure data transformation, no I/O.
+
+### Changed
+- Channel discovery now records which slots the device answered for and
+  merges that result into the cached names instead of replacing them.
+  A slot answered with a name is stored, a slot answered without one is
+  dropped (so channels deleted on the device do not come back), and a
+  slot that timed out or returned ERROR keeps its cached name.
+- Stale-key cleanup replaces the `len(discovered) >= 2` heuristic with
+  the same rule: a cached key is only removed when the device
+  authoritatively reported its slot as vacant.
+- The `Public`-only fallback now applies solely when the device confirmed
+  nothing *and* no cached names exist.
+- `CHANNEL_DISCOVERY_ABORT_THRESHOLD` (default 3) replaces the hardcoded
+  consecutive-error limit in `config.py`.
+
+### Impact
+- No public method signature changed; `_discover_channels()` keeps its
+  `async def (self) -> None` contract and the cache JSON schema is
+  untouched.
+- A failed scan now leaves `SharedData.channels` populated from cache
+  rather than collapsing it to Public, so the drawer submenus, the send
+  selector, the channel backup (which reads the same cached names) and
+  hashtag key derivation all survive an unresponsive device.
+- Channel deletion on the device still propagates: an empty slot the
+  device confirms is authoritative and removes both name and key.
+- Decryption keys are no longer dropped on a failed scan, so messages on
+  channels the device did not confirm remain decodable.
+- `VERSION` bumped `1.22.4` → `1.22.5` (PATCH: backwards-compatible
+  bugfix).
+
+### Rationale
+The existing safety net carried the right intent — its comment reads
+"so a transient discovery failure does not wipe the cache" — but guarded
+only the key cleanup, leaving the name write above it exposed. The
+underlying defect is that the code could not tell "the device says this
+slot is empty" apart from "the device said nothing"; both ended as an
+absent entry in `discovered`. Recording answered slots makes that
+distinction explicit and lets one rule serve both the names and the
+keys, rather than adding a second heuristic on top of the first.
+
+---
+
 ## [1.22.4] - 2026-08-16 — Main-page send selector follows the active channel
 
 ### Fixed

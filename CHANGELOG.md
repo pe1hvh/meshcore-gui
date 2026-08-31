@@ -11,6 +11,67 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.22.6] - 2026-08-31 — Queued messages no longer stall when the device notification is missed
+
+### Fixed
+- 🛠 **Incoming messages received by the radio never reached the
+  application** (`ble/worker.py`): the companion radio received the packet
+  and ACKed it, but no `CONTACT_MSG_RECV` event followed and the message
+  was never archived or displayed. `MeshCore.start_auto_message_fetching()`
+  (meshcore 2.3.9.1) is purely event-driven: `_fetch_messages_loop()` runs
+  only when the device emits `messages_waiting`. There is no periodic
+  fallback, so a missed notification leaves the message queued on the
+  device indefinitely. Diagnosis confirmed the gap: `RX_LOG_DATA` showed a
+  DIRECT `TEXT_MSG` arriving at -55 dBm followed by an outgoing ACK, while
+  no `get_msg()` command was sent over the serial link for minutes and no
+  traceback was logged — the fetch loop had never been started rather than
+  having crashed. Restarting the node does not help, because the trigger,
+  not the queue, is what goes missing.
+
+### Added
+- `MSG_POLL_INTERVAL` in `config.py` (default 30 s, `0` disables) —
+  interval for the safety-net poll of the device message queue.
+- `SerialWorker._poll_pending_messages()` — drains the queue by calling
+  `get_msg()` until the device reports `NO_MORE_MSGS`, independently of
+  the `messages_waiting` event.
+
+### Changed
+- `_main_loop()` runs the message poll alongside the existing periodic
+  tasks (contact refresh, key retry, cleanup), following the same
+  interval-guarded pattern.
+
+### Impact
+- Messages that the notification path misses are delayed by at most one
+  poll interval instead of being lost. `start_auto_message_fetching()`
+  remains active, so the event path still delivers immediately when it
+  works; the poll only picks up what it leaves behind.
+- Fetched messages are dispatched by the library as ordinary message
+  events, so existing handlers, deduplication and archiving apply
+  unchanged — messages already delivered via the event path are not
+  stored twice.
+- No change to the archive JSON schema and no change to any public
+  method signature.
+
+### Rationale
+- A fixed-interval poll is the smallest change that closes the gap
+  without reimplementing message retrieval or forking the library. The
+  interval is a config constant so it can be tuned per deployment, or
+  switched off entirely once the underlying notification proves reliable.
+
+### Known limitation
+- Room Server history messages still carry their **receive** time rather
+  than their original send time: `EventHandler.on_contact_msg()` calls
+  `Message.incoming()` without `time=` / `date=`, so a message replayed
+  from server history is dated at the moment it arrives. Confirmed
+  against the archive, where a message sent on 2026-08-27 is stored as
+  `2026-08-31 07:10:57`. Not fixed here: whether the
+  `CONTACT_MSG_RECV` payload carries a usable original timestamp cannot
+  be determined until room traffic flows again, and guessing at the field
+  would be a fix without a confirmed root cause.
+
+---
+
+
 ## [1.22.5] - 2026-08-31 — Failed channel discovery no longer erases the channel list
 
 ### Fixed

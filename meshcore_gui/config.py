@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.22.5"
+VERSION: str = "1.22.6"
 
 
 # ==============================================================================
@@ -388,6 +388,19 @@ RECONNECT_BASE_DELAY: float = 5.0
 # Contacts are merged (new/changed contacts update the cache; contacts
 # only present in cache are kept so offline nodes are preserved).
 CONTACT_REFRESH_SECONDS: float = 300.0  # 5 minutes
+
+# Interval in seconds between safety-net polls of the device message queue.
+#
+# The meshcore library fetches messages only in response to a
+# ``messages_waiting`` event from the companion radio.  When that event is
+# missed, incoming messages stay queued on the device indefinitely: the
+# radio receives and ACKs the packet, but no ``CONTACT_MSG_RECV`` /
+# ``CHANNEL_MSG_RECV`` event ever reaches the application.
+#
+# This poll drains the queue on a fixed interval regardless of the event,
+# so a missed notification delays a message instead of losing it.  Set to
+# ``0`` to disable the poll and rely on the event alone.
+MSG_POLL_INTERVAL: float = 30.0
 
 # ==============================================================================
 # EXTERNAL LINKS (drawer menu)

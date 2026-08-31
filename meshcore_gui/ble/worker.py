@@ -44,6 +44,7 @@ from meshcore_gui.config import (
     CHANNEL_DISCOVERY_ABORT_THRESHOLD,
     CONTACT_REFRESH_SECONDS,
     MAX_CHANNELS,
+    MSG_POLL_INTERVAL,
     RECONNECT_BASE_DELAY,
     RECONNECT_MAX_RETRIES,
     debug_data,
@@ -206,6 +207,7 @@ class _BaseWorker(abc.ABC):
         last_contact_refresh = time.time()
         last_key_retry = time.time()
         last_cleanup = time.time()
+        last_msg_poll = time.time()
 
         while self.running and not self._disconnected:
             try:
@@ -231,6 +233,10 @@ class _BaseWorker(abc.ABC):
             if now - last_cleanup > CLEANUP_INTERVAL:
                 await self._cleanup_old_data()
                 last_cleanup = now
+
+            if MSG_POLL_INTERVAL > 0 and now - last_msg_poll > MSG_POLL_INTERVAL:
+                await self._poll_pending_messages()
+                last_msg_poll = now
 
             await asyncio.sleep(0.1)
 
@@ -802,6 +808,60 @@ class _BaseWorker(abc.ABC):
                 )
         except Exception as exc:
             debug_print(f"Periodic contact refresh failed: {exc}")
+
+    async def _poll_pending_messages(self) -> None:
+        """Drain the device message queue as a safety net.
+
+        ``MeshCore.start_auto_message_fetching()`` only fetches messages
+        when the radio emits a ``messages_waiting`` event.  If that event
+        is missed the queue is never drained: the radio receives and ACKs
+        the packet, but no message event reaches the application.
+
+        This poll calls ``get_msg()`` directly on a fixed interval and
+        keeps reading until the device reports ``NO_MORE_MSGS``.  Each
+        fetched message is dispatched by the library as a normal
+        ``CONTACT_MSG_RECV`` / ``CHANNEL_MSG_RECV`` event, so the existing
+        handlers and deduplication apply unchanged and messages already
+        delivered via the event path are not stored twice.
+
+        Errors are logged and end the poll; the next interval retries.
+        Disconnects are left to the main loop, which inspects command
+        errors for transport keywords.
+        """
+        if not self.mc:
+            return
+
+        fetched = 0
+        try:
+            while self.running and not self._disconnected:
+                result = await self.mc.commands.get_msg()
+
+                if result is None:
+                    debug_print("Message poll: get_msg returned None, stopping")
+                    break
+
+                if result.type == EventType.NO_MORE_MSGS:
+                    break
+
+                if result.type == EventType.ERROR:
+                    debug_print("Message poll: device returned ERROR, stopping")
+                    break
+
+                fetched += 1
+
+                # Yield between reads so the device is not overwhelmed and
+                # the event loop stays responsive.
+                await asyncio.sleep(0.1)
+
+        except Exception as exc:
+            debug_print(f"Message poll failed: {exc}")
+            return
+
+        if fetched:
+            debug_print(
+                f"Message poll: drained {fetched} queued message(s) "
+                f"that the messages_waiting event did not deliver"
+            )
 
     async def _cleanup_old_data(self) -> None:
         try:

@@ -1,16 +1,15 @@
 # MeshCore GUI — All-in-One MeshCore Platform
-### Monitor, message, bridge, automate and publish — no cloud, no broker, just LoRa.
+### Monitor, message, archive, automate and publish — no cloud, no broker, just LoRa.
 ![Status](https://img.shields.io/badge/Status-Production-green.svg)
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-orange.svg)
 ![Transport](https://img.shields.io/badge/Transport-USB%20Serial%20%7C%20BLE-blueviolet.svg)
-![Bridge](https://img.shields.io/badge/Bridge-Cross--Frequency%20LoRa%20↔%20LoRa-ff6600.svg)
 <img width="920" height="769" alt="image" src="https://github.com/user-attachments/assets/ff38b97f-557b-4217-abce-aaec68a90c35" />
 
 
-A full-featured desktop platform for MeshCore mesh radio devices. Connects via USB serial or Bluetooth LE, runs headless on a Raspberry Pi, and brings together a real-time dashboard, message archive, channel manager, BBS, bot, cross-frequency bridge and public REST API — all in a single self-contained Python application.
+A full-featured desktop platform for MeshCore mesh radio devices. Connects via USB serial or Bluetooth LE, runs headless on a Raspberry Pi, and brings together a real-time dashboard, message archive, channel manager, BBS, bot, repeater statistics and public REST API — all in a single self-contained Python application.
 
 ## Table of Contents
 
@@ -61,12 +60,9 @@ A full-featured desktop platform for MeshCore mesh radio devices. Connects via U
   - [9.13. Public REST API](#913-public-rest-api)
   - [9.14. BBS — Bulletin Board System](#914-bbs--bulletin-board-system)
   - [9.15. Channel Backup & Restore](#915-channel-backup--restore)
+  - [9.16. Repeaters](#916-repeaters)
 - [10. Architecture](#10-architecture)
 - [11. Cross-Frequency Bridge](#11-cross-frequency-bridge)
-  - [11.1. Bridge Overview](#111-bridge-overview)
-  - [11.2. Quick Start](#112-quick-start)
-  - [11.3. Bridge Configuration](#113-bridge-configuration)
-  - [11.4. systemd Service](#114-systemd-service)
 - [12. Known Limitations](#12-known-limitations)
 - [13. Troubleshooting](#13-troubleshooting)
   - [13.1. Linux](#131-linux)
@@ -98,7 +94,7 @@ What started as a basic serial GUI has grown into a comprehensive platform. Toda
 - **Archive** — all messages and RX log entries persisted to disk with configurable retention; searchable via the archive viewer
 - **Automate** — keyword bot with configurable replies, cooldown and private-contact mode
 - **Bulletin Board** — offline BBS with DM-based commands, category and region filtering, and automatic abbreviations
-- **Bridge** — standalone cross-frequency bridge daemon connecting two devices on different frequencies, with loop prevention and its own dashboard
+- **Poll repeaters** — log in to configured repeater nodes on an interval, read their status and archive every response with its timestamp
 - **Publish** — read-only REST API exposing stats, nodes, messages and channels for external dashboards; private channel messages are unconditionally excluded
 - **Headless** — the web-based interface (NiceGUI) runs on any platform, accessible from any browser on your local network; ideal for a Raspberry Pi as a permanent mesh node
 
@@ -121,7 +117,7 @@ Under the hood it uses `meshcore` as the protocol layer, `meshcoredecoder` for r
 - **Room Server Support** — Login to Room Servers directly from the GUI. Each Room Server gets a dedicated panel with message display, send functionality and login/logout controls. Passwords are stored securely outside the repository
 - **BBS — Bulletin Board System** — Offline message board with DM-based commands (`!p`, `!r`, `!s`), category and region filtering, automatic abbreviations and a channel-based whitelist. See [9.14. BBS](#914-bbs--bulletin-board-system) for full documentation
 - **Keyword Bot** — Built-in auto-reply bot that responds to configurable keywords on selected channels, with cooldown, private-contact mode and loop prevention
-- **Cross-Frequency Bridge** — Standalone bridge daemon (`meshcore_bridge`) connects two devices on different frequencies by forwarding messages bidirectionally on a configurable channel. Runs as a separate process with its own dashboard, YAML configuration and systemd service installer. See [11. Cross-Frequency Bridge](#11-cross-frequency-bridge) for details
+- **Repeater Statistics** — Configured repeater nodes are polled on an interval: login, status request, logout. Every field the firmware reports is shown in the REPEATERS panel and archived with the moment of the poll, so battery voltage can be followed over days. A **Poll now** button per repeater runs the same sequence on demand. See [8.2. Repeater Statistics Polling](#82-repeater-statistics-polling) for configuration and [9.16. Repeaters](#916-repeaters) for the panel
 - **Public REST API** — Read-only JSON endpoints (`/api/v1/stats`, `/api/v1/nodes`, `/api/v1/messages`, `/api/v1/channels`) for external consumers such as statistics dashboards. Private channel messages are unconditionally excluded; no authentication required
 - **Packet Decoding** — Raw LoRa packets from RX log are decoded and decrypted using channel keys, providing message hashes, path hashes and hop data
 - **Message Deduplication** — Dual-strategy dedup (hash-based and content-based) prevents duplicate messages from appearing
@@ -136,6 +132,8 @@ Under the hood it uses `meshcore` as the protocol layer, `meshcoredecoder` for r
 <img width="944" height="877" alt="Screenshot from 2026-02-18 09-27-59" src="https://github.com/user-attachments/assets/6b0b19f4-9886-4cca-bd36-50b4c3797e02" />
 <img width="944" height="877" alt="Screenshot from 2026-02-18 09-28-27" src="https://github.com/user-attachments/assets/374694fa-ab2d-4b96-b81f-6a351af7710a" />
 <img width="920" height="769" alt="image" src="https://github.com/user-attachments/assets/78b8112a-1ad8-460c-99ae-a16d15b14b77" />
+
+<!-- SCREENSHOT: REPEATERS panel in the dashboard — drawer entry plus repeater cards -->
 
 
 ## 4. Requirements
@@ -440,15 +438,9 @@ A systemd service starts automatically on boot, restarts on crashes, and integra
 
 #### 7.5.1. Automated Setup
 
-If you have not yet created a virtual environment, use the venv setup script first:
-
-```bash
-bash install_scripts/install_venv.sh
-```
-
-This creates `venv/` and installs all core dependencies (`nicegui`, `meshcore`, `bleak`, `meshcoredecoder`) in one step.
-
-Use the appropriate installer for your transport:
+Create the virtual environment and install the dependencies first (see
+[5.3](#53-create-virtual-environment) and [5.4](#54-install-python-packages)),
+then use the appropriate installer for your transport:
 
 ```bash
 # Serial connection — single device (will prompt for serial port)
@@ -680,6 +672,7 @@ Ensure your user has permission to access the serial device (e.g. member of `dia
 | `DEBUG` | `meshcore_gui/config.py` | Set to `True` for verbose logging (or use `--debug-on`) |
 | `MAX_CHANNELS` | `meshcore_gui/config.py` | Maximum channel slots to probe on device (default: 8) |
 | `CHANNEL_CACHE_ENABLED` | `meshcore_gui/config.py` | Cache discovered channels to disk for faster startup (default: `False` — always fresh from device) |
+| `CHANNEL_DISCOVERY_ABORT_THRESHOLD` | `meshcore_gui/config.py` | Consecutive unanswered channel slots after which discovery aborts; slots the device answers for reset the counter (default: 3) |
 | `DEFAULT_TIMEOUT` | `meshcore_gui/config.py` | Default command timeout in seconds (default: `10.0`) |
 | `MESHCORE_LIB_DEBUG` | `meshcore_gui/config.py` | Enable meshcore library debug logging (default: `True`) |
 | `SERIAL_BAUDRATE` | `meshcore_gui/config.py` | Serial baudrate (default: `115200`) |
@@ -689,15 +682,23 @@ Ensure your user has permission to access the serial device (e.g. member of `dia
 | `RECONNECT_MAX_RETRIES` | `meshcore_gui/config.py` | Maximum reconnect attempts after a disconnect (default: 5) |
 | `RECONNECT_BASE_DELAY` | `meshcore_gui/config.py` | Base delay in seconds between reconnect attempts, multiplied by attempt number (default: 5.0) |
 | `CONTACT_REFRESH_SECONDS` | `meshcore_gui/config.py` | Interval between periodic contact refreshes (default: 300s / 5 minutes) |
+| `MSG_POLL_INTERVAL` | `meshcore_gui/config.py` | Interval for the safety-net poll of the device message queue, for when the `messages_waiting` notification is missed (default: 30s; `0` disables) |
 | `MESSAGE_RETENTION_DAYS` | `meshcore_gui/config.py` | Retention period for archived messages (default: 30 days) |
 | `RXLOG_RETENTION_DAYS` | `meshcore_gui/config.py` | Retention period for archived RX log entries (default: 7 days) |
 | `CONTACT_RETENTION_DAYS` | `meshcore_gui/config.py` | Retention period for cached contacts (default: 90 days) |
+| `REPEATER_STATS_RETENTION_DAYS` | `meshcore_gui/config.py` | Retention period for archived repeater statistics (default: 90 days) |
+| `REPEATER_POLL_ENABLED` | `meshcore_gui/config.py` | Master switch for repeater polling; when `False` no repeater is contacted regardless of configuration (default: `True`) |
+| `REPEATER_POLL_INTERVAL` | `meshcore_gui/config.py` | Default seconds between polls of a single repeater, overridable per repeater with `poll_interval` (default: 900s / 15 minutes) |
+| `REPEATER_POLL_CHECK_INTERVAL` | `meshcore_gui/config.py` | How often the main loop asks whether a repeater is due (default: 10s) |
+| `REPEATER_LOGIN_TIMEOUT` | `meshcore_gui/config.py` | Minimum seconds to wait for `LOGIN_SUCCESS` after a login request (default: 30s) |
+| `REPEATER_STATUS_TIMEOUT` | `meshcore_gui/config.py` | Minimum seconds to wait for `STATUS_RESPONSE` after a status request (default: 30s) |
 | `KEY_RETRY_INTERVAL` | `meshcore_gui/ble/worker.py` | Interval between background retry attempts for missing channel keys (default: 30s) |
 | `BOT_DEVICE_NAME` | `meshcore_gui/config.py` | Device name set when bot mode is active (default: `;NL-OV-ZWL-STDSHGN-WKC Bot`) |
 | `BOT_CHANNELS` | `meshcore_gui/services/bot.py` | Channel indices the bot listens on |
 | `BOT_COOLDOWN_SECONDS` | `meshcore_gui/services/bot.py` | Minimum seconds between bot replies |
 | `BOT_KEYWORDS` | `meshcore_gui/services/bot.py` | Keyword → reply template mapping |
 | Room passwords | `~/.meshcore-gui/room_passwords/<ADDRESS>.json` | Per-device Room Server passwords (managed via GUI, stored outside repository) |
+| Repeaters | `~/.meshcore-gui/repeaters/<ADDRESS>_repeaters.json` | Per-device repeater list with login passwords; hand-edited, read once at startup (see [8.2](#82-repeater-statistics-polling)) |
 | Serial Port | CLI argument | Device serial port (e.g. `/dev/ttyUSB0` or `COM3`) |
 | BLE Address | CLI argument | BLE MAC address (e.g. `literal:AA:BB:CC:DD:EE:FF`) |
 | `--port=PORT` | CLI flag | Web server port (default: `8081`) |
@@ -721,7 +722,9 @@ All persistent data is stored under `~/.meshcore-gui/` in your home directory. E
 │                               # Pinned contacts are protected from bulk delete
 ├── archive/
 │   ├── <ADDRESS>_messages.json # All received channel and DM messages (retained per MESSAGE_RETENTION_DAYS)
-│   └── <ADDRESS>_rxlog.json    # Raw RX log entries (retained per RXLOG_RETENTION_DAYS)
+│   ├── <ADDRESS>_rxlog.json    # Raw RX log entries (retained per RXLOG_RETENTION_DAYS)
+│   └── <ADDRESS>_repeater_stats.jsonl # One JSON object per repeater poll, appended immediately
+│                               # (retained per REPEATER_STATS_RETENTION_DAYS, see 8.2)
 ├── room_passwords/
 │   └── <ADDRESS>.json          # Room Server passwords per device (managed via GUI)
 ├── bot/
@@ -816,10 +819,33 @@ Restart the instance after editing; the file is read once at startup.
   sent once a login has been attempted, including after a timeout.
 - A failed poll is archived too, with `ok: false` and a reason, so a gap in the
   message archive can be matched against the poll moments.
-- Values are stored and shown exactly as the repeater reports them — no
-  conversion, no rounding, no averaging.
+- After a login that produces no confirmation, the poller calls `reset_path()`.
+  The device forgets the stored route, the next poll floods and relearns a path
+  from the ACK. A repeater that became unreachable because its stored path went
+  stale therefore recovers on its own within one poll interval. `reset_path()`
+  is a device-local command and costs no airtime.
+- Values are **stored** exactly as the repeater reports them — no conversion, no
+  rounding, no averaging. Only the presentation differs: `uptime`, `airtime` and
+  `rx_airtime` are **shown** as days, hours, minutes and seconds, because a raw
+  second count is unreadable at these magnitudes. The archive keeps the raw
+  value, so anything reading the JSONL stream is unaffected.
 - Only the instance that has a repeater in its own file polls that repeater, so
   two instances never query the same node.
+
+### Manual poll
+
+Every repeater card carries a **Poll now** button that runs the same login,
+status request and logout sequence as the scheduled poll. A manual result is
+indistinguishable from an automatic one in the archive.
+
+- The button queues a command and returns immediately, so the GUI never waits
+  for the radio. The result appears on a later update tick.
+- A manual poll pushes that repeater's next scheduled poll a full interval
+  forward, so it is not immediately followed by an automatic one.
+- A repeater with `"enabled": false` **is** polled when the button is pressed:
+  an explicit user action outranks the schedule.
+- Failures are recorded exactly as for a scheduled poll, including the path
+  reset after a login without confirmation.
 
 ### Password handling
 
@@ -1225,6 +1251,40 @@ The **Load different file…** upload in the Restore dialog accepts any backup p
 
 Backup files contain private channel PSKs and are therefore stored strictly locally in `~/.meshcore-gui/channel_backups/`. They are never included in the public REST API response and never leave the host. The existing domca.nl privacy filter (Public + Hashtag channels only in the public API) continues to apply unchanged — `public_api_service` does not read from the backup directory at all.
 
+### 9.16. Repeaters
+
+The REPEATERS panel is a read-only view of the last status response of every
+configured repeater. Repeaters are configured in a JSON file on disk, not from
+the GUI — see [8.2. Repeater Statistics Polling](#82-repeater-statistics-polling)
+for the file, the fields and the permissions. The panel is absent from the
+drawer when no configuration file exists.
+
+<!-- SCREENSHOT: single repeater card — status fields, formatted uptime, Poll now button -->
+
+Each repeater gets one card:
+
+- **Header** — display name, current state and a **Poll now** button.
+- **Poll ages** — time since the last successful poll, time since the last poll
+  attempt of any kind, and the configured interval in seconds.
+- **Last error** — shown in red when the most recent attempt failed, with the
+  reason as recorded in the archive.
+- **Status fields** — every field from the last successful status response, in
+  two columns.
+
+Fields are rendered from the response itself rather than from a fixed list, so
+a field a future firmware adds appears without a code change. Known fields get
+a readable label (Battery, Uptime, TX airtime, Noise floor, Last RSSI, Last SNR,
+Packets received/sent, Queue full events, and so on); an unrecognised field is
+still shown, using its raw name.
+
+Values are shown as the repeater reports them, with one exception: `uptime`,
+`airtime` and `rx_airtime` are formatted as `46d 13h 28m 51s` rather than as a
+raw second count. Smaller values drop the leading units, so 45 seconds shows as
+`45s`. This is presentation only — the archive stores the raw number.
+
+Passwords are never reachable from the panel: the configuration store hands out
+objects that have no password field at all.
+
 ## 10. Architecture
 
 <!-- CHANGED: Architecture diagram updated — added BBS, ChannelService, PublicAPIService, MapSnapshotService -->
@@ -1248,13 +1308,14 @@ Backup files contain private channel PSKs and are therefore stored strictly loca
 │  │  Panels   │  │  │  │   │   Bot   │   │
 │  │  RoutePage│  │  │  │   │  Dedup  │   │
 │  │ ArchivePg │  │  │  │   │  Cache  │   │
-│  │ RoomSrvPnl│  │  │  │   │  BBS   │   │
-│  │  BBSPanel │  │  │  │   └─────────┘   │
-│  │  BotPanel │  │  │  │   ┌─────────┐   │
-│  └───────────┘  │  │  │   │Reconnect│   │
-│                 │  │  │   │  Loop   │   │
-│  ┌───────────┐  │  │  │   └─────────┘   │
-│  │  REST API │  │  │  │                 │
+│  │ RoomSrvPnl│  │  │  │   │  BBS    │   │
+│  │  BBSPanel │  │  │  │   │Repeater │   │
+│  │  BotPanel │  │  │  │   │ Poller  │   │
+│  │RepeaterPnl│  │  │  │   └─────────┘   │
+│  └───────────┘  │  │  │   ┌─────────┐   │
+│                 │  │  │   │Reconnect│   │
+│  ┌───────────┐  │  │  │   │  Loop   │   │
+│  │  REST API │  │  │  │   └─────────┘   │
 │  │ /api/v1/  │  │  │  │                 │
 │  └───────────┘  │  │  │                 │
 └─────────────────┘  │  └─────────────────┘
@@ -1272,6 +1333,8 @@ Backup files contain private channel PSKs and are therefore stored strictly loca
               │  archive/)  │     │  Store        │
               └─────────────┘     │ ChannelService│
                                   │ MapSnapshot   │
+                                  │ RepeaterConfig│
+                                  │  + StatsArchiv│
                                   └───────────────┘
 ```
 
@@ -1289,6 +1352,10 @@ Backup files contain private channel PSKs and are therefore stored strictly loca
 - **BbsService**: Bulletin Board System — processes DM commands, manages the SQLite message store and whitelist
 - **PublicApiService**: Aggregates data from SharedData and MessageArchive for the REST API; enforces privacy filtering (no private channel messages)
 - **MapSnapshotService**: Builds a point-in-time snapshot of node positions and device state for use by the REST API `/api/v1/nodes` endpoint
+- **RepeaterConfigStore**: Per-device repeater configuration from `~/.meshcore-gui/repeaters/`; the login password is reachable through a single method that only the poller calls
+- **RepeaterPoller**: Runs the login / status request / logout sequence per repeater on its own interval, and on demand via the `poll_repeater` command; resets a stale path after a login without confirmation
+- **RepeaterStatsArchive**: Append-only JSONL archive of every poll, successful or not, with retention via the existing daily cleanup task
+- **RepeaterStatsPanel**: Read-only card per repeater showing every field from the last status response; renders unknown fields too
 - **RoomServerPanel**: Per-room-server card management with login/logout, message display and send functionality
 - **RoomPasswordStore**: Persistent Room Server password storage per device in `~/.meshcore-gui/room_passwords/` (JSON-backed, analogous to PinStore)
 - **SharedData**: Thread-safe data sharing between serial worker and GUI via Protocol interfaces
@@ -1300,103 +1367,23 @@ Backup files contain private channel PSKs and are therefore stored strictly loca
 
 ## 11. Cross-Frequency Bridge
 
-### 11.1. Bridge Overview
+The cross-frequency bridge and the observer daemon now live in their own
+repositories. They were part of this project until they outgrew it: both are
+standalone processes with their own configuration, dashboard and systemd
+service, and neither needs a running MeshCore GUI instance.
 
-**meshcore_bridge** is a standalone daemon that connects two MeshCore devices operating on different radio frequencies. It forwards messages on a configurable bridge channel from one device to the other, effectively extending your mesh network across frequency boundaries.
+- **[meshcore-bridge](https://github.com/pe1hvh/meshcore-bridge)** — connects
+  two MeshCore devices operating on different radio frequencies and forwards
+  messages on a configurable bridge channel from one to the other, with loop
+  prevention and its own status dashboard. Private channels work transparently,
+  because the bridge operates at the plaintext level between firmware
+  decryption and encryption.
+- **[meshcore-observer](https://github.com/pe1hvh/meshcore-observer)** —
+  passively monitors mesh traffic without transmitting, for network analysis,
+  coverage mapping and long-term logging.
 
-The bridge runs as an independent process, imports the existing meshcore_gui modules (SharedData, Worker, models, config) as a library, and requires **zero modifications** to the meshcore_gui codebase.
-
-```
-┌───────────────────────────────────────────┐
-│           meshcore_bridge daemon           │
-│                                           │
-│  ┌──────────────┐    ┌────────────────┐   │
-│  │ SharedData A │    │  BridgeEngine  │   │
-│  │ + Worker A   │◄──►│  (forward &    │   │
-│  │ (ttyUSB1)    │    │   dedup)       │   │
-│  └──────────────┘    └────────────────┘   │
-│  ┌──────────────┐         │               │
-│  │ SharedData B │◄────────┘               │
-│  │ + Worker B   │                         │
-│  │ (ttyUSB2)    │                         │
-│  └──────────────┘                         │
-│                                           │
-│  ┌───────────────────────────────────┐    │
-│  │  Bridge Dashboard (NiceGUI :9092) │    │
-│  └───────────────────────────────────┘    │
-└───────────────────────────────────────────┘
-```
-
-Key properties:
-
-- **Separate process** — the bridge runs independently from meshcore_gui; both can run simultaneously on the same host
-- **Loop prevention** — three mechanisms prevent message loops: direction filter, message hash tracking, and echo suppression
-- **Private channels** — encrypted channels work transparently because the bridge operates at the plaintext level between firmware decryption and encryption
-- **DOMCA dashboard** — status page on its own port showing both device connections, bridge statistics and a forwarded message log
-- **YAML configuration** — all settings in a single `bridge_config.yaml` file
-
-### 11.2. Quick Start
-
-```bash
-# 1. Install the additional dependency
-pip install pyyaml
-
-# 2. Edit the configuration
-cp bridge_config.yaml bridge_config.yaml.local
-nano bridge_config.yaml.local
-
-# 3. Start the bridge
-python meshcore_bridge.py --config=bridge_config.yaml.local
-
-# 4. Open the dashboard at http://localhost:9092
-```
-
-**Prerequisites**: two MeshCore devices connected via USB serial to the same host, with the bridge channel configured on both devices using the same channel secret/password.
-
-### 11.3. Bridge Configuration
-
-All settings are defined in `bridge_config.yaml`:
-
-```yaml
-bridge:
-  channel_name: "bridge"        # Channel name (for display)
-  channel_idx_a: 3              # Channel index on device A
-  channel_idx_b: 3              # Channel index on device B
-  poll_interval_ms: 200         # Polling interval (ms)
-  forward_prefix: true          # Add [sender] prefix to forwarded messages
-  max_forwarded_cache: 500      # Loop prevention cache size
-
-device_a:
-  port: /dev/ttyUSB1
-  baud: 115200
-  label: "869.525 MHz"
-
-device_b:
-  port: /dev/ttyUSB2
-  baud: 115200
-  label: "868.000 MHz"
-
-gui:
-  port: 9092
-  title: "MeshCore Bridge"
-```
-
-CLI options: `--config=PATH`, `--port=PORT`, `--debug-on`, `--help`.
-
-### 11.4. systemd Service
-
-Install the bridge as a systemd daemon for production use:
-
-```bash
-sudo bash install_scripts/install_bridge.sh
-sudo nano /etc/meshcore/bridge_config.yaml
-sudo systemctl start meshcore-bridge
-sudo systemctl enable meshcore-bridge
-```
-
-To uninstall: `sudo bash install_scripts/install_bridge.sh --uninstall`
-
-For full documentation including architecture details, troubleshooting and assumptions, see [BRIDGE.md](BRIDGE.md).
+Installation, configuration and troubleshooting are documented in each
+repository.
 
 ## 12. Known Limitations
 
@@ -1407,6 +1394,7 @@ For full documentation including architecture details, troubleshooting and assum
 4. **Room Server message latency** — Room Server messages travel over LoRa RF and arrive asynchronously (10–75 seconds per message). With many logged-in clients, receiving all historical messages can take 10+ minutes due to the round-robin push protocol
 5. **BLE Linux only** — BLE mode requires Linux with BlueZ and D-Bus. macOS and Windows are not supported for BLE connections because the PIN agent relies on the D-Bus system bus
 6. **BlueZ 5.66+ instability** — Recent BlueZ versions (shipped with Ubuntu 24.04, Debian Bookworm, Raspberry Pi OS Bookworm) can cause BLE connection instability, pairing failures and unexpected disconnects. USB serial is not affected and is recommended as the most reliable transport
+7. **Room Server history timestamps** — Messages replayed from Room Server history carry their **receive** time, not their original send time. A message sent days earlier is archived at the moment it arrives. Whether the `CONTACT_MSG_RECV` payload carries a usable original timestamp has not been established, so no correction is applied rather than one that guesses
 
 ## 13. Troubleshooting
 
@@ -1580,7 +1568,7 @@ Debug output is written to both stdout and a per-device rotating log file at `~/
 
 ### 14.2. Project Structure
 
-<!-- CHANGED: Project structure updated — added api/, bbs_panel, bot_panel, channel_service, bbs_config_store, bot_config_store, map_snapshot_service, public_api_service, install_scripts/ -->
+<!-- CHANGED: Project structure updated — added repeater_stats_panel, repeater_config_store, repeater_poller, repeater_stats_archive, channel_discovery, ble_connector; docs/ tree corrected (adr/, ble/, examples/); bridge and observer moved to their own repositories -->
 
 ```
 meshcore-gui/
@@ -1596,6 +1584,7 @@ meshcore-gui/
 │   │   ├── __init__.py
 │   │   ├── worker.py                # _BaseWorker + SerialWorker + BLEWorker + create_worker() factory; thread lifecycle, cache-first startup, disconnect detection, auto-reconnect, background key retry
 │   │   ├── ble_agent.py             # BlueZ D-Bus PIN agent for BLE pairing (Linux only, lazy-loaded)
+│   │   ├── ble_connector.py         # BLE bond lifecycle via the meshcore-ble-connect subprocess (lazy-loaded)
 │   │   ├── ble_reconnect.py         # BLE bond cleanup and reconnect loop via D-Bus (lazy-loaded)
 │   │   ├── commands.py              # Command execution (send, refresh, advert)
 │   │   ├── events.py                # Event callbacks (messages, RX log) with path hash caching and name resolution at receive time
@@ -1624,6 +1613,7 @@ meshcore-gui/
 │   │       ├── bot_panel.py         # Bot enable/configure panel (channel selection, private mode)
 │   │       ├── channel_panel.py     # Add Channel dialog (Hashtag / Private New / Private Existing)
 │   │       ├── channel_backup_panel.py # Channel Backup & Restore dialogs (export PSKs, preview diff, restore)
+│   │       ├── repeater_stats_panel.py # Read-only REPEATERS panel with a Poll now button per repeater
 │   │       ├── room_server_panel.py # Per-room-server card with login/logout and messages
 │   │       └── rxlog_panel.py       # RX log table
 │   └── services/                    # Business logic
@@ -1633,6 +1623,7 @@ meshcore-gui/
 │       ├── bot.py                   # Keyword-triggered auto-reply bot
 │       ├── bot_config_store.py      # Bot channel/mode persistence per device (~/.meshcore-gui/bot/)
 │       ├── cache.py                 # Local JSON cache per device (~/.meshcore-gui/cache/)
+│       ├── channel_discovery.py     # Pure helpers for merging a discovery result into cached channel names
 │       ├── channel_service.py       # Channel discovery, add, delete, re-indexing and key caching
 │       ├── channel_backup_store.py  # Channel backup/restore store (~/.meshcore-gui/channel_backups/)
 │       ├── contact_cleaner.py       # Bulk-delete logic for unpinned contacts
@@ -1642,42 +1633,46 @@ meshcore-gui/
 │       ├── message_archive.py       # Persistent message and RX log archive with retention and cleanup
 │       ├── pin_store.py             # Persistent pin state storage per device (~/.meshcore-gui/pins/)
 │       ├── public_api_service.py    # Data aggregation layer for /api/v1/ (enforces privacy filtering)
+│       ├── repeater_config_store.py # Per-device repeater configuration (~/.meshcore-gui/repeaters/)
+│       ├── repeater_poller.py       # Login / status / logout sequence per repeater, scheduled and on demand
+│       ├── repeater_stats_archive.py # Append-only JSONL archive of every repeater poll
 │       ├── room_password_store.py   # Persistent Room Server password storage per device
 │       └── route_builder.py         # Route data construction
+│   └── static/                      # Static assets served by NiceGUI
+│       ├── icon.svg
+│       ├── icon-192.png
+│       ├── icon-512.png
+│       ├── landing_default.svg      # Default landing page graphic (operator-replaceable)
+│       ├── manifest.json            # PWA manifest
+│       ├── leaflet_map_panel.js     # Leaflet map integration
+│       └── leaflet_map_panel.css
 ├── install_scripts/                 # Installer shell scripts
-│   ├── install_venv.sh              # Create venv and install core Python dependencies
 │   ├── install_serial.sh            # systemd service installer for serial connections
-│   ├── install_ble_stable.sh        # systemd service installer for BLE connections (includes D-Bus policy)
-│   ├── install_bridge.sh            # systemd service installer for the cross-frequency bridge
-│   └── install_observer.sh          # systemd service installer for the observer daemon (in development)
-├── meshcore_gui/static/             # Static assets served by NiceGUI
-│   ├── icon.svg
-│   ├── icon-192.png
-│   ├── icon-512.png
-│   ├── landing_default.svg          # Default landing page graphic (operator-replaceable)
-│   ├── manifest.json                # PWA manifest
-│   ├── leaflet_map_panel.js         # Leaflet map integration
-│   └── leaflet_map_panel.css
+│   └── install_ble_stable.sh        # systemd service installer for BLE connections (includes D-Bus policy)
 ├── docs/
-│   ├── TROUBLESHOOTING.md           # BLE troubleshooting guide (detailed)
-│   ├── MeshCore_GUI_Design.docx     # Design document
-│   ├── ble_capture_workflow_t_1000_e_explanation.md
-│   └── ble_capture_workflow_t_1000_e_uitleg.md
-├── meshcore_bridge.py               # Bridge entry point
-├── meshcore_bridge/                  # Bridge daemon package
-│   ├── __init__.py
-│   ├── __main__.py                  # CLI, dual-worker setup, NiceGUI server
-│   ├── config.py                    # YAML config loading (BridgeConfig dataclass)
-│   ├── bridge_engine.py             # Core bridge logic: poll, forward, dedup, loop prevention
-│   └── gui/                         # Bridge dashboard (DOMCA themed)
-│       ├── __init__.py
-│       ├── dashboard.py             # Bridge status dashboard page
-│       └── panels/
-│           ├── __init__.py
-│           ├── status_panel.py      # Device A/B connection status + statistics
-│           └── log_panel.py         # Forwarded message log
-├── bridge_config.yaml               # Bridge configuration template (YAML)
-├── BRIDGE.md                        # Bridge documentation
+│   ├── MeshCore_GUI_Design.docx     # Design document: components, threading model, class diagram
+│   ├── FEATURE_MESSAGE_PERSISTENCE.md # Persistence layer in detail
+│   ├── MAP_ARCHITECTURE.md          # Map subsystem (browser runtime)
+│   ├── MULTI_INSTANCE.md            # Running multiple instances per host
+│   ├── INTEGRATION_GUIDE.md         # subprocess BLE connect detail
+│   ├── SOLID_ANALYSIS.md            # SOLID review of the codebase
+│   ├── ISSUE_bbs_channel_reply_unknown_sender.md
+│   ├── adr/                         # Architecture Decision Records (the why questions)
+│   │   ├── ADR-001-browser-managed-leaflet.md
+│   │   ├── ADR-002-protocol-interfaces.md
+│   │   ├── ADR-003-subprocess-ble-connect.md
+│   │   ├── ADR-004-builtin-dbus-pin-agent.md
+│   │   └── ADR-005-dual-layer-persistence.md
+│   ├── ble/                         # BLE reference material (legacy path)
+│   │   ├── BLE_ARCHITECTURE.md      # BLE architecture and D-Bus permissions
+│   │   ├── BLE_ARCHITECTURE.txt
+│   │   ├── BLE_ARCHITECTURE.docx
+│   │   ├── ble_capture_workflow_t_1000_e_explanation.md
+│   │   └── ble_capture_workflow_t_1000_e_uitleg.md
+│   └── examples/
+│       └── repeaters.json.example   # Annotated repeater configuration (see 8.2)
+├── requirements.txt
+├── AGENTS.md                        # Agent notes: entry points, architecture, transport detection
 ├── .gitattributes
 ├── .gitignore
 ├── LICENSE
@@ -1689,11 +1684,12 @@ meshcore-gui/
 
 This project is under active development. The most common features from the official MeshCore Companion apps are being implemented gradually. Planned additions include:
 
-- [x] **Cross-frequency bridge** — standalone daemon connecting two devices on different frequencies via configurable channel forwarding (see [11. Cross-Frequency Bridge](#11-cross-frequency-bridge))
+- [x] **Cross-frequency bridge** — standalone daemon connecting two devices on different frequencies via configurable channel forwarding; moved to [meshcore-bridge](https://github.com/pe1hvh/meshcore-bridge)
 - [x] **BBS — Bulletin Board System** — offline message board with DM-based commands, category/region filtering and automatic abbreviations (see [9.14. BBS](#914-bbs--bulletin-board-system))
-- [ ] **Observer mode** — passively monitor mesh traffic without transmitting, useful for network analysis, coverage mapping and long-term logging. The systemd installer (`install_scripts/install_observer.sh`) is already available; the daemon itself is in development
+- [ ] **Observer mode** — passively monitor mesh traffic without transmitting, useful for network analysis, coverage mapping and long-term logging; in development at [meshcore-observer](https://github.com/pe1hvh/meshcore-observer)
 - [ ] **Room Server administration** — authenticate as admin to manage Room Server settings and users directly from the GUI
-- [ ] **Repeater management** — connect to repeater nodes to view status and adjust configuration
+- [x] **Repeater statistics** — poll repeater nodes for their status on an interval or on demand, and archive every response (see [8.2](#82-repeater-statistics-polling) and [9.16](#916-repeaters))
+- [ ] **Repeater configuration** — adjust repeater settings from the GUI; reading the status works, writing does not
 
 Have a feature request or want to contribute? Open an issue or submit a pull request.
 

@@ -1,0 +1,60 @@
+{
+  "_comment": [
+    "Example repeater configuration for the REPEATERS panel.",
+    "",
+    "Copy this file to:",
+    "  ~/.meshcore-gui/repeaters/<ADDRESS>_repeaters.json",
+    "",
+    "<ADDRESS> is derived from the device argument, the same way as every",
+    "other per-device file: /dev/ttyUSB1 becomes _dev_ttyUSB1, and a BLE",
+    "address AA:BB:CC:DD:EE:FF becomes AA_BB_CC_DD_EE_FF. So for",
+    "/dev/ttyUSB1 the filename is _dev_ttyUSB1_repeaters.json.",
+    "",
+    "Only the instance that has a repeater in its own file polls that",
+    "repeater, which keeps two instances from querying the same node.",
+    "",
+    "This file contains a login password, so it must be mode 0600 inside a",
+    "0700 directory:",
+    "  mkdir -p ~/.meshcore-gui/repeaters",
+    "  chmod 700 ~/.meshcore-gui/repeaters",
+    "  chmod 600 ~/.meshcore-gui/repeaters/<ADDRESS>_repeaters.json",
+    "",
+    "The application warns in the log when the permissions are wider than",
+    "that, and keeps running.",
+    "",
+    "Remove this _comment key in the real file, or leave it — unknown",
+    "top-level keys are ignored.",
+    "",
+    "Field reference, per entry under \"repeaters\":",
+    "  key            The FULL 32-byte public key of the repeater, as 64",
+    "                 hex characters. A prefix is rejected: the meshcore",
+    "                 library requires the complete key for login, status",
+    "                 and logout. Find it in the CONTACTS panel.",
+    "  name           Display name shown in the REPEATERS panel.",
+    "  password       Login password. Omit the field entirely when no",
+    "                 password is configured; use \"\" when the repeater",
+    "                 accepts a blank one. These are different: an omitted",
+    "                 password means the repeater is skipped.",
+    "  poll_interval  Seconds between polls of this repeater. Default 900",
+    "                 (15 minutes) from REPEATER_POLL_INTERVAL in config.py.",
+    "                 Repeater statistics change slowly; polling more often",
+    "                 costs airtime and makes the local node deaf for longer",
+    "                 without adding information.",
+    "  enabled        Set to false to keep the entry but stop polling it."
+  ],
+  "version": 1,
+  "repeaters": {
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef": {
+      "name": "NoodNet Zwolle",
+      "password": "change-me",
+      "poll_interval": 900,
+      "enabled": true
+    },
+    "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210": {
+      "name": "Dalfsen",
+      "password": "change-me",
+      "poll_interval": 900,
+      "enabled": true
+    }
+  }
+}

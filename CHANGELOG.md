@@ -32,6 +32,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
   response, the age of the last successful poll and the last error.
   Fields are rendered from the response itself rather than a fixed list,
   so a field a future firmware adds appears without a code change.
+- `docs/examples/repeaters.json.example` — annotated example
+  configuration, plus README section 8.2 covering the file location,
+  the fields, the permissions and the archive format.
 - `REPEATER_POLL_ENABLED`, `REPEATER_POLL_INTERVAL` (900 s),
   `REPEATER_POLL_CHECK_INTERVAL`, `REPEATER_LOGIN_TIMEOUT`,
   `REPEATER_STATUS_TIMEOUT`, `REPEATER_STATS_RETENTION_DAYS` and

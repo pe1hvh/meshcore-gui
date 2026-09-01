@@ -44,6 +44,7 @@ A full-featured desktop platform for MeshCore mesh radio devices. Connects via U
   - [7.9. Raspberry Pi 5 Notes](#79-raspberry-pi-5-notes)
 - [8. Configuration](#8-configuration)
   - [8.1. Data Directory (`~/.meshcore-gui/`)](#81-data-directory-meshcore-gui)
+  - [8.2. Repeater Statistics Polling](#82-repeater-statistics-polling)
 - [9. Functionality](#9-functionality)
   - [9.1. Device Info](#91-device-info)
   - [9.2. Contacts](#92-contacts)
@@ -731,6 +732,9 @@ All persistent data is stored under `~/.meshcore-gui/` in your home directory. E
 ├── channel_backups/
 │   └── _<dev_id>_channels.json # Local channel backup (names + PSKs) per device
 │                               # Created on demand from 💾 Backup Channels; never transmitted
+├── repeaters/
+│   └── <ADDRESS>_repeaters.json # Repeaters polled for statistics (see 8.2)
+│                               # Contains a login password: dir 0700, file 0600
 └── logs/
     └── <ADDRESS>_meshcore_gui.log  # Rotating debug log (max 20 MB, only with --debug-on)
 ```
@@ -751,6 +755,96 @@ cat ~/.meshcore-gui/bbs/bbs_config.json
 ```
 
 > **Tip:** When moving to a new machine or a different Raspberry Pi, copy the entire `~/.meshcore-gui/` directory to preserve your pinned contacts, room passwords, bot configuration and message history.
+
+## 8.2. Repeater Statistics Polling
+
+The REPEATERS panel shows the statistics a repeater reports: battery, uptime,
+airtime, packet counters, noise floor, RSSI and SNR. Every poll is archived
+with its timestamp, so battery voltage can be followed over multiple days.
+
+Polling stays idle until you create a configuration file, so nothing is sent
+over the air until you ask for it.
+
+### Configuration file
+
+An annotated example ships with the project at
+[`docs/examples/repeaters.json.example`](docs/examples/repeaters.json.example).
+
+```bash
+mkdir -p ~/.meshcore-gui/repeaters
+chmod 700 ~/.meshcore-gui/repeaters
+
+# <ADDRESS> follows the same rule as every per-device file:
+# /dev/ttyUSB1 → _dev_ttyUSB1
+cp docs/examples/repeaters.json.example \
+   ~/.meshcore-gui/repeaters/_dev_ttyUSB1_repeaters.json
+chmod 600 ~/.meshcore-gui/repeaters/_dev_ttyUSB1_repeaters.json
+
+nano ~/.meshcore-gui/repeaters/_dev_ttyUSB1_repeaters.json
+```
+
+```json
+{
+  "version": 1,
+  "repeaters": {
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef": {
+      "name": "NoodNet Zwolle",
+      "password": "change-me",
+      "poll_interval": 900,
+      "enabled": true
+    }
+  }
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| key | The **full 32-byte** public key as 64 hex characters. A prefix is rejected — the meshcore library needs the complete key for login, status and logout. Copy it from the CONTACTS panel. |
+| `name` | Display name in the REPEATERS panel. |
+| `password` | Login password. Omit the field when none is configured; use `""` when the repeater accepts a blank one. An omitted password means the repeater is skipped. |
+| `poll_interval` | Seconds between polls. Default 900 (`REPEATER_POLL_INTERVAL` in `config.py`). |
+| `enabled` | Set to `false` to keep the entry but stop polling it. |
+
+Restart the instance after editing; the file is read once at startup.
+
+### Behaviour
+
+- One repeater is polled per check, each with its own offset inside the
+  interval, so two repeaters are never queried back to back. Two repeaters on
+  the default interval land roughly 7.5 minutes apart.
+- Each poll is a login, a status request and a logout. The logout is always
+  sent once a login has been attempted, including after a timeout.
+- A failed poll is archived too, with `ok: false` and a reason, so a gap in the
+  message archive can be matched against the poll moments.
+- Values are stored and shown exactly as the repeater reports them — no
+  conversion, no rounding, no averaging.
+- Only the instance that has a repeater in its own file polls that repeater, so
+  two instances never query the same node.
+
+### Password handling
+
+The file holds a repeater login password and is created `0600` inside a `0700`
+directory. The application logs an explicit warning when the permissions are
+wider than that and keeps running.
+
+The password is reachable through a single method that only the poller calls.
+It never appears in the REPEATERS panel, the archive, the REST API, a log line
+or an error message.
+
+### Archive
+
+```
+~/.meshcore-gui/archive/<ADDRESS>_repeater_stats.jsonl
+```
+
+One JSON object per line, appended immediately:
+
+```json
+{"polled_at": "2026-09-01T10:15:00+00:00", "pubkey": "0123…", "name": "NoodNet Zwolle", "ok": true, "error": null, "status": {"bat": 4021, "uptime": 91234, "…": "…"}}
+```
+
+Retention is `REPEATER_STATS_RETENTION_DAYS` in `config.py` (default 90) and is
+applied by the existing daily cleanup task.
 
 ## 9. Functionality
 

@@ -19,3 +19,4 @@ from meshcore_gui.gui.panels.bbs_panel import BbsPanel              # noqa: F401
 from meshcore_gui.gui.panels.bot_panel import BotPanel              # noqa: F401
 from meshcore_gui.gui.panels.channel_panel import ChannelPanel      # noqa: F401
 from meshcore_gui.gui.panels.channel_backup_panel import ChannelBackupPanel  # noqa: F401
+from meshcore_gui.gui.panels.repeater_stats_panel import RepeaterStatsPanel  # noqa: F401

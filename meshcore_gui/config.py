@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.22.6"
+VERSION: str = "1.23.0"
 
 
 # ==============================================================================
@@ -78,6 +78,13 @@ LOG_DIR: Path = DATA_DIR / "logs"
 # Bot configuration directory — bot JSON files live here.
 # File naming: _<safe_dev_id>_bot.json (e.g. _dev_ttyUSB1_bot.json).
 BOT_DIR: Path = DATA_DIR / "bot"
+
+# Repeater configuration directory — one JSON file per device, holding
+# the repeaters that are polled for statistics.  The file contains the
+# repeater login password, so RepeaterConfigStore creates the directory
+# with mode 0700 and the file with mode 0600.
+# File naming: _<safe_dev_id>_repeaters.json.
+REPEATERS_DIR: Path = DATA_DIR / "repeaters"
 
 # Log file path (rotating: max 5 MB per file, 3 backups = 20 MB total).
 LOG_FILE: Path = LOG_DIR / "meshcore_gui.log"
@@ -427,6 +434,41 @@ RXLOG_RETENTION_DAYS: int = 14
 # Retention period for contacts (in days).
 # Contacts not seen for longer than this are removed from cache.
 CONTACT_RETENTION_DAYS: int = 90
+
+# Retention period for repeater statistics (in days).
+# Records older than this are removed from the JSONL archive during
+# the daily cleanup run.
+REPEATER_STATS_RETENTION_DAYS: int = 90
+
+
+# ==============================================================================
+# REPEATER STATISTICS POLLING
+# ==============================================================================
+
+# Enable or disable periodic polling of repeater statistics.
+# When False, no repeater is contacted regardless of what is configured.
+REPEATER_POLL_ENABLED: bool = True
+
+# Default seconds between polls of a single repeater (15 minutes).
+# Overridable per repeater with "poll_interval" in the repeater
+# configuration file.  Repeater statistics change slowly; polling more
+# often costs airtime and makes the local node deaf for longer without
+# yielding extra information.
+REPEATER_POLL_INTERVAL: float = 900.0
+
+# Seconds between checks for a repeater that is due to be polled.
+# The poller itself decides whether anything is due; this only sets how
+# often the main loop asks.
+REPEATER_POLL_CHECK_INTERVAL: float = 10.0
+
+# Minimum seconds to wait for the LOGIN_SUCCESS event after sending a
+# login request.  The library derives a timeout from the value the device
+# suggests; this raises it when that suggestion is too optimistic for a
+# distant repeater.
+REPEATER_LOGIN_TIMEOUT: float = 30.0
+
+# Minimum seconds to wait for the STATUS_RESPONSE after a status request.
+REPEATER_STATUS_TIMEOUT: float = 30.0
 
 
 # ==============================================================================

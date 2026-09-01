@@ -45,6 +45,8 @@ from meshcore_gui.config import (
     CONTACT_REFRESH_SECONDS,
     MAX_CHANNELS,
     MSG_POLL_INTERVAL,
+    REPEATER_POLL_CHECK_INTERVAL,
+    REPEATER_POLL_ENABLED,
     RECONNECT_BASE_DELAY,
     RECONNECT_MAX_RETRIES,
     debug_data,
@@ -69,6 +71,9 @@ from meshcore_gui.services.channel_discovery import (
 from meshcore_gui.services.dedup import DualDeduplicator
 from meshcore_gui.services.device_identity import write_device_identity
 from meshcore_gui.services.pin_store import PinStore
+from meshcore_gui.services.repeater_config_store import RepeaterConfigStore
+from meshcore_gui.services.repeater_poller import RepeaterPoller
+from meshcore_gui.services.repeater_stats_archive import RepeaterStatsArchive
 
 
 # Seconds between background retry attempts for missing channel keys.
@@ -86,18 +91,27 @@ def create_worker(device_id: str, shared: SharedDataWriter, **kwargs):
     """Return the appropriate worker for *device_id*.
 
     Keyword arguments are forwarded to the worker constructor
-    (e.g. ``baudrate``, ``cx_dly`` for serial, ``pin_store`` for all).
+    (e.g. ``baudrate``, ``cx_dly`` for serial, ``pin_store``,
+    ``repeater_config_store`` and ``repeater_stats_archive`` for all).
     """
     from meshcore_gui.config import is_ble_address
 
     if is_ble_address(device_id):
-        return BLEWorker(device_id, shared, pin_store=kwargs.get("pin_store"))
+        return BLEWorker(
+            device_id,
+            shared,
+            pin_store=kwargs.get("pin_store"),
+            repeater_config_store=kwargs.get("repeater_config_store"),
+            repeater_stats_archive=kwargs.get("repeater_stats_archive"),
+        )
     return SerialWorker(
         device_id,
         shared,
         baudrate=kwargs.get("baudrate", _config.SERIAL_BAUDRATE),
         cx_dly=kwargs.get("cx_dly", _config.SERIAL_CX_DELAY),
         pin_store=kwargs.get("pin_store"),
+        repeater_config_store=kwargs.get("repeater_config_store"),
+        repeater_stats_archive=kwargs.get("repeater_stats_archive"),
     )
 
 
@@ -118,7 +132,14 @@ class _BaseWorker(abc.ABC):
       a broken connection
     """
 
-    def __init__(self, device_id: str, shared: SharedDataWriter, pin_store: Optional[PinStore] = None) -> None:
+    def __init__(
+        self,
+        device_id: str,
+        shared: SharedDataWriter,
+        pin_store: Optional[PinStore] = None,
+        repeater_config_store: Optional[RepeaterConfigStore] = None,
+        repeater_stats_archive: Optional[RepeaterStatsArchive] = None,
+    ) -> None:
         self.device_id = device_id
         self.shared = shared
         self.mc: Optional[MeshCore] = None
@@ -154,6 +175,21 @@ class _BaseWorker(abc.ABC):
         _bbs_config = BbsConfigStore()
         _bbs_service = BbsService()
         self._bbs_handler = BbsCommandHandler(service=_bbs_service, config_store=_bbs_config)
+
+        # Repeater statistics poller — created only when both the
+        # configuration store and the archive are supplied, so callers
+        # that construct a worker without them keep working unchanged.
+        self._repeater_stats_archive = repeater_stats_archive
+        self._repeater_poller: Optional[RepeaterPoller] = None
+        if (
+            REPEATER_POLL_ENABLED
+            and repeater_config_store is not None
+            and repeater_stats_archive is not None
+        ):
+            self._repeater_poller = RepeaterPoller(
+                config_store=repeater_config_store,
+                archive=repeater_stats_archive,
+            )
 
         # Channel indices that still need keys from device
         self._pending_keys: Set[int] = set()
@@ -208,6 +244,7 @@ class _BaseWorker(abc.ABC):
         last_key_retry = time.time()
         last_cleanup = time.time()
         last_msg_poll = time.time()
+        last_repeater_poll = time.time()
 
         while self.running and not self._disconnected:
             try:
@@ -237,6 +274,13 @@ class _BaseWorker(abc.ABC):
             if MSG_POLL_INTERVAL > 0 and now - last_msg_poll > MSG_POLL_INTERVAL:
                 await self._poll_pending_messages()
                 last_msg_poll = now
+
+            if (
+                self._repeater_poller is not None
+                and now - last_repeater_poll > REPEATER_POLL_CHECK_INTERVAL
+            ):
+                await self._poll_repeaters()
+                last_repeater_poll = now
 
             await asyncio.sleep(0.1)
 
@@ -863,6 +907,22 @@ class _BaseWorker(abc.ABC):
                 f"that the messages_waiting event did not deliver"
             )
 
+    async def _poll_repeaters(self) -> None:
+        """Poll a repeater for statistics when one is due.
+
+        Delegates the schedule to
+        :class:`~meshcore_gui.services.repeater_poller.RepeaterPoller`,
+        which polls at most one repeater per call so the transmissions
+        stay spread out.  Failures are recorded in the archive by the
+        poller and never propagate out of this method.
+        """
+        if self._repeater_poller is None:
+            return
+        try:
+            await self._repeater_poller.poll_due(self.mc)
+        except Exception as exc:
+            debug_print(f"Repeater poll error: {exc}")
+
     async def _cleanup_old_data(self) -> None:
         try:
             if self.shared.archive:
@@ -872,6 +932,8 @@ class _BaseWorker(abc.ABC):
                     f"Cleanup: archive now has {stats['total_messages']} messages, "
                     f"{stats['total_rxlog']} rxlog entries"
                 )
+            if self._repeater_stats_archive is not None:
+                self._repeater_stats_archive.cleanup_old_data()
             removed = self._cache.prune_old_contacts()
             if removed > 0:
                 contacts = self._cache.get_contacts()
@@ -902,8 +964,16 @@ class SerialWorker(_BaseWorker):
         baudrate: int = _config.SERIAL_BAUDRATE,
         cx_dly: float = _config.SERIAL_CX_DELAY,
         pin_store: Optional[PinStore] = None,
+        repeater_config_store: Optional[RepeaterConfigStore] = None,
+        repeater_stats_archive: Optional[RepeaterStatsArchive] = None,
     ) -> None:
-        super().__init__(port, shared, pin_store=pin_store)
+        super().__init__(
+            port,
+            shared,
+            pin_store=pin_store,
+            repeater_config_store=repeater_config_store,
+            repeater_stats_archive=repeater_stats_archive,
+        )
         self.port = port
         self.baudrate = baudrate
         self.cx_dly = cx_dly
@@ -1045,8 +1115,21 @@ class BLEWorker(_BaseWorker):
         shared:   SharedDataWriter for thread-safe communication.
     """
 
-    def __init__(self, address: str, shared: SharedDataWriter, pin_store: Optional[PinStore] = None) -> None:
-        super().__init__(address, shared, pin_store=pin_store)
+    def __init__(
+        self,
+        address: str,
+        shared: SharedDataWriter,
+        pin_store: Optional[PinStore] = None,
+        repeater_config_store: Optional[RepeaterConfigStore] = None,
+        repeater_stats_archive: Optional[RepeaterStatsArchive] = None,
+    ) -> None:
+        super().__init__(
+            address,
+            shared,
+            pin_store=pin_store,
+            repeater_config_store=repeater_config_store,
+            repeater_stats_archive=repeater_stats_archive,
+        )
         self.address = address
 
         # BLE PIN agent — imported lazily so serial-only installs

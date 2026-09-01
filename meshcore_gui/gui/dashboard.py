@@ -24,6 +24,7 @@ from meshcore_gui.gui.panels import (
     DevicePanel,
     MapPanel,
     MessagesPanel,
+    RepeaterStatsPanel,
     RoomServerPanel,
     RxLogPanel,
 )
@@ -305,7 +306,7 @@ class DashboardPage:
         shared: SharedDataReader for data access and command dispatch.
     """
 
-    def __init__(self, shared: SharedDataReader, pin_store: PinStore, room_password_store: RoomPasswordStore, bot_config_store: BotConfigStore | None = None, device_id: str = "") -> None:
+    def __init__(self, shared: SharedDataReader, pin_store: PinStore, room_password_store: RoomPasswordStore, bot_config_store: BotConfigStore | None = None, device_id: str = "", repeater_config_store=None, repeater_stats_archive=None) -> None:
         self._shared = shared
         self._pin_store = pin_store
         self._room_password_store = room_password_store
@@ -337,6 +338,12 @@ class DashboardPage:
         self._room_server: RoomServerPanel | None = None
         self._bbs: BbsPanel | None = None
         self._bot: BotPanel | None = None
+
+        # Repeater statistics — read-only panel, only present when both
+        # the configuration store and the archive are supplied.
+        self._repeater_config_store = repeater_config_store
+        self._repeater_stats_archive = repeater_stats_archive
+        self._repeater_stats: RepeaterStatsPanel | None = None
 
         # Channel add dialog panel
         self._channel_panel: ChannelPanel | None = None
@@ -401,6 +408,15 @@ class DashboardPage:
             self._bot_config_store,
             self._pin_store,
         )
+        if (
+            self._repeater_config_store is not None
+            and self._repeater_stats_archive is not None
+        ):
+            self._repeater_stats = RepeaterStatsPanel(
+                self._repeater_config_store,
+                self._repeater_stats_archive,
+            )
+
         self._channel_panel = ChannelPanel(put_cmd)
         self._channel_panel.render()
 
@@ -518,7 +534,10 @@ class DashboardPage:
             ui.separator().classes('my-1')
 
             # ── Standalone menu items (MAP, DEVICE, ACTIONS, RX LOG)
-            for icon, label, panel_id in _STANDALONE_ITEMS:
+            _items = list(_STANDALONE_ITEMS)
+            if self._repeater_stats is not None:
+                _items.append(('\U0001f4f6', 'REPEATERS', 'repeaters'))
+            for icon, label, panel_id in _items:
                 btn = ui.button(
                     f'{icon}  {label}',
                     on_click=lambda pid=panel_id: self._navigate_panel(pid),
@@ -605,6 +624,9 @@ class DashboardPage:
             ('bbs',      self._bbs),
             ('bot',      self._bot),
         ]
+
+        if self._repeater_stats is not None:
+            panel_defs.append(('repeaters', self._repeater_stats))
 
         for panel_id, panel_obj in panel_defs:
             container = ui.column().classes('domca-panel')
@@ -956,6 +978,9 @@ class DashboardPage:
         elif self._active_panel == 'bot':
             if self._bot:
                 self._bot.update(data)
+        elif self._active_panel == 'repeaters':
+            if self._repeater_stats:
+                self._repeater_stats.update(data)
 
     # ------------------------------------------------------------------
     # Room Server callback (from ContactsPanel)
@@ -1085,6 +1110,10 @@ class DashboardPage:
             elif self._active_panel == 'bot':
                 if self._bot:
                     self._bot.update(data)
+
+            elif self._active_panel == 'repeaters':
+                if self._repeater_stats:
+                    self._repeater_stats.update(data)
 
             # Signal worker that GUI is ready for data
             if is_first and data['channels'] and data['contacts']:

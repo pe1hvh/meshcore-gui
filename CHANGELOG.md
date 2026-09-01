@@ -11,6 +11,72 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.23.0] - 2026-09-01 — Repeater statistics polling
+
+### Added
+- **Periodic polling of repeater statistics.** Configured repeaters are
+  logged into, queried for their status and logged out again on a
+  configurable interval. Raw values are archived with the moment of
+  each poll so battery voltage can be tracked over multiple days.
+- `services/repeater_config_store.py` — per-device repeater
+  configuration in `~/.meshcore-gui/repeaters/<device>_repeaters.json`
+  (directory `0700`, file `0600`). Holds the full 32-byte public key,
+  display name, login password, poll interval and enabled flag.
+- `services/repeater_stats_archive.py` — append-only JSONL archive at
+  `~/.meshcore-gui/archive/<device>_repeater_stats.jsonl`, one record
+  per poll, with retention via the existing daily cleanup task.
+- `services/repeater_poller.py` — the poll sequence itself, using
+  `send_login_sync()`, `req_status_sync()` and `send_logout()`.
+- `gui/panels/repeater_stats_panel.py` — read-only REPEATERS panel, one
+  card per repeater showing **every** field from the last status
+  response, the age of the last successful poll and the last error.
+  Fields are rendered from the response itself rather than a fixed list,
+  so a field a future firmware adds appears without a code change.
+- `REPEATER_POLL_ENABLED`, `REPEATER_POLL_INTERVAL` (900 s),
+  `REPEATER_POLL_CHECK_INTERVAL`, `REPEATER_LOGIN_TIMEOUT`,
+  `REPEATER_STATUS_TIMEOUT`, `REPEATER_STATS_RETENTION_DAYS` and
+  `REPEATERS_DIR` in `config.py`.
+
+### Changed
+- `_main_loop()` runs the repeater poll alongside the existing periodic
+  tasks (contact refresh, key retry, cleanup, message poll), following
+  the same interval-guarded pattern.
+- `_cleanup_old_data()` also applies retention to the repeater statistics
+  archive.
+
+### Impact
+- At most one repeater is polled per check, and each repeater gets its
+  own start offset within the interval, so two repeaters are never
+  queried back to back. Two repeaters on the default interval land
+  roughly 7.5 minutes apart.
+- A failed login, an absent status response or an exception is recorded
+  as a poll attempt with `ok: false` and a reason, and does not block the
+  other repeater or stop the application. Logout is always sent once a
+  login has been attempted, including after a timeout.
+- Values are stored exactly as the repeater reports them — no scaling,
+  rounding or averaging. Battery voltage keeps the unit the firmware
+  returns.
+- The login password is reachable through a single method that only the
+  poller calls; the objects handed to the GUI have no password field, and
+  no password is written to the archive, the log or any error message.
+- Polling stays idle until a repeater is configured, so an installation
+  without a configuration file behaves exactly as before.
+- No change to the archive JSON schema, the public API, or any existing
+  public method signature. Worker and dashboard constructors gained
+  optional keyword arguments only.
+
+### Rationale
+- A full 32-byte public key is required per repeater because the meshcore
+  library rejects a prefix for login, status and logout requests.
+- One status request per poll: every additional measurement is another
+  full round trip over the radio, which costs airtime and makes the local
+  node deaf for longer without adding information. Averaging belongs
+  wherever the analysis happens, not here.
+
+
+---
+
+
 ## [1.22.6] - 2026-08-31 — Queued messages no longer stall when the device notification is missed
 
 ### Fixed

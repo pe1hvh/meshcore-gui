@@ -50,6 +50,8 @@ from meshcore_gui.gui.archive_page import ArchivePage
 from meshcore_gui.services.pin_store import PinStore
 from meshcore_gui.services.room_password_store import RoomPasswordStore
 from meshcore_gui.services.bot_config_store import BotConfigStore
+from meshcore_gui.services.repeater_config_store import RepeaterConfigStore
+from meshcore_gui.services.repeater_stats_archive import RepeaterStatsArchive
 
 
 # Global instances (needed by NiceGUI page decorators)
@@ -271,7 +273,17 @@ def main():
     _pin_store = PinStore(device_id)
     _room_password_store = RoomPasswordStore(device_id)
     _bot_config_store = BotConfigStore(device_id)
-    _dashboard = DashboardPage(_shared, _pin_store, _room_password_store, _bot_config_store, device_id)
+    _repeater_config_store = RepeaterConfigStore(device_id)
+    _repeater_stats_archive = RepeaterStatsArchive(device_id)
+    _dashboard = DashboardPage(
+        _shared,
+        _pin_store,
+        _room_password_store,
+        _bot_config_store,
+        device_id,
+        repeater_config_store=_repeater_config_store,
+        repeater_stats_archive=_repeater_stats_archive,
+    )
     _route_page = RoutePage(_shared)
     _archive_page = ArchivePage(_shared)
     from meshcore_gui.services.bbs_config_store import BbsConfigStore as _BCS
@@ -292,6 +304,8 @@ def main():
         baudrate=config.SERIAL_BAUDRATE,
         cx_dly=config.SERIAL_CX_DELAY,
         pin_store=_pin_store,
+        repeater_config_store=_repeater_config_store,
+        repeater_stats_archive=_repeater_stats_archive,
     )
     worker.start()
 

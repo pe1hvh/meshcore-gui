@@ -1259,7 +1259,8 @@ the GUI — see [8.2. Repeater Statistics Polling](#82-repeater-statistics-polli
 for the file, the fields and the permissions. The panel is absent from the
 drawer when no configuration file exists.
 
-<!-- SCREENSHOT: single repeater card — status fields, formatted uptime, Poll now button -->
+<img width="903" height="716" alt="image" src="https://github.com/user-attachments/assets/3f6eb57a-9217-46e7-a2ec-085cd529c1be" />
+
 
 Each repeater gets one card:
 

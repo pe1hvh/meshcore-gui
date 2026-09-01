@@ -11,6 +11,96 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.24.1] - 2026-09-01 — Manual poll notification never disappeared
+
+### Fixed
+- 🛠 **The "Polling…" message stayed on screen indefinitely**
+  (`gui/panels/repeater_stats_panel.py`): the notification used
+  `type='ongoing'`, which Quasar renders with a timeout of zero. Such a
+  notification is meant to be dismissed programmatically by the code that
+  raised it, but the poll runs in the worker thread and never dismisses
+  it. The message therefore remained visible regardless of whether the
+  poll succeeded or failed. Every other panel in the project uses a typed
+  notification with an explicit timeout; this one was the exception.
+- The notification is now `type='info'` with a 3 second timeout.
+
+### Impact
+- Presentation only. The poll itself was unaffected: the message was
+  stale, not the polling.
+
+
+---
+
+
+## [1.24.0] - 2026-09-01 — Manual poll button per repeater
+
+### Added
+- **Poll now button on every repeater card** in the REPEATERS panel.
+  Runs the same login, status request and logout sequence as the
+  scheduled poll, so a manual result is indistinguishable from an
+  automatic one in the archive.
+- `poll_repeater` command in the `CommandHandler` registry, and
+  `RepeaterPoller.poll_now()` behind it.
+
+### Changed
+- `CommandHandler` accepts an optional `repeater_poller`; without it the
+  `poll_repeater` command is logged and ignored.
+
+### Impact
+- The button queues a command and returns immediately, so the GUI thread
+  never waits for the radio. The result appears on a later update tick.
+- A manual poll pushes the repeater's next scheduled poll a full interval
+  forward, so it is not immediately followed by an automatic one.
+- A disabled repeater is polled when the button is pressed: the request
+  is an explicit user action rather than the schedule.
+- Failures are recorded exactly as for a scheduled poll, including the
+  path reset after a login without confirmation.
+- The panel remains read-only otherwise; repeaters are still configured
+  in the JSON file on disk.
+
+
+---
+
+
+## [1.23.2] - 2026-09-01 — Stale repeater path and unreadable durations
+
+### Fixed
+- 🛠 **A repeater with a stale stored path never logged in**
+  (`services/repeater_poller.py`): one repeater answered every poll while
+  the other timed out on login indefinitely. Root cause: routing is not
+  part of the login request. The frame carries the public key and the
+  device picks the route from its own contact table, where
+  `out_path_len == -1` means flood. A repeater whose stored path has gone
+  stale is unreachable until that path is dropped, while a directly
+  reachable one keeps working — which is exactly the observed split.
+- After a login that produces no confirmation, the poller now calls
+  `reset_path()`. The device forgets the stored route, the next poll
+  floods and relearns a path from the ACK. This is the same recovery the
+  library performs in `send_msg_with_retry` after repeated failures.
+- 🛠 **Uptime and airtime were shown as a raw second count**
+  (`gui/panels/repeater_stats_panel.py`): a repeater reporting 4022931
+  seconds of transmit time displayed that number verbatim, which is
+  unreadable at this magnitude. `uptime`, `airtime` and `rx_airtime` are
+  now rendered as days, hours, minutes and seconds — 4022931 becomes
+  `46d 13h 28m 51s`. Smaller values drop the leading units, so 45 shows
+  as `45s` rather than `0d 00h 00m 45s`.
+
+### Impact
+- A repeater that became unreachable recovers on its own within one poll
+  interval instead of failing forever.
+- `reset_path()` is a device-local command and costs no airtime. It runs
+  only after a failed login, not after a failed status request, and a
+  failure of the reset itself is logged without affecting the poll.
+- Duration formatting is presentation only. The archive keeps the raw
+  second count, so anything reading the JSONL stream is unaffected and no
+  conversion has to be undone for analysis.
+- All other fields, including battery, remain exactly as the repeater
+  reports them.
+
+
+---
+
+
 ## [1.23.1] - 2026-09-01 — REPEATERS panel missing from the dashboard
 
 ### Fixed

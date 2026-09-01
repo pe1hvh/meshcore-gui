@@ -16,6 +16,19 @@ Sequence per repeater
    out status request.  A login that timed out may still have succeeded
    on the far side, so the logout is sent whenever a login was attempted.
 
+Stale paths
+~~~~~~~~~~~
+Routing is not part of the login request: the frame carries the public
+key and the *device* picks the route from its own contact table, where
+``out_path_len == -1`` means flood.  A repeater whose stored path has
+gone stale therefore never answers, while one reachable directly does.
+
+After a login that produced no confirmation the poller calls
+``reset_path()``, which drops the stored path so the next poll floods and
+relearns a route from the ACK.  This mirrors what the library itself does
+in ``send_msg_with_retry`` after repeated failures.  ``reset_path`` is a
+device-local command and costs no airtime.
+
 Spreading
 ~~~~~~~~~
 At most one repeater is polled per call, and each repeater gets its own
@@ -104,6 +117,45 @@ class RepeaterPoller:
             await self._poll_one(mc, info)
             return  # one repeater per tick — keeps the polls spread out
 
+    async def poll_now(self, mc, pubkey: str) -> bool:
+        """Poll one repeater immediately, on request from the GUI.
+
+        Runs the same sequence as the scheduled poll and writes the same
+        record, so a manual poll is indistinguishable from an automatic
+        one in the archive.  A disabled repeater is polled too: the
+        request is an explicit user action, not the schedule.
+
+        The repeater's next scheduled poll is pushed a full interval into
+        the future, so a manual poll is not immediately followed by an
+        automatic one.
+
+        Args:
+            mc:     Connected ``MeshCore`` instance.
+            pubkey: Full public key of the repeater to poll.
+
+        Returns:
+            True when the poll ran, False when there is no connection or
+            the repeater is not configured.
+        """
+        if mc is None:
+            debug_print("RepeaterPoller: manual poll ignored — no connection")
+            return False
+
+        info = next(
+            (r for r in self._config.get_repeaters() if r.pubkey == pubkey),
+            None,
+        )
+        if info is None:
+            debug_print(f"RepeaterPoller: manual poll for unknown {pubkey[:16]}")
+            return False
+
+        self._next_due[info.pubkey] = time.monotonic() + info.poll_interval
+        debug_print(
+            f"RepeaterPoller: manual poll → {info.name or info.pubkey[:16]}"
+        )
+        await self._poll_one(mc, info)
+        return True
+
     # ------------------------------------------------------------------
     # Scheduling
     # ------------------------------------------------------------------
@@ -168,6 +220,7 @@ class RepeaterPoller:
                 self._archive.add_measurement(
                     info.pubkey, info.name, error="login_failed_or_timeout"
                 )
+                await self._reset_path(mc, info.pubkey, label)
                 return
 
             debug_print(f"RepeaterPoller: status request → {label}")
@@ -195,6 +248,28 @@ class RepeaterPoller:
         finally:
             if login_attempted:
                 await self._logout(mc, info.pubkey, label)
+
+    async def _reset_path(self, mc, pubkey: str, label: str) -> None:
+        """Drop the stored route so the next poll floods.
+
+        Called after a login that produced no confirmation.  The device
+        forgets the path it had for this repeater; the next attempt goes
+        out as a flood and relearns a route from the ACK.  A repeater
+        that is already on flood is simply set to flood again.
+
+        Args:
+            mc:     Connected ``MeshCore`` instance.
+            pubkey: Full public key of the repeater.
+            label:  Display label used in debug output.
+        """
+        try:
+            await mc.commands.reset_path(pubkey)
+            debug_print(
+                f"RepeaterPoller: path reset for {label} — "
+                "next poll will flood"
+            )
+        except Exception as exc:  # noqa: BLE001 — recovery is best-effort
+            debug_print(f"RepeaterPoller: path reset failed for {label}: {exc}")
 
     async def _logout(self, mc, pubkey: str, label: str) -> None:
         """Close the session, ignoring any failure.

@@ -8,6 +8,10 @@ from nicegui import ui
 from meshcore_gui.services.repeater_config_store import RepeaterConfigStore
 from meshcore_gui.services.repeater_stats_archive import RepeaterStatsArchive
 
+#: Fields the firmware reports as a duration in seconds.  Only their
+#: presentation changes; the archive keeps the raw value.
+DURATION_FIELDS = ("uptime", "airtime", "rx_airtime")
+
 #: Labels for the fields the firmware currently reports.  A field that is
 #: not listed here is still displayed, using its raw name — the panel
 #: renders whatever the repeater sends, so a new firmware field shows up
@@ -45,18 +49,26 @@ class RepeaterStatsPanel:
     Values are rendered exactly as the repeater reports them.  The panel
     applies no conversion, so the unit is whatever the firmware returns.
 
+    A per-repeater Poll now button queues a ``poll_repeater`` command for
+    the worker, which runs the same login/status/logout sequence as the
+    scheduled poll.  Nothing else on the panel is editable.
+
     Args:
         config_store: Source of the configured repeaters.
         archive:      Source of the poll results.
+        put_command:  Command sink towards the worker.  When omitted the
+                      Poll now button is not rendered.
     """
 
     def __init__(
         self,
         config_store: RepeaterConfigStore,
         archive: RepeaterStatsArchive,
+        put_command=None,
     ) -> None:
         self._config = config_store
         self._archive = archive
+        self._put_command = put_command
         self._container = None
         self._hint = None
 
@@ -120,6 +132,31 @@ class RepeaterStatsPanel:
                 )
 
     # ------------------------------------------------------------------
+    # Manual poll
+    # ------------------------------------------------------------------
+
+    def _on_poll_now(self, pubkey: str, name: str) -> None:
+        """Queue a manual poll for one repeater.
+
+        The command is handed to the worker thread; the result appears in
+        the panel on a later update tick, once the poll has run.  A poll
+        takes as long as the radio needs, so no result is awaited here.
+
+        Args:
+            pubkey: Full public key of the repeater.
+            name:   Display name, used in the notification.
+        """
+        if self._put_command is None:
+            return
+        self._put_command({'action': 'poll_repeater', 'pubkey': pubkey})
+        ui.notify(
+            f"Polling {name or pubkey[:16]}…",
+            type='info',
+            position='top',
+            timeout=3000,
+        )
+
+    # ------------------------------------------------------------------
     # Rendering helpers
     # ------------------------------------------------------------------
 
@@ -134,12 +171,22 @@ class RepeaterStatsPanel:
         status = (latest_ok or {}).get('status', {})
 
         with ui.card().classes('w-full').props('flat bordered'):
-            # ── Header: name and current state ────────────────────
+            # ── Header: name, current state, manual poll ──────────
             with ui.row().classes('w-full items-center justify-between'):
                 ui.label(info.name or info.pubkey[:16]).classes(
                     'font-bold text-sm'
                 )
-                ui.label(_status_text(info.enabled, latest)).classes('text-xs')
+                with ui.row().classes('items-center gap-2'):
+                    ui.label(_status_text(info.enabled, latest)).classes(
+                        'text-xs'
+                    )
+                    if self._put_command is not None:
+                        ui.button(
+                            'Poll now',
+                            icon='refresh',
+                            on_click=lambda pk=info.pubkey,
+                            nm=info.name: self._on_poll_now(pk, nm),
+                        ).props('flat dense no-caps size=sm')
 
             with ui.row().classes('w-full items-center gap-4'):
                 ui.label(f'Last OK: {_age(latest_ok)}').classes(
@@ -171,7 +218,7 @@ class RepeaterStatsPanel:
                         ui.label(FIELD_LABELS.get(key, key)).classes(
                             'text-xs text-gray-500'
                         )
-                        ui.label(_display(value)).classes(
+                        ui.label(_display(key, value)).classes(
                             'text-xs font-mono'
                         )
 
@@ -197,16 +244,56 @@ def _ordered_fields(status: Dict[str, Any]) -> List[Tuple[str, Any]]:
     return known + extra
 
 
-def _display(value: Any) -> str:
-    """Return a value as display text without converting it.
+def _display(key: str, value: Any) -> str:
+    """Return a field as display text.
+
+    Durations are rendered as days, hours, minutes and seconds because
+    a raw second count is unreadable at these magnitudes.  Every other
+    field is shown exactly as reported.  The archive is unaffected — it
+    always stores the raw value.
 
     Args:
+        key:   Field name.
         value: Raw field value.
 
     Returns:
-        The value as a string, or ``"-"`` when it is None.
+        Display string, or ``"-"`` when the value is None.
     """
-    return '-' if value is None else str(value)
+    if value is None:
+        return '-'
+    if key in DURATION_FIELDS:
+        return _format_duration(value)
+    return str(value)
+
+
+def _format_duration(seconds: Any) -> str:
+    """Format a second count as ``NNd HHh MMm SSs``.
+
+    Args:
+        seconds: Duration in seconds.
+
+    Returns:
+        Human-readable duration, or the raw value as a string when it is
+        not a whole number of seconds.
+    """
+    try:
+        total = int(seconds)
+    except (TypeError, ValueError):
+        return str(seconds)
+    if total < 0:
+        return str(seconds)
+
+    days, remainder = divmod(total, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, secs = divmod(remainder, 60)
+
+    if days:
+        return f"{days}d {hours:02d}h {minutes:02d}m {secs:02d}s"
+    if hours:
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
 
 
 def _age(record: Optional[Dict[str, Any]]) -> str:

@@ -415,6 +415,7 @@ class DashboardPage:
             self._repeater_stats = RepeaterStatsPanel(
                 self._repeater_config_store,
                 self._repeater_stats_archive,
+                put_command=put_cmd,
             )
 
         self._channel_panel = ChannelPanel(put_cmd)

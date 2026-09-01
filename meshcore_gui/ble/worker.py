@@ -329,6 +329,7 @@ class _BaseWorker(abc.ABC):
         )
         self._cmd_handler = CommandHandler(
             mc=self.mc, shared=self.shared, cache=self._cache,
+            repeater_poller=self._repeater_poller,
         )
         self._cmd_handler.set_load_data_callback(self._load_data)
 

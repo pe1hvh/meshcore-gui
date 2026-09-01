@@ -23,9 +23,11 @@ class CommandHandler:
     """Dispatches and executes commands sent from the GUI.
 
     Args:
-        mc:     Connected MeshCore instance.
-        shared: SharedDataWriter for storing results.
-        cache:  DeviceCache for persistent storage.
+        mc:              Connected MeshCore instance.
+        shared:          SharedDataWriter for storing results.
+        cache:           DeviceCache for persistent storage.
+        repeater_poller: Poller used by the manual REPEATERS poll button.
+                         Optional; the command is ignored when absent.
     """
 
     def __init__(
@@ -33,10 +35,12 @@ class CommandHandler:
         mc: MeshCore,
         shared: SharedDataWriter,
         cache: Optional[DeviceCache] = None,
+        repeater_poller: Optional[object] = None,
     ) -> None:
         self._mc = mc
         self._shared = shared
         self._cache = cache
+        self._repeater_poller = repeater_poller
 
         # Handler registry — add new commands here (OCP)
         self._handlers: Dict[str, object] = {
@@ -54,6 +58,7 @@ class CommandHandler:
             'add_channel': self._cmd_add_channel,
             'del_channel': self._cmd_del_channel,
             'move_channel': self._cmd_move_channel,
+            'poll_repeater': self._cmd_poll_repeater,
         }
 
     async def process_all(self) -> None:
@@ -103,6 +108,24 @@ class CommandHandler:
     # ------------------------------------------------------------------
     # Individual command handlers
     # ------------------------------------------------------------------
+
+    async def _cmd_poll_repeater(self, cmd: Dict) -> None:
+        """Poll a single repeater on request from the REPEATERS panel.
+
+        The poller records the result — success or failure — so nothing
+        needs to be reported back through SharedData.
+
+        Args:
+            cmd: Command dict with a ``pubkey`` key.
+        """
+        pubkey = cmd.get('pubkey', '')
+        if not pubkey:
+            debug_print("poll_repeater: no pubkey in command")
+            return
+        if self._repeater_poller is None:
+            debug_print("poll_repeater: no poller wired, ignoring")
+            return
+        await self._repeater_poller.poll_now(self._mc, pubkey)
 
     async def _cmd_send_message(self, cmd: Dict) -> None:
         channel = cmd.get('channel', 0)

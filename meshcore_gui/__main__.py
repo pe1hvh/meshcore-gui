@@ -64,6 +64,8 @@ _archive_page = None
 _pin_store = None
 _room_password_store = None
 _bot_config_store = None
+_repeater_config_store = None
+_repeater_stats_archive = None
 _device_id = ""
 
 
@@ -71,7 +73,15 @@ _device_id = ""
 def _page_dashboard():
     """NiceGUI page handler — main dashboard."""
     if _shared and _pin_store and _room_password_store:
-        DashboardPage(_shared, _pin_store, _room_password_store, _bot_config_store, _device_id).render()
+        DashboardPage(
+            _shared,
+            _pin_store,
+            _room_password_store,
+            _bot_config_store,
+            _device_id,
+            repeater_config_store=_repeater_config_store,
+            repeater_stats_archive=_repeater_stats_archive,
+        ).render()
 
 
 @ui.page('/route/{msg_key}')
@@ -170,7 +180,7 @@ def main():
     Parses CLI arguments, auto-detects the transport, initialises all
     components and starts the NiceGUI server.
     """
-    global _shared, _dashboard, _route_page, _bbs_settings_page, _archive_page, _pin_store, _room_password_store, _bot_config_store, _device_id
+    global _shared, _dashboard, _route_page, _bbs_settings_page, _archive_page, _pin_store, _room_password_store, _bot_config_store, _device_id, _repeater_config_store, _repeater_stats_archive
 
     args, flags = _parse_flags(sys.argv[1:])
 

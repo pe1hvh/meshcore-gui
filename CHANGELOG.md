@@ -11,6 +11,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.23.1] - 2026-09-01 — REPEATERS panel missing from the dashboard
+
+### Fixed
+- 🛠 **The REPEATERS menu item and panel were absent while polling ran
+  normally** (`__main__.py`): statistics were collected and archived, but
+  nothing was visible in the GUI. Root cause: `DashboardPage` is
+  constructed in two places. The instance built in `main()` received the
+  repeater stores, but the one the `@ui.page('/')` handler creates per
+  browser session did not, so `self._repeater_stats` stayed `None` and
+  both the menu entry and the panel container were skipped. Diagnosis
+  confirmed the gap: `_repeater_config_store` appeared four times in the
+  deployed `__main__.py` against seven in a correct tree, and the missing
+  occurrences were the module-level global, the `global` declaration in
+  `main()` and the keyword argument in `_page_dashboard()`.
+- The page handler now forwards both stores, and the two module-level
+  globals are declared and assigned so the handler can reach them.
+
+### Impact
+- The REPEATERS panel appears whether or not a repeater is configured; an
+  empty panel names the configuration file to create.
+- No effect on polling, archiving or any stored data — the worker
+  received its stores through `main()` and was unaffected. Archives
+  written under 1.23.0 remain valid.
+
+### Rationale
+- Anything a page handler needs must be passed at that call site, not
+  only where the object is first built in `main()`. A store that reaches
+  only one of the two construction sites fails silently: the panel simply
+  does not render, with no error in the log.
+
+
+---
+
+
 ## [1.23.0] - 2026-09-01 — Repeater statistics polling
 
 ### Added
@@ -46,6 +80,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
   the same interval-guarded pattern.
 - `_cleanup_old_data()` also applies retention to the repeater statistics
   archive.
+- `__main__.py` passes the repeater stores to the `DashboardPage` built by
+  the `/` page handler. That handler constructs a fresh instance per
+  browser connection, so the stores have to reach it there — the module
+  level `_dashboard` object is never rendered.
 
 ### Impact
 - At most one repeater is polled per check, and each repeater gets its

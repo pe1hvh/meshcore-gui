@@ -19,6 +19,7 @@ Record schema
       "name":      "Repeater display name",
       "ok":        true,
       "error":     null,
+      "attempts":  1,                             # sessions used, since 1.24.2
       "status":    { ... raw fields as reported ... }
     }
 
@@ -26,6 +27,13 @@ Failed polls are recorded too, with ``ok`` false, an ``error`` string and
 an empty ``status``.  That is deliberate: a gap in the message archive
 can then be matched against the poll moments to see whether it coincided
 with a session.
+
+``attempts`` counts how many complete sessions the poller needed before
+it gave up or succeeded, so a repeater that only ever answers on the
+third try is distinguishable from one that answers immediately.  It is
+zero when no session was started at all, such as when no password is
+configured.  Records written before 1.24.2 do not carry the field;
+consumers should treat a missing value as unknown rather than as one.
 
 Values in ``status`` are stored exactly as the repeater reports them —
 no scaling, no rounding, no smoothing.  Interpretation happens elsewhere.
@@ -103,14 +111,17 @@ class RepeaterStatsArchive:
         name: str,
         status: Optional[Dict[str, Any]] = None,
         error: Optional[str] = None,
+        attempts: int = 1,
     ) -> Dict[str, Any]:
         """Append one poll result to the archive.
 
         Args:
-            pubkey: Full public key of the polled repeater.
-            name:   Display name of the repeater.
-            status: Raw status fields as reported, or ``None`` on failure.
-            error:  Short failure reason, or ``None`` on success.
+            pubkey:   Full public key of the polled repeater.
+            name:     Display name of the repeater.
+            status:   Raw status fields as reported, or ``None`` on failure.
+            error:    Short failure reason, or ``None`` on success.
+            attempts: Number of complete sessions the poller used for this
+                      result.  Zero when no session was started at all.
 
         Returns:
             The record that was written.
@@ -121,6 +132,7 @@ class RepeaterStatsArchive:
             "name": name,
             "ok": error is None and status is not None,
             "error": error,
+            "attempts": attempts,
             "status": status or {},
         }
 
@@ -144,7 +156,7 @@ class RepeaterStatsArchive:
 
         debug_print(
             f"RepeaterStatsArchive: recorded {name or pubkey[:16]} — "
-            f"ok={record['ok']}"
+            f"ok={record['ok']}, attempts={attempts}"
             + (f", error={error}" if error else "")
         )
         return record

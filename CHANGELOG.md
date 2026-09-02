@@ -11,6 +11,61 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.24.2] - 2026-09-02 — Repeater poll retries
+
+### Added
+- ✨ **`REPEATER_POLL_MAX_ATTEMPTS`** (`config.py`, default `5`): maximum
+  number of attempts per poll of a single repeater. One attempt is a
+  complete session — login, status request, logout. Set to `1` to
+  restore the previous single-shot behaviour.
+- ✨ **`REPEATER_POLL_RETRY_DELAY`** (`config.py`, default `5.0`): seconds
+  between two attempts within the same poll.
+- ✨ **`attempts` field in the repeater stats record**
+  (`services/repeater_stats_archive.py`): number of sessions used for
+  this result, so a repeater that only answers on the third try is
+  distinguishable from one that answers immediately. Zero when no
+  session was started, such as when no password is configured.
+
+### Changed
+- 🔁 **`RepeaterPoller._poll_one()` now retries a failed session**
+  (`services/repeater_poller.py`). The login/status/logout sequence moved
+  into a new private `_attempt_session()`; `_poll_one()` drives the retry
+  loop and writes exactly one archive record for the poll as a whole,
+  carrying the attempt count and the error of the last attempt. A missing
+  password is not retried — that is a configuration error, not a
+  transient one. The path reset after an unconfirmed login still runs per
+  attempt, so a second attempt goes out as a flood.
+- 🔢 Version bumped to 1.24.2 in `config.py`. `__init__.py` carried a
+  stale `__version__ = "5.0"` that matched no release and is now aligned.
+
+### Impact
+- No API or schema breaks. `add_measurement()` gained a keyword argument
+  with a default, and `attempts` is an added field — records written
+  before 1.24.2 simply lack it and should be read as unknown, not as one.
+- A poll now blocks the worker loop for longer. `_poll_repeaters()` is
+  awaited inline in the worker main loop, so with the defaults the worst
+  case rises from roughly 60 seconds to roughly 3 minutes for a repeater
+  that never answers. During that window queued commands are not
+  processed. Lower `REPEATER_POLL_MAX_ATTEMPTS` or
+  `REPEATER_LOGIN_TIMEOUT` if that latency matters more than the extra
+  chance of a reading.
+- Airtime rises proportionally: up to five login/logout round trips per
+  failing poll instead of one.
+- The manual poll from the REPEATERS panel goes through the same path and
+  inherits the retries. Its notification still clears after 3 seconds, so
+  it disappears before a retrying poll finishes.
+
+### Rationale
+Repeater statistics polls fail at irregular intervals and the cause is
+not established — it could be a stale path, radio congestion, repeater
+firmware or a timeout that is too tight. This release is an explicit
+workaround, not a fix: retrying buys readings now, while the `attempts`
+count makes the underlying failure rate measurable so the real cause can
+be identified from data rather than guessed at.
+
+---
+
+
 ## [1.24.1] - 2026-09-01 — Manual poll notification never disappeared
 
 ### Fixed

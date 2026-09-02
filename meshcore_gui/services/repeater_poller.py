@@ -29,6 +29,28 @@ relearns a route from the ACK.  This mirrors what the library itself does
 in ``send_msg_with_retry`` after repeated failures.  ``reset_path`` is a
 device-local command and costs no airtime.
 
+Retries
+~~~~~~~
+A repeater that does not answer is retried within the same poll, up to
+``REPEATER_POLL_MAX_ATTEMPTS`` times with ``REPEATER_POLL_RETRY_DELAY``
+seconds in between.  An attempt is the complete sequence above, logout
+included: the login has to be redone because a session that never
+confirmed cannot be assumed to exist.  Combined with the path reset this
+means the second attempt usually goes out as a flood, which is what
+recovers a repeater whose stored route went stale.
+
+Only one record is written per poll, carrying the attempt count and the
+error of the last attempt.  Recording every individual attempt would
+skew the success ratio in the archive and grow the file several times
+faster without adding information the count does not already give.
+
+A missing password is not retried — that is a configuration error, not
+a transient one.
+
+This retry is a workaround, not a fix.  It masks whatever makes the
+repeater unreachable rather than addressing it; the attempt count in the
+archive is there to make that underlying failure rate measurable.
+
 Spreading
 ~~~~~~~~~
 At most one repeater is polled per call, and each repeater gets its own
@@ -48,11 +70,14 @@ The poller never logs, returns or stores the password.
   SPDX-License-Identifier: MIT
 """
 
+import asyncio
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from meshcore_gui.config import (
     REPEATER_LOGIN_TIMEOUT,
+    REPEATER_POLL_MAX_ATTEMPTS,
+    REPEATER_POLL_RETRY_DELAY,
     REPEATER_STATUS_TIMEOUT,
     debug_print,
 )
@@ -190,7 +215,11 @@ class RepeaterPoller:
     # ------------------------------------------------------------------
 
     async def _poll_one(self, mc, info: RepeaterInfo) -> None:
-        """Run one full session against a single repeater.
+        """Poll a single repeater, retrying a failed session.
+
+        Runs :meth:`_attempt_session` until it yields a status or the
+        configured attempt budget is exhausted, then writes exactly one
+        archive record for the poll as a whole.
 
         Args:
             mc:   Connected ``MeshCore`` instance.
@@ -201,13 +230,83 @@ class RepeaterPoller:
 
         if password is None:
             self._archive.add_measurement(
-                info.pubkey, info.name, error="no_password_configured"
+                info.pubkey,
+                info.name,
+                error="no_password_configured",
+                attempts=0,
             )
             return
 
+        # A misconfigured zero or negative budget still buys one attempt;
+        # silently polling nothing at all would be harder to diagnose.
+        max_attempts = max(1, int(REPEATER_POLL_MAX_ATTEMPTS))
+        last_error = "no_attempt_made"
+
+        for attempt in range(1, max_attempts + 1):
+            status, last_error = await self._attempt_session(
+                mc, info, password, label, attempt, max_attempts
+            )
+
+            if status is not None:
+                if attempt > 1:
+                    debug_print(
+                        f"RepeaterPoller: {label} answered on attempt "
+                        f"{attempt}/{max_attempts}"
+                    )
+                self._archive.add_measurement(
+                    info.pubkey,
+                    info.name,
+                    status=status,
+                    attempts=attempt,
+                )
+                return
+
+            if attempt < max_attempts and REPEATER_POLL_RETRY_DELAY > 0:
+                await asyncio.sleep(REPEATER_POLL_RETRY_DELAY)
+
+        debug_print(
+            f"RepeaterPoller: {label} gave up after {max_attempts} "
+            f"attempt(s) — last error: {last_error}"
+        )
+        self._archive.add_measurement(
+            info.pubkey,
+            info.name,
+            error=last_error,
+            attempts=max_attempts,
+        )
+
+    async def _attempt_session(
+        self,
+        mc,
+        info: RepeaterInfo,
+        password: str,
+        label: str,
+        attempt: int,
+        max_attempts: int,
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
+        """Run one complete session against a repeater.
+
+        Logs in, requests the status and always logs out again.  Writes
+        nothing to the archive: the caller decides what a failed attempt
+        means once the whole poll is done.
+
+        Args:
+            mc:           Connected ``MeshCore`` instance.
+            info:         Repeater to poll.
+            password:     Login password for this repeater.
+            label:        Display label used in debug output.
+            attempt:      Number of this attempt, starting at one.
+            max_attempts: Attempt budget, for debug output only.
+
+        Returns:
+            Tuple of the cleaned status and an empty string on success,
+            or ``None`` and a short failure reason on failure.
+        """
+        suffix = f" (attempt {attempt}/{max_attempts})"
         login_attempted = False
+
         try:
-            debug_print(f"RepeaterPoller: login → {label}")
+            debug_print(f"RepeaterPoller: login → {label}{suffix}")
             login_attempted = True
             login_event = await mc.commands.send_login_sync(
                 info.pubkey,
@@ -216,34 +315,29 @@ class RepeaterPoller:
             )
 
             if login_event is None:
-                debug_print(f"RepeaterPoller: no login confirmation from {label}")
-                self._archive.add_measurement(
-                    info.pubkey, info.name, error="login_failed_or_timeout"
+                debug_print(
+                    f"RepeaterPoller: no login confirmation from {label}{suffix}"
                 )
                 await self._reset_path(mc, info.pubkey, label)
-                return
+                return None, "login_failed_or_timeout"
 
-            debug_print(f"RepeaterPoller: status request → {label}")
+            debug_print(f"RepeaterPoller: status request → {label}{suffix}")
             status = await mc.commands.req_status_sync(
                 info.pubkey,
                 min_timeout=REPEATER_STATUS_TIMEOUT,
             )
 
             if not status:
-                self._archive.add_measurement(
-                    info.pubkey, info.name, error="no_status_response"
+                debug_print(
+                    f"RepeaterPoller: no status response from {label}{suffix}"
                 )
-                return
+                return None, "no_status_response"
 
-            self._archive.add_measurement(
-                info.pubkey, info.name, status=_clean_status(status)
-            )
+            return _clean_status(status), ""
 
         except Exception as exc:  # noqa: BLE001 — one repeater must not stop the loop
-            debug_print(f"RepeaterPoller: {label} failed: {exc}")
-            self._archive.add_measurement(
-                info.pubkey, info.name, error=f"exception: {type(exc).__name__}"
-            )
+            debug_print(f"RepeaterPoller: {label} failed{suffix}: {exc}")
+            return None, f"exception: {type(exc).__name__}"
 
         finally:
             if login_attempted:

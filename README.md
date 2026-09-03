@@ -236,8 +236,8 @@ cd meshcore-gui
 
 **Linux / macOS:**
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 ```
 
 **Windows:**
@@ -267,7 +267,7 @@ pip install bleak dbus_fast
 **Linux / macOS:**
 ```bash
 cd meshcore-gui
-source venv/bin/activate
+source .venv/bin/activate
 ```
 
 **Windows:**
@@ -334,7 +334,7 @@ All examples below assume you have activated the virtual environment and are in 
 
 ```bash
 cd ~/meshcore-gui
-source venv/bin/activate       # Linux / macOS
+source .venv/bin/activate       # Linux / macOS
 ```
 
 ### 7.1. Command-Line Options
@@ -515,7 +515,7 @@ Description=MeshCore GUI (Serial)
 Type=simple
 User=your-username
 WorkingDirectory=/home/your-username/meshcore-gui
-ExecStart=/home/your-username/meshcore-gui/venv/bin/python meshcore_gui.py /dev/ttyUSB0 --debug-on --port=8081 --baud=115200
+ExecStart=/home/your-username/meshcore-gui/.venv/bin/python meshcore_gui.py /dev/ttyUSB0 --debug-on --port=8081 --baud=115200
 Restart=on-failure
 RestartSec=30
 [Install]

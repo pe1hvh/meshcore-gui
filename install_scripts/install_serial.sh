@@ -29,7 +29,7 @@
 #   bash install_scripts/install_serial.sh --list
 #
 # Requirements:
-#   - meshcore-gui project with venv/ directory
+#   - meshcore-gui project with .venv/ directory (uv supported too)
 #   - sudo access (for systemd)
 #
 # ============================================================================
@@ -128,18 +128,26 @@ if [[ ! -f "${PROJECT_DIR}/meshcore_gui.py" ]] && [[ ! -d "${PROJECT_DIR}/meshco
 fi
 
 CURRENT_USER="$(whoami)"
-VENV_PYTHON="${PROJECT_DIR}/venv/bin/python"
+VENV_PYTHON="${PROJECT_DIR}/.venv/bin/python"
 
-# Check venv / bootstrap dependencies when missing
+if command -v uv >/dev/null; then
+    UV="uv"  
+else
+    UV=""
+fi
+
+# Check .venv / bootstrap dependencies when missing
 if [[ ! -x "${VENV_PYTHON}" ]]; then
-    info "Virtual environment not found. Creating project venv..."
-    python3 -m venv "${PROJECT_DIR}/venv"
+    if [[ -z "${UV}" ]] ; then
+        info "Virtual environment not found. Creating project .venv..."
+        python3 -m venv "${PROJECT_DIR}/.venv"
 
-    info "Installing required Python packages into the venv..."
-    # shellcheck disable=SC1091
-    source "${PROJECT_DIR}/venv/bin/activate"
-    pip install nicegui meshcore meshcoredecoder
-    ok "Virtual environment created and dependencies installed"
+        info "Installing required Python packages into the .venv..."
+        # shellcheck disable=SC1091
+        source "${PROJECT_DIR}/.venv/bin/activate"
+        pip install nicegui meshcore meshcoredecoder
+        ok "Virtual environment created and dependencies installed"
+    fi
 fi
 
 # Determine the entry point
@@ -191,6 +199,9 @@ echo " MeshCore GUI — Serial Installer"
 echo "═══════════════════════════════════════════════════"
 echo " Project dir:  ${PROJECT_DIR}"
 echo " User:         ${CURRENT_USER}"
+if [[ ! -z ${UV} ]]; then
+  echo " Uv:           $(which uv)"
+fi 
 echo " Python:       ${VENV_PYTHON}"
 echo " Entry point:  ${ENTRY_POINT}"
 echo " Serial port:  ${SERIAL_PORT}"
@@ -207,11 +218,12 @@ if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then
     exit 0
 fi
 
+if [[ -z "${UV}" ]] ; then
 # ── Step 1: Upgrade meshcore library ──
 info "Step 1/3: Upgrading meshcore library..."
-"${PROJECT_DIR}/venv/bin/pip" install --upgrade meshcore --quiet 2>/dev/null || \
-    "${PROJECT_DIR}/venv/bin/pip" install --upgrade meshcore
-MESHCORE_VERSION=$("${PROJECT_DIR}/venv/bin/pip" show meshcore 2>/dev/null | grep "^Version:" | awk '{print $2}')
+"${PROJECT_DIR}/.venv/bin/pip" install --upgrade meshcore --quiet 2>/dev/null || \
+    "${PROJECT_DIR}/.venv/bin/pip" install --upgrade meshcore
+MESHCORE_VERSION=$("${PROJECT_DIR}/.venv/bin/pip" show meshcore 2>/dev/null | grep "^Version:" | awk '{print $2}')
 ok "meshcore version: ${MESHCORE_VERSION:-unknown}"
 
 # ── Step 2: Verify Python syntax ──
@@ -237,6 +249,12 @@ if errors:
 print('OK')
 " || error "Syntax errors found in Python files"
 ok "Python files are syntactically correct"
+fi
+
+if [[ ! -z "${UV}" ]] ; then
+    # uv will take care of installing all requirements
+    VENV_PYTHON="$(which uv) run"
+fi
 
 # ── Step 3: Install systemd service ──
 info "Step 3/3: Installing systemd service..."

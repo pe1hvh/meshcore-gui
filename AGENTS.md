@@ -14,7 +14,7 @@ The transport is **auto-detected** from the device argument.
 ### Common Run
 ```bash
 # Serial
-./venv/bin/python meshcore_gui.py /dev/ttyACM0 --debug-on --baud=115200
+./.venv/bin/python meshcore_gui.py /dev/ttyACM0 --debug-on --baud=115200
 
 # BLE
 ./venv/bin/python meshcore_gui.py literal:AA:BB:CC:DD:EE:FF --debug-on --ble-pin 123456

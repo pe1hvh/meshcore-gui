@@ -131,7 +131,7 @@ CURRENT_USER="$(whoami)"
 VENV_PYTHON="${PROJECT_DIR}/.venv/bin/python"
 
 if command -v uv >/dev/null; then
-    UV="uv"  
+    UV="$(which uv)" 
 else
     UV=""
 fi
@@ -200,7 +200,7 @@ echo "════════════════════════�
 echo " Project dir:  ${PROJECT_DIR}"
 echo " User:         ${CURRENT_USER}"
 if [[ ! -z ${UV} ]]; then
-  echo " Uv:           $(which uv)"
+  echo " Uv:           ${UV}"
 fi 
 echo " Python:       ${VENV_PYTHON}"
 echo " Entry point:  ${ENTRY_POINT}"
@@ -253,7 +253,7 @@ fi
 
 if [[ ! -z "${UV}" ]] ; then
     # uv will take care of installing all requirements
-    VENV_PYTHON="$(which uv) run"
+    VENV_PYTHON="${UV} run"
 fi
 
 # ── Step 3: Install systemd service ──

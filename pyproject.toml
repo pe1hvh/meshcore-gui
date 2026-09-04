@@ -1,0 +1,15 @@
+[project]
+name = "meshcore-gui"
+version = "1.24.2"
+description = "MeshCore GUI — All-in-One MeshCore Platform"
+requires-python = ">=3.11"
+dependencies = [
+    "nicegui",
+    "meshcore",
+    "meshcoredecoder",
+]
+
+[project.optional-dependencies]
+ble = [
+    "bleak",
+]

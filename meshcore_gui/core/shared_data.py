@@ -276,6 +276,19 @@ class SharedData:
         except queue.Empty:
             return None
 
+    def has_pending_commands(self) -> bool:
+        """Report whether the worker has work waiting in the queue.
+
+        Used by the worker to give queued traffic priority over
+        background tasks.  The answer can go stale the moment it is
+        returned, which is acceptable: a command that arrives just after
+        the check is picked up on the next loop iteration.
+
+        Returns:
+            True when at least one command is queued.
+        """
+        return not self.cmd_queue.empty()
+
     # ------------------------------------------------------------------
     # Collections
     # ------------------------------------------------------------------

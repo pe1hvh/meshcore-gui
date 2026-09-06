@@ -11,6 +11,65 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.24.3] - 2026-09-06 — Repeater poll no longer blocks outgoing traffic
+
+### Fixed
+- 🐛 **Bot replies and other queued commands were delayed by up to three
+  minutes, or lost entirely.** `_main_loop()` in `ble/worker.py` awaited
+  `_poll_repeaters()` in the same iteration as `process_all()`, so a
+  repeater poll blocked command dispatch for its whole duration. With the
+  1.24.2 defaults an unreachable repeater occupies
+  `5 x (30 s login timeout) + 4 x (5 s retry delay)` ≈ 190 s. A reply
+  queued in that window was only transmitted once the poll gave up, and a
+  restart within the window discarded it: the command queue lives in
+  memory. Confirmed against journal `meshcore-gui-ttyUSB1.service` of
+  2026-09-06: replies queued at 09:33:46 and 09:35:23 were both sent at
+  09:36:25, the second the poll ran out of attempts.
+
+### Changed
+- 🔁 **The repeater poll runs as a cancellable background task.**
+  `_main_loop()` starts `_poll_repeaters()` with `asyncio.create_task()`
+  instead of awaiting it, and cancels it as soon as
+  `has_pending_commands()` reports work. A poll is only started when the
+  queue is empty, so it is not cancelled again on the next iteration
+  after spending airtime.
+- 🔁 **A cancelled poll writes no archive record.**
+  `RepeaterPoller.poll_due()` catches `CancelledError`, sets the
+  repeater's `_next_due` back to now and re-raises. The measurement is
+  postponed rather than failed, so a preempted poll does not show up as
+  an unreachable repeater in the statistics on domca.nl.
+- 📝 The comment on `REPEATER_POLL_MAX_ATTEMPTS` in `config.py` claimed
+  a poll blocks the worker loop for its whole duration. No longer true.
+
+### Added
+- ✨ **`SharedData.has_pending_commands()`** (`core/shared_data.py`) and
+  the matching entry in the `SharedDataWriter` protocol: reports whether
+  the command queue holds work, without consuming it. Additive — existing
+  implementations of the protocol are unaffected.
+- ✨ **`REPEATER_POLL_CANCEL_TIMEOUT`** (`config.py`, default `5.0`):
+  upper bound on the cleanup of a cancelled poll. The poll still sends a
+  logout to close the session on the repeater; this keeps an unresponsive
+  transport from holding up the command that preempted it.
+
+### Impact
+- Outgoing traffic is dispatched within one loop iteration (100 ms) of
+  being queued, regardless of what the poller is doing.
+- A repeater under a busy channel may see its poll cancelled repeatedly
+  and go longer without a measurement. Preferred over the alternative:
+  the poll has no deadline, an interactive reply does.
+- Archive schema unchanged. No record is written for a cancelled poll, so
+  the poll count per day can be lower than the interval suggests.
+
+### Rationale
+Statistics collection is background work with no deadline — a missed poll
+costs one data point out of ninety-six per day. A bot reply is the one
+path in this system with a real response-time expectation. Both shared a
+single execution order in which the task without a deadline could hold up
+the task with one. Shortening the retry budget would only have shortened
+the window; making the poll pre-emptible removes it.
+
+---
+
 ## [1.24.2] - 2026-09-02 — Repeater poll retries
 
 ### Added

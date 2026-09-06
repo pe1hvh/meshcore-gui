@@ -51,6 +51,17 @@ This retry is a workaround, not a fix.  It masks whatever makes the
 repeater unreachable rather than addressing it; the attempt count in the
 archive is there to make that underlying failure rate measurable.
 
+Cancellation
+~~~~~~~~~~~~
+A poll is background work with no deadline: nobody waits for the result
+and a missed poll costs one data point out of ninety-six per day.  The
+worker therefore runs it as a task it can cancel the moment there is
+traffic to send, which has priority.  A cancelled poll writes no archive
+record — the measurement is postponed, not failed — and its repeater is
+made due again immediately, so it is retried as soon as the queue is
+empty.  Recording a cancellation as a failure would make the repeater
+look unreachable when only the timing was inconvenient.
+
 Spreading
 ~~~~~~~~~
 At most one repeater is polled per call, and each repeater gets its own
@@ -118,8 +129,15 @@ class RepeaterPoller:
         nothing is due.  A failure on one repeater is recorded and does
         not affect the schedule of the other.
 
+        Cancelling the surrounding task interrupts the poll.  The
+        repeater is then made due again straight away and the
+        ``CancelledError`` is re-raised so the task ends as cancelled.
+
         Args:
             mc: Connected ``MeshCore`` instance.
+
+        Raises:
+            asyncio.CancelledError: When the caller cancels the poll.
         """
         if mc is None:
             return
@@ -139,7 +157,19 @@ class RepeaterPoller:
             # cause a burst of catch-up attempts afterwards.
             self._next_due[info.pubkey] = now + info.poll_interval
 
-            await self._poll_one(mc, info)
+            try:
+                await self._poll_one(mc, info)
+            except asyncio.CancelledError:
+                # Traffic took priority.  Undo the reschedule so this
+                # repeater is due again on the next tick instead of
+                # waiting out a full interval for a measurement that was
+                # never taken.
+                self._next_due[info.pubkey] = time.monotonic()
+                debug_print(
+                    f"RepeaterPoller: poll of {info.name or info.pubkey[:16]} "
+                    f"cancelled — rescheduled immediately"
+                )
+                raise
             return  # one repeater per tick — keeps the polls spread out
 
     async def poll_now(self, mc, pubkey: str) -> bool:

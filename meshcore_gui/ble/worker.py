@@ -45,6 +45,7 @@ from meshcore_gui.config import (
     CONTACT_REFRESH_SECONDS,
     MAX_CHANNELS,
     MSG_POLL_INTERVAL,
+    REPEATER_POLL_CANCEL_TIMEOUT,
     REPEATER_POLL_CHECK_INTERVAL,
     REPEATER_POLL_ENABLED,
     RECONNECT_BASE_DELAY,
@@ -191,6 +192,10 @@ class _BaseWorker(abc.ABC):
                 archive=repeater_stats_archive,
             )
 
+        # Running repeater poll, if any.  Held as a task so the main loop
+        # can cancel it the moment there is traffic to send.
+        self._repeater_task: Optional[asyncio.Task] = None
+
         # Channel indices that still need keys from device
         self._pending_keys: Set[int] = set()
 
@@ -247,6 +252,15 @@ class _BaseWorker(abc.ABC):
         last_repeater_poll = time.time()
 
         while self.running and not self._disconnected:
+            # Traffic has priority over background work: a running poll
+            # is cancelled before any queued command is dispatched, so a
+            # bot reply never waits for a repeater that does not answer.
+            if self._repeater_task is not None:
+                if self._repeater_task.done():
+                    self._repeater_task = None
+                elif self.shared.has_pending_commands():
+                    await self._cancel_repeater_poll()
+
             try:
                 await self._cmd_handler.process_all()
             except Exception as e:
@@ -275,14 +289,23 @@ class _BaseWorker(abc.ABC):
                 await self._poll_pending_messages()
                 last_msg_poll = now
 
+            # Only start a poll when the queue is empty.  Starting one
+            # while commands are waiting would cancel it again on the
+            # next iteration: airtime spent, no measurement taken.
             if (
                 self._repeater_poller is not None
+                and self._repeater_task is None
+                and not self.shared.has_pending_commands()
                 and now - last_repeater_poll > REPEATER_POLL_CHECK_INTERVAL
             ):
-                await self._poll_repeaters()
+                self._repeater_task = asyncio.create_task(self._poll_repeaters())
                 last_repeater_poll = now
 
             await asyncio.sleep(0.1)
+
+        # Leaving the loop — on disconnect or shutdown — must not leave a
+        # poll running against a connection that is going away.
+        await self._cancel_repeater_poll()
 
     async def _handle_reconnect(self) -> bool:
         """Shared reconnect logic after a disconnect.
@@ -916,13 +939,52 @@ class _BaseWorker(abc.ABC):
         which polls at most one repeater per call so the transmissions
         stay spread out.  Failures are recorded in the archive by the
         poller and never propagate out of this method.
+
+        Runs as its own task: see :meth:`_cancel_repeater_poll`.  A
+        cancellation is deliberately not swallowed here — the poller
+        reschedules its repeater and the task has to end as cancelled.
         """
         if self._repeater_poller is None:
             return
         try:
             await self._repeater_poller.poll_due(self.mc)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             debug_print(f"Repeater poll error: {exc}")
+
+    async def _cancel_repeater_poll(self) -> None:
+        """Cancel a running repeater poll and wait for its cleanup.
+
+        The poll interrupts wherever it is awaiting and still sends a
+        logout to close the session on the repeater.  That cleanup is
+        bounded by ``REPEATER_POLL_CANCEL_TIMEOUT`` so an unresponsive
+        transport cannot hold up the command that preempted the poll.
+
+        Does nothing when no poll is running.
+        """
+        task = self._repeater_task
+        self._repeater_task = None
+        if task is None or task.done():
+            return
+
+        task.cancel()
+        try:
+            # gather(return_exceptions=True) turns the expected
+            # CancelledError from the task into a result instead of
+            # raising it here, where it would be indistinguishable from
+            # a cancellation of the worker itself.
+            await asyncio.wait_for(
+                asyncio.gather(task, return_exceptions=True),
+                timeout=REPEATER_POLL_CANCEL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            debug_print(
+                "Repeater poll cleanup did not finish within "
+                f"{REPEATER_POLL_CANCEL_TIMEOUT:.0f}s — continuing"
+            )
+        except Exception as exc:  # noqa: BLE001 — cleanup must not break the loop
+            debug_print(f"Repeater poll cancellation error: {exc}")
 
     async def _cleanup_old_data(self) -> None:
         try:

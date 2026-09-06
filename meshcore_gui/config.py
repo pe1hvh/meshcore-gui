@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.24.2"
+VERSION: str = "1.24.3"
 
 
 # ==============================================================================
@@ -474,14 +474,21 @@ REPEATER_STATUS_TIMEOUT: float = 30.0
 # One attempt is a complete session: login, status request, logout.  A
 # repeater that fails to answer is retried up to this many times before
 # the poll is recorded as failed.  Set to 1 to disable retries entirely.
-# Note that a poll blocks the worker loop for its whole duration, so the
-# worst case is roughly MAX_ATTEMPTS x (LOGIN_TIMEOUT + RETRY_DELAY).
+# A poll runs as a background task and is cancelled as soon as there is
+# traffic to send, so a high budget no longer delays outgoing messages.
 REPEATER_POLL_MAX_ATTEMPTS: int = 5
 
 # Seconds to wait between two attempts within the same poll.
 # Deliberately short: a longer pause does not make a stale path recover
-# any faster, and the worker loop is blocked while the poll runs.
+# any faster, and every extra second is another second in which the poll
+# can be cancelled before it has produced a measurement.
 REPEATER_POLL_RETRY_DELAY: float = 5.0
+
+# Maximum seconds to wait for a cancelled poll to finish its cleanup.
+# Cancelling interrupts the poll, after which it still sends a logout to
+# close the session on the repeater.  This bounds that cleanup so a
+# unresponsive transport cannot hold up the command that preempted it.
+REPEATER_POLL_CANCEL_TIMEOUT: float = 5.0
 
 
 # ==============================================================================

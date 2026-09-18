@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.24.3"
+VERSION: str = "1.24.4"
 
 
 # ==============================================================================
@@ -440,6 +440,12 @@ CONTACT_RETENTION_DAYS: int = 90
 # the daily cleanup run.
 REPEATER_STATS_RETENTION_DAYS: int = 90
 
+# Retention period for repeater configuration readings (in days).
+# One record per repeater per day, so a year of history is a few hundred
+# lines.  Longer than the statistics retention on purpose: the value of
+# this archive is spotting that a setting changed months ago.
+REPEATER_CONFIG_RETENTION_DAYS: int = 365
+
 
 # ==============================================================================
 # REPEATER STATISTICS POLLING
@@ -489,6 +495,59 @@ REPEATER_POLL_RETRY_DELAY: float = 5.0
 # close the session on the repeater.  This bounds that cleanup so a
 # unresponsive transport cannot hold up the command that preempted it.
 REPEATER_POLL_CANCEL_TIMEOUT: float = 5.0
+
+
+# ==============================================================================
+# REPEATER CONFIGURATION POLLING (nightly)
+# ==============================================================================
+#
+# Separate from the statistics poll above.  These settings are read over
+# the repeater CLI, one round trip per setting, and change only when
+# somebody edits them — so they are read once a day instead of every
+# fifteen minutes.
+
+# Enable or disable the nightly configuration read.
+# When False, no CLI command is sent to any repeater.
+REPEATER_CONFIG_POLL_ENABLED: bool = True
+
+# Local hour at which the nightly window opens (0-23).
+# Chosen at night because a full round costs one round trip per setting
+# and competes with the least other traffic there.
+REPEATER_CONFIG_POLL_HOUR: int = 3
+
+# Length of the nightly window in hours.
+# A repeater that is unreachable at the start of the window still gets
+# its turn later that night, because the window is checked on every tick
+# until the read succeeds or the window closes.
+REPEATER_CONFIG_POLL_WINDOW_HOURS: int = 3
+
+# CLI commands sent per repeater, in this order.
+# The value is stored under the command name minus the "get " verb, so
+# "get flood.max" ends up as "flood.max".  Adding or removing a command
+# here needs no code change.
+REPEATER_CONFIG_POLL_KEYS: List[str] = [
+    "get flood.max",
+    "get flood.max.unscoped",
+    "get flood.max.advert",
+    "get loop.detect",
+    "get txdelay",
+    "get rxdelay",
+    "get int.thresh",
+    "get radio.rxgain",
+    "get agc.reset.interval",
+    "region",
+]
+
+# Seconds to wait for the reply to a single CLI command.
+# A setting that stays silent is recorded as missing and the next one is
+# tried, so this is the cost of one unanswered setting, not of the round.
+REPEATER_CONFIG_REPLY_TIMEOUT: float = 30.0
+
+# Text type of a CLI reply from a repeater (CLI_DATA in the firmware).
+# This is what separates a CLI answer from an ordinary direct message,
+# both in the poller and in the event handler.  Only change this if the
+# firmware starts using a different value.
+REPEATER_CONFIG_REPLY_TXT_TYPE: int = 1
 
 
 # ==============================================================================

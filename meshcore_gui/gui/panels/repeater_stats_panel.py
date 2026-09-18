@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from nicegui import ui
 
+from meshcore_gui.services.repeater_config_archive import RepeaterConfigArchive
 from meshcore_gui.services.repeater_config_store import RepeaterConfigStore
 from meshcore_gui.services.repeater_stats_archive import RepeaterStatsArchive
 
@@ -38,6 +39,23 @@ FIELD_LABELS: Dict[str, str] = {
     "pubkey_pre": "Public key prefix",
 }
 
+#: Labels for the settings read by the nightly configuration poller.  As
+#: with the status fields, a setting that is not listed here is still
+#: displayed under its raw name, so adding a command to
+#: ``REPEATER_CONFIG_POLL_KEYS`` needs no change in this panel.
+CONFIG_LABELS: Dict[str, str] = {
+    "flood.max": "Flood max",
+    "flood.max.unscoped": "Flood max unscoped",
+    "flood.max.advert": "Flood max advert",
+    "loop.detect": "Loop detect",
+    "txdelay": "TX delay",
+    "rxdelay": "RX delay",
+    "int.thresh": "Interference threshold",
+    "radio.rxgain": "RX gain",
+    "agc.reset.interval": "AGC reset interval",
+    "region": "Region",
+}
+
 
 class RepeaterStatsPanel:
     """One card per repeater with every field from its last status response.
@@ -53,11 +71,17 @@ class RepeaterStatsPanel:
     the worker, which runs the same login/status/logout sequence as the
     scheduled poll.  Nothing else on the panel is editable.
 
+    Settings read by the nightly configuration poller are shown in their
+    own block below the status fields, with their own age, because they
+    come from a different read at a different moment.
+
     Args:
-        config_store: Source of the configured repeaters.
-        archive:      Source of the poll results.
-        put_command:  Command sink towards the worker.  When omitted the
-                      Poll now button is not rendered.
+        config_store:   Source of the configured repeaters.
+        archive:        Source of the poll results.
+        put_command:    Command sink towards the worker.  When omitted the
+                        Poll now button is not rendered.
+        config_archive: Source of the nightly configuration readings.
+                        When omitted the settings block is not rendered.
     """
 
     def __init__(
@@ -65,10 +89,12 @@ class RepeaterStatsPanel:
         config_store: RepeaterConfigStore,
         archive: RepeaterStatsArchive,
         put_command=None,
+        config_archive: Optional[RepeaterConfigArchive] = None,
     ) -> None:
         self._config = config_store
         self._archive = archive
         self._put_command = put_command
+        self._config_archive = config_archive
         self._container = None
         self._hint = None
 
@@ -108,6 +134,7 @@ class RepeaterStatsPanel:
                 info.enabled,
                 (self._archive.get_latest(info.pubkey) or {}).get('polled_at'),
                 (self._archive.get_latest_success(info.pubkey) or {}).get('polled_at'),
+                (self._latest_config(info.pubkey) or {}).get('polled_at'),
             )
             for info in repeaters
         )
@@ -208,19 +235,87 @@ class RepeaterStatsPanel:
                 ui.label('No successful poll yet.').classes(
                     'text-xs text-gray-500'
                 )
-                return
+            else:
+                # ── Every field from the status response ──────────
+                ui.separator()
+                with ui.grid(columns=2).classes('w-full gap-x-6 gap-y-0'):
+                    for key, value in _ordered_fields(status):
+                        with ui.row().classes(
+                            'w-full items-center justify-between'
+                        ):
+                            ui.label(FIELD_LABELS.get(key, key)).classes(
+                                'text-xs text-gray-500'
+                            )
+                            ui.label(_display(key, value)).classes(
+                                'text-xs font-mono'
+                            )
 
-            # ── Every field from the status response ──────────────
-            ui.separator()
-            with ui.grid(columns=2).classes('w-full gap-x-6 gap-y-0'):
-                for key, value in _ordered_fields(status):
-                    with ui.row().classes('w-full items-center justify-between'):
-                        ui.label(FIELD_LABELS.get(key, key)).classes(
-                            'text-xs text-gray-500'
-                        )
-                        ui.label(_display(key, value)).classes(
-                            'text-xs font-mono'
-                        )
+            self._render_config(info)
+
+    def _render_config(self, info) -> None:
+        """Render the settings block of one repeater card.
+
+        Draws nothing at all when no configuration archive is wired or
+        the repeater has never been read, so a card looks exactly as it
+        did before the nightly poller existed until the first read lands.
+
+        Args:
+            info: :class:`RepeaterInfo` for the repeater.
+        """
+        latest = self._latest_config(info.pubkey)
+        if latest is None:
+            return
+
+        latest_ok = self._config_archive.get_latest_success(info.pubkey)
+        settings = (latest_ok or {}).get('config', {})
+
+        ui.separator()
+        with ui.row().classes('w-full items-center gap-4'):
+            ui.label('Settings').classes('text-xs text-gray-500 font-bold')
+            ui.label(f'Read: {_age(latest_ok)}').classes(
+                'text-xs text-gray-500'
+            )
+
+        if latest and not latest.get('ok'):
+            ui.label(f"Last read error: {latest.get('error')}").classes(
+                'text-xs'
+            ).style('color: #e63946')
+
+        if not settings:
+            return
+
+        with ui.grid(columns=2).classes('w-full gap-x-6 gap-y-0'):
+            for key, value in _ordered_settings(settings):
+                with ui.row().classes('w-full items-center justify-between'):
+                    ui.label(CONFIG_LABELS.get(key, key)).classes(
+                        'text-xs text-gray-500'
+                    )
+                    # Inline CSS, not a Tailwind whitespace class: there
+                    # is no Tailwind compiler in NiceGUI.  A multi-line
+                    # value such as the region list keeps its line breaks.
+                    ui.label(str(value)).classes('text-xs font-mono').style(
+                        'white-space: pre-line; text-align: right'
+                    )
+
+        missing = (latest_ok or {}).get('missing') or []
+        if missing:
+            ui.label(f"No reply: {', '.join(missing)}").classes(
+                'text-xs text-gray-500'
+            )
+
+    def _latest_config(self, pubkey: str) -> Optional[Dict[str, Any]]:
+        """Return the most recent configuration record for a repeater.
+
+        Args:
+            pubkey: Full public key of the repeater.
+
+        Returns:
+            The record, ``None`` when there is none or no configuration
+            archive is wired into the panel.
+        """
+        if self._config_archive is None:
+            return None
+        return self._config_archive.get_latest(pubkey)
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +336,20 @@ def _ordered_fields(status: Dict[str, Any]) -> List[Tuple[str, Any]]:
     """
     known = [(k, status[k]) for k in FIELD_LABELS if k in status]
     extra = [(k, v) for k, v in status.items() if k not in FIELD_LABELS]
+    return known + extra
+
+
+def _ordered_settings(settings: Dict[str, Any]) -> List[Tuple[str, Any]]:
+    """Return settings in the order of the labels, unknown ones last.
+
+    Args:
+        settings: Configuration values from the archive.
+
+    Returns:
+        List of (key, value) pairs in display order.
+    """
+    known = [(k, settings[k]) for k in CONFIG_LABELS if k in settings]
+    extra = [(k, v) for k, v in settings.items() if k not in CONFIG_LABELS]
     return known + extra
 
 

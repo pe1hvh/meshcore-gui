@@ -11,11 +11,20 @@ Direct Messages (``CONTACT_MSG_RECV``) whose text starts with ``!`` are
 forwarded to :class:`~meshcore_gui.services.bbs_service.BbsCommandHandler`
 **before** any other DM processing.  This path is completely independent of
 :class:`~meshcore_gui.services.bot.MeshBot`.
+
+CLI replies
+~~~~~~~~~~~
+A repeater answers a CLI command with a ``CONTACT_MSG_RECV`` carrying
+text type ``REPEATER_CONFIG_REPLY_TXT_TYPE``.  Those frames belong to
+:class:`~meshcore_gui.services.repeater_config_poller.RepeaterConfigPoller`,
+which waits for them on the dispatcher, and are not conversation: they
+are dropped here instead of ending up in the message list as a direct
+message nobody sent.
 """
 
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional
 
-from meshcore_gui.config import debug_print
+from meshcore_gui.config import REPEATER_CONFIG_REPLY_TXT_TYPE, debug_print
 from meshcore_gui.core.models import Message, RxLogEntry
 from meshcore_gui.core.protocols import SharedDataWriter
 from meshcore_gui.ble.packet_decoder import PacketDecoder, PayloadType
@@ -444,6 +453,14 @@ class EventHandler:
         pubkey = payload.get('pubkey_prefix', '')
         txt_type = payload.get('txt_type', 0)
         signature = payload.get('signature', '')
+
+        # CLI reply to a repeater query — handled by the configuration
+        # poller, never shown as a direct message.
+        if txt_type == REPEATER_CONFIG_REPLY_TXT_TYPE:
+            debug_print(
+                f"CLI reply from {pubkey[:12]} — left to the config poller"
+            )
+            return
 
         debug_print(
             "DM payload keys: "

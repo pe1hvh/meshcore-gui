@@ -11,6 +11,78 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.24.4] - 2026-09-18 — Nightly repeater configuration read
+
+### Added
+- ✨ **`RepeaterConfigPoller`** (`services/repeater_config_poller.py`):
+  reads a repeater's settings once a day over the repeater CLI. Per
+  setting it sends `send_cmd()` and waits for the reply on the event
+  dispatcher, because `send_cmd()` only reports that the frame left the
+  device and says nothing about the answer. The waiter is subscribed
+  before the command goes out, since the reply can arrive while the send
+  call is still returning. A setting that stays silent within
+  `REPEATER_CONFIG_REPLY_TIMEOUT` is recorded as missing and the round
+  continues, so one silent setting does not cost the other nine.
+- ✨ **`RepeaterConfigArchive`** (`services/repeater_config_archive.py`):
+  append-only JSONL archive at
+  `~/.meshcore-gui/archive/<device>_repeater_config.jsonl`, same shape as
+  the statistics archive, with its own lock and its own retention. The
+  poller seeds its schedule from this file, so a restart does not trigger
+  a fresh round of queries.
+- ✨ **Settings block in the Repeater Statistics panel.** Below the
+  status fields, in the existing card, with its own age and the list of
+  settings that did not answer. Nothing is drawn until the first read
+  lands, so a card looks exactly as before until then.
+- ✨ **Config keys** (`config.py`): `REPEATER_CONFIG_POLL_ENABLED`,
+  `REPEATER_CONFIG_POLL_HOUR` (3), `REPEATER_CONFIG_POLL_WINDOW_HOURS`
+  (3), `REPEATER_CONFIG_POLL_KEYS` (the ten commands),
+  `REPEATER_CONFIG_REPLY_TIMEOUT` (30 s),
+  `REPEATER_CONFIG_REPLY_TXT_TYPE` (1) and
+  `REPEATER_CONFIG_RETENTION_DAYS` (365).
+
+### Changed
+- 🔁 **`_poll_repeaters()` runs whichever poll is due**, configuration
+  first when its window is open, statistics otherwise. Both share the one
+  cancellable task slot introduced in 1.24.3, so the two pollers can
+  never occupy the radio at the same time and the existing cancel path
+  covers both unchanged.
+- 🔁 **`on_contact_msg()` drops CLI replies.** A frame with text type
+  `REPEATER_CONFIG_REPLY_TXT_TYPE` is a repeater answering a query, not
+  conversation; without this it would appear in the message list as a
+  direct message nobody sent.
+- 🔁 `RepeaterStatsPanel`, `DashboardPage`, both workers and
+  `create_worker()` take an optional `repeater_config_archive`. Additive
+  keyword arguments — every existing call site keeps working untouched.
+
+### Rationale
+The ten requested values — flood limits, timing parameters, interference
+threshold, RX gain, AGC interval, region — are configuration, not
+telemetry. No binary request returns them, so each one costs its own CLI
+round trip. Adding them to the 15-minute statistics poll would put ten
+extra round trips on every poll for values that did not change, and would
+lengthen exactly the window that 1.24.3 closed: the longer a poll runs,
+the likelier it is cancelled by outgoing traffic, and a cancelled poll
+writes no record. Once a night costs one session per repeater per day and
+yields the same information.
+
+### Impact
+- One extra session per repeater per 24 hours, inside the window that
+  opens at 03:00 local time. A repeater that has never been read is read
+  at the first opportunity, so a fresh install does not stay empty until
+  the next night.
+- A failed read counts as read for that day. Retrying an unreachable
+  repeater every ten seconds until sunrise would spend a night of airtime
+  on a repeater that is switched off.
+- The statistics archive schema and `repeater_poller.py` are untouched.
+  The public API and domca.nl are not involved.
+- The reply text type (1 = `CLI_DATA`) and the reply format are firmware
+  behaviour that was read from the `meshcore` 2.3.9.1 library source, not
+  observed on a live repeater. Both the text type and the command list
+  are config keys, so a deviation is corrected without a code change.
+
+---
+
+
 ## [1.24.3] - 2026-09-06 — Repeater poll no longer blocks outgoing traffic
 
 ### Fixed

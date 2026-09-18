@@ -45,6 +45,7 @@ from meshcore_gui.config import (
     CONTACT_REFRESH_SECONDS,
     MAX_CHANNELS,
     MSG_POLL_INTERVAL,
+    REPEATER_CONFIG_POLL_ENABLED,
     REPEATER_POLL_CANCEL_TIMEOUT,
     REPEATER_POLL_CHECK_INTERVAL,
     REPEATER_POLL_ENABLED,
@@ -72,6 +73,8 @@ from meshcore_gui.services.channel_discovery import (
 from meshcore_gui.services.dedup import DualDeduplicator
 from meshcore_gui.services.device_identity import write_device_identity
 from meshcore_gui.services.pin_store import PinStore
+from meshcore_gui.services.repeater_config_archive import RepeaterConfigArchive
+from meshcore_gui.services.repeater_config_poller import RepeaterConfigPoller
 from meshcore_gui.services.repeater_config_store import RepeaterConfigStore
 from meshcore_gui.services.repeater_poller import RepeaterPoller
 from meshcore_gui.services.repeater_stats_archive import RepeaterStatsArchive
@@ -93,7 +96,8 @@ def create_worker(device_id: str, shared: SharedDataWriter, **kwargs):
 
     Keyword arguments are forwarded to the worker constructor
     (e.g. ``baudrate``, ``cx_dly`` for serial, ``pin_store``,
-    ``repeater_config_store`` and ``repeater_stats_archive`` for all).
+    ``repeater_config_store``, ``repeater_stats_archive`` and
+    ``repeater_config_archive`` for all).
     """
     from meshcore_gui.config import is_ble_address
 
@@ -104,6 +108,7 @@ def create_worker(device_id: str, shared: SharedDataWriter, **kwargs):
             pin_store=kwargs.get("pin_store"),
             repeater_config_store=kwargs.get("repeater_config_store"),
             repeater_stats_archive=kwargs.get("repeater_stats_archive"),
+            repeater_config_archive=kwargs.get("repeater_config_archive"),
         )
     return SerialWorker(
         device_id,
@@ -113,6 +118,7 @@ def create_worker(device_id: str, shared: SharedDataWriter, **kwargs):
         pin_store=kwargs.get("pin_store"),
         repeater_config_store=kwargs.get("repeater_config_store"),
         repeater_stats_archive=kwargs.get("repeater_stats_archive"),
+        repeater_config_archive=kwargs.get("repeater_config_archive"),
     )
 
 
@@ -140,6 +146,7 @@ class _BaseWorker(abc.ABC):
         pin_store: Optional[PinStore] = None,
         repeater_config_store: Optional[RepeaterConfigStore] = None,
         repeater_stats_archive: Optional[RepeaterStatsArchive] = None,
+        repeater_config_archive: Optional[RepeaterConfigArchive] = None,
     ) -> None:
         self.device_id = device_id
         self.shared = shared
@@ -190,6 +197,22 @@ class _BaseWorker(abc.ABC):
             self._repeater_poller = RepeaterPoller(
                 config_store=repeater_config_store,
                 archive=repeater_stats_archive,
+            )
+
+        # Repeater configuration poller — reads the settings that do not
+        # change on the statistics schedule, once a day.  Uses the same
+        # task slot as the statistics poll below, so the two pollers can
+        # never occupy the radio at the same time.
+        self._repeater_config_archive = repeater_config_archive
+        self._repeater_config_poller: Optional[RepeaterConfigPoller] = None
+        if (
+            REPEATER_CONFIG_POLL_ENABLED
+            and repeater_config_store is not None
+            and repeater_config_archive is not None
+        ):
+            self._repeater_config_poller = RepeaterConfigPoller(
+                config_store=repeater_config_store,
+                archive=repeater_config_archive,
             )
 
         # Running repeater poll, if any.  Held as a task so the main loop
@@ -293,7 +316,10 @@ class _BaseWorker(abc.ABC):
             # while commands are waiting would cancel it again on the
             # next iteration: airtime spent, no measurement taken.
             if (
-                self._repeater_poller is not None
+                (
+                    self._repeater_poller is not None
+                    or self._repeater_config_poller is not None
+                )
                 and self._repeater_task is None
                 and not self.shared.has_pending_commands()
                 and now - last_repeater_poll > REPEATER_POLL_CHECK_INTERVAL
@@ -932,18 +958,32 @@ class _BaseWorker(abc.ABC):
             )
 
     async def _poll_repeaters(self) -> None:
-        """Poll a repeater for statistics when one is due.
+        """Run whichever repeater poll is due, statistics or settings.
 
-        Delegates the schedule to
-        :class:`~meshcore_gui.services.repeater_poller.RepeaterPoller`,
-        which polls at most one repeater per call so the transmissions
-        stay spread out.  Failures are recorded in the archive by the
-        poller and never propagate out of this method.
+        Both pollers handle at most one repeater per call so the
+        transmissions stay spread out, and both record their own failures
+        in their own archive; neither propagates an error out of this
+        method.
+
+        The nightly configuration read goes first when it is due.  It is
+        due at most once a day per repeater, while the statistics poll
+        comes round every fifteen minutes and loses nothing by skipping
+        this tick.  Sharing one task keeps the two off the radio at the
+        same time.
 
         Runs as its own task: see :meth:`_cancel_repeater_poll`.  A
-        cancellation is deliberately not swallowed here — the poller
-        reschedules its repeater and the task has to end as cancelled.
+        cancellation is deliberately not swallowed here — the pollers
+        reschedule their repeater and the task has to end as cancelled.
         """
+        if self._repeater_config_poller is not None:
+            try:
+                if await self._repeater_config_poller.run_due(self.mc):
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                debug_print(f"Repeater config read error: {exc}")
+
         if self._repeater_poller is None:
             return
         try:
@@ -997,6 +1037,8 @@ class _BaseWorker(abc.ABC):
                 )
             if self._repeater_stats_archive is not None:
                 self._repeater_stats_archive.cleanup_old_data()
+            if self._repeater_config_archive is not None:
+                self._repeater_config_archive.cleanup_old_data()
             removed = self._cache.prune_old_contacts()
             if removed > 0:
                 contacts = self._cache.get_contacts()
@@ -1029,6 +1071,7 @@ class SerialWorker(_BaseWorker):
         pin_store: Optional[PinStore] = None,
         repeater_config_store: Optional[RepeaterConfigStore] = None,
         repeater_stats_archive: Optional[RepeaterStatsArchive] = None,
+        repeater_config_archive: Optional[RepeaterConfigArchive] = None,
     ) -> None:
         super().__init__(
             port,
@@ -1036,6 +1079,7 @@ class SerialWorker(_BaseWorker):
             pin_store=pin_store,
             repeater_config_store=repeater_config_store,
             repeater_stats_archive=repeater_stats_archive,
+            repeater_config_archive=repeater_config_archive,
         )
         self.port = port
         self.baudrate = baudrate
@@ -1185,6 +1229,7 @@ class BLEWorker(_BaseWorker):
         pin_store: Optional[PinStore] = None,
         repeater_config_store: Optional[RepeaterConfigStore] = None,
         repeater_stats_archive: Optional[RepeaterStatsArchive] = None,
+        repeater_config_archive: Optional[RepeaterConfigArchive] = None,
     ) -> None:
         super().__init__(
             address,
@@ -1192,6 +1237,7 @@ class BLEWorker(_BaseWorker):
             pin_store=pin_store,
             repeater_config_store=repeater_config_store,
             repeater_stats_archive=repeater_stats_archive,
+            repeater_config_archive=repeater_config_archive,
         )
         self.address = address
 

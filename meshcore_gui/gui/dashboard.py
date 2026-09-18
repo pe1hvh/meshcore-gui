@@ -306,7 +306,7 @@ class DashboardPage:
         shared: SharedDataReader for data access and command dispatch.
     """
 
-    def __init__(self, shared: SharedDataReader, pin_store: PinStore, room_password_store: RoomPasswordStore, bot_config_store: BotConfigStore | None = None, device_id: str = "", repeater_config_store=None, repeater_stats_archive=None) -> None:
+    def __init__(self, shared: SharedDataReader, pin_store: PinStore, room_password_store: RoomPasswordStore, bot_config_store: BotConfigStore | None = None, device_id: str = "", repeater_config_store=None, repeater_stats_archive=None, repeater_config_archive=None) -> None:
         self._shared = shared
         self._pin_store = pin_store
         self._room_password_store = room_password_store
@@ -343,6 +343,7 @@ class DashboardPage:
         # the configuration store and the archive are supplied.
         self._repeater_config_store = repeater_config_store
         self._repeater_stats_archive = repeater_stats_archive
+        self._repeater_config_archive = repeater_config_archive
         self._repeater_stats: RepeaterStatsPanel | None = None
 
         # Channel add dialog panel
@@ -416,6 +417,7 @@ class DashboardPage:
                 self._repeater_config_store,
                 self._repeater_stats_archive,
                 put_command=put_cmd,
+                config_archive=self._repeater_config_archive,
             )
 
         self._channel_panel = ChannelPanel(put_cmd)

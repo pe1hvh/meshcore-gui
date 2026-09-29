@@ -44,6 +44,7 @@ A full-featured desktop platform for MeshCore mesh radio devices. Connects via U
 - [8. Configuration](#8-configuration)
   - [8.1. Data Directory (`~/.meshcore-gui/`)](#81-data-directory-meshcore-gui)
   - [8.2. Repeater Statistics Polling](#82-repeater-statistics-polling)
+  - [8.3. Repeater Configuration Read](#83-repeater-configuration-read)
 - [9. Functionality](#9-functionality)
   - [9.1. Device Info](#91-device-info)
   - [9.2. Contacts](#92-contacts)
@@ -117,7 +118,7 @@ Under the hood it uses `meshcore` as the protocol layer, `meshcoredecoder` for r
 - **Room Server Support** — Login to Room Servers directly from the GUI. Each Room Server gets a dedicated panel with message display, send functionality and login/logout controls. Passwords are stored securely outside the repository
 - **BBS — Bulletin Board System** — Offline message board with DM-based commands (`!p`, `!r`, `!s`), category and region filtering, automatic abbreviations and a channel-based whitelist. See [9.14. BBS](#914-bbs--bulletin-board-system) for full documentation
 - **Keyword Bot** — Built-in auto-reply bot that responds to configurable keywords on selected channels, with cooldown, private-contact mode and loop prevention
-- **Repeater Statistics** — Configured repeater nodes are polled on an interval: login, status request, logout. Every field the firmware reports is shown in the REPEATERS panel and archived with the moment of the poll, so battery voltage can be followed over days. A **Poll now** button per repeater runs the same sequence on demand. See [8.2. Repeater Statistics Polling](#82-repeater-statistics-polling) for configuration and [9.16. Repeaters](#916-repeaters) for the panel
+- **Repeater Statistics** — Configured repeater nodes are polled on an interval: login, status request, logout. Every field the firmware reports is shown in the REPEATERS panel and archived with the moment of the poll, so battery voltage can be followed over days. A **Poll now** button per repeater runs the same sequence on demand. Once a night the repeater's settings (flood limits, timing, RX gain, region) are read over the repeater CLI as well. See [8.2. Repeater Statistics Polling](#82-repeater-statistics-polling) for configuration, [8.3. Repeater Configuration Read](#83-repeater-configuration-read) for the nightly read and [9.16. Repeaters](#916-repeaters) for the panel
 - **Public REST API** — Read-only JSON endpoints (`/api/v1/stats`, `/api/v1/nodes`, `/api/v1/messages`, `/api/v1/channels`) for external consumers such as statistics dashboards. Private channel messages are unconditionally excluded; no authentication required
 - **Packet Decoding** — Raw LoRa packets from RX log are decoded and decrypted using channel keys, providing message hashes, path hashes and hop data
 - **Message Deduplication** — Dual-strategy dedup (hash-based and content-based) prevents duplicate messages from appearing
@@ -670,7 +671,7 @@ Ensure your user has permission to access the serial device (e.g. member of `dia
 | `OPERATOR_CALLSIGN` | `meshcore_gui/config.py` | Operator callsign shown on landing page and drawer footer (default: `"PE1HVH"`) |
 | `LANDING_SVG_PATH` | `meshcore_gui/config.py` | Path to the landing page SVG file; supports `{callsign}` placeholder (default: `static/landing_default.svg`) |
 | `DEBUG` | `meshcore_gui/config.py` | Set to `True` for verbose logging (or use `--debug-on`) |
-| `MAX_CHANNELS` | `meshcore_gui/config.py` | Maximum channel slots to probe on device (default: 8) |
+| `MAX_CHANNELS` | `meshcore_gui/config.py` | Maximum channel slots to probe on device; discovery stops earlier after `CHANNEL_DISCOVERY_ABORT_THRESHOLD` unanswered slots (default: 255) |
 | `CHANNEL_CACHE_ENABLED` | `meshcore_gui/config.py` | Cache discovered channels to disk for faster startup (default: `False` — always fresh from device) |
 | `CHANNEL_DISCOVERY_ABORT_THRESHOLD` | `meshcore_gui/config.py` | Consecutive unanswered channel slots after which discovery aborts; slots the device answers for reset the counter (default: 3) |
 | `DEFAULT_TIMEOUT` | `meshcore_gui/config.py` | Default command timeout in seconds (default: `10.0`) |
@@ -684,20 +685,33 @@ Ensure your user has permission to access the serial device (e.g. member of `dia
 | `CONTACT_REFRESH_SECONDS` | `meshcore_gui/config.py` | Interval between periodic contact refreshes (default: 300s / 5 minutes) |
 | `MSG_POLL_INTERVAL` | `meshcore_gui/config.py` | Interval for the safety-net poll of the device message queue, for when the `messages_waiting` notification is missed (default: 30s; `0` disables) |
 | `MESSAGE_RETENTION_DAYS` | `meshcore_gui/config.py` | Retention period for archived messages (default: 30 days) |
-| `RXLOG_RETENTION_DAYS` | `meshcore_gui/config.py` | Retention period for archived RX log entries (default: 7 days) |
+| `RXLOG_RETENTION_DAYS` | `meshcore_gui/config.py` | Retention period for archived RX log entries, applied to both `_rxlog.json` and `_rxlog.jsonl` (default: 14 days) |
 | `CONTACT_RETENTION_DAYS` | `meshcore_gui/config.py` | Retention period for cached contacts (default: 90 days) |
 | `REPEATER_STATS_RETENTION_DAYS` | `meshcore_gui/config.py` | Retention period for archived repeater statistics (default: 90 days) |
+| `REPEATER_CONFIG_RETENTION_DAYS` | `meshcore_gui/config.py` | Retention period for archived repeater configuration reads (default: 365 days) |
 | `REPEATER_POLL_ENABLED` | `meshcore_gui/config.py` | Master switch for repeater polling; when `False` no repeater is contacted regardless of configuration (default: `True`) |
 | `REPEATER_POLL_INTERVAL` | `meshcore_gui/config.py` | Default seconds between polls of a single repeater, overridable per repeater with `poll_interval` (default: 900s / 15 minutes) |
 | `REPEATER_POLL_CHECK_INTERVAL` | `meshcore_gui/config.py` | How often the main loop asks whether a repeater is due (default: 10s) |
 | `REPEATER_LOGIN_TIMEOUT` | `meshcore_gui/config.py` | Minimum seconds to wait for `LOGIN_SUCCESS` after a login request (default: 30s) |
 | `REPEATER_STATUS_TIMEOUT` | `meshcore_gui/config.py` | Minimum seconds to wait for `STATUS_RESPONSE` after a status request (default: 30s) |
+| `REPEATER_POLL_MAX_ATTEMPTS` | `meshcore_gui/config.py` | Attempts per poll for a repeater that does not answer; each attempt is a full login / status / logout sequence (default: 5) |
+| `REPEATER_POLL_RETRY_DELAY` | `meshcore_gui/config.py` | Seconds between two attempts within one poll (default: 5s) |
+| `REPEATER_POLL_CANCEL_TIMEOUT` | `meshcore_gui/config.py` | Maximum seconds a cancelled repeater poll may spend on its logout before the queued command goes out anyway (default: 5s) |
+| `REPEATER_CONFIG_POLL_ENABLED` | `meshcore_gui/config.py` | Master switch for the nightly configuration read; when `False` no CLI command is sent to any repeater (default: `True`) |
+| `REPEATER_CONFIG_POLL_HOUR` | `meshcore_gui/config.py` | Local hour at which the nightly window opens, 0-23 (default: 3) |
+| `REPEATER_CONFIG_POLL_WINDOW_HOURS` | `meshcore_gui/config.py` | Length of the nightly window in hours (default: 3) |
+| `REPEATER_CONFIG_POLL_KEYS` | `meshcore_gui/config.py` | CLI commands sent per repeater, in this order (default: the ten commands listed in [8.3](#83-repeater-configuration-read)) |
+| `REPEATER_CONFIG_REPLY_TIMEOUT` | `meshcore_gui/config.py` | Seconds to wait for the reply to a single CLI command (default: 30s) |
+| `REPEATER_CONFIG_REPLY_TXT_TYPE` | `meshcore_gui/config.py` | Text type of a CLI reply (`CLI_DATA` in the firmware); separates a CLI answer from an ordinary DM (default: 1) |
 | `KEY_RETRY_INTERVAL` | `meshcore_gui/ble/worker.py` | Interval between background retry attempts for missing channel keys (default: 30s) |
-| `BOT_DEVICE_NAME` | `meshcore_gui/config.py` | Device name set when bot mode is active (default: `;NL-OV-ZWL-STDSHGN-WKC Bot`) |
+| `CHANNEL_SORT_MODE_DEFAULT` | `meshcore_gui/config.py` | Initial sort order of the drawer channel submenus; the toggle in the drawer is persisted to `~/.meshcore-gui/channel_sort.json` (default: `"index"`) |
+| `API_ENABLED` | `meshcore_gui/config.py` | Register the read-only REST API under `/api/v1/` (default: `True`) |
+| `API_CORS_ORIGINS` | `meshcore_gui/config.py` | Allowed CORS origins for the REST API (default: `["*"]`) |
+| `BOT_DEVICE_NAME` | `meshcore_gui/config.py` | Device name set when bot mode is active (default: `"ZwolsBotje"`) |
 | `BOT_CHANNELS` | `meshcore_gui/services/bot.py` | Channel indices the bot listens on |
 | `BOT_COOLDOWN_SECONDS` | `meshcore_gui/services/bot.py` | Minimum seconds between bot replies |
 | `BOT_KEYWORDS` | `meshcore_gui/services/bot.py` | Keyword → reply template mapping |
-| Room passwords | `~/.meshcore-gui/room_passwords/<ADDRESS>.json` | Per-device Room Server passwords (managed via GUI, stored outside repository) |
+| Room passwords | `~/.meshcore-gui/room_passwords/<ADDRESS>_rooms.json` | Per-device Room Server passwords (managed via GUI, stored outside repository) |
 | Repeaters | `~/.meshcore-gui/repeaters/<ADDRESS>_repeaters.json` | Per-device repeater list with login passwords; hand-edited, read once at startup (see [8.2](#82-repeater-statistics-polling)) |
 | Serial Port | CLI argument | Device serial port (e.g. `/dev/ttyUSB0` or `COM3`) |
 | BLE Address | CLI argument | BLE MAC address (e.g. `literal:AA:BB:CC:DD:EE:FF`) |
@@ -723,10 +737,14 @@ All persistent data is stored under `~/.meshcore-gui/` in your home directory. E
 ├── archive/
 │   ├── <ADDRESS>_messages.json # All received channel and DM messages (retained per MESSAGE_RETENTION_DAYS)
 │   ├── <ADDRESS>_rxlog.json    # Raw RX log entries (retained per RXLOG_RETENTION_DAYS)
-│   └── <ADDRESS>_repeater_stats.jsonl # One JSON object per repeater poll, appended immediately
+│   ├── <ADDRESS>_rxlog.jsonl   # Same RX log entries as a real-time stream, one JSON object
+│                               # per line, written immediately (same retention)
+│   ├── <ADDRESS>_repeater_stats.jsonl # One JSON object per repeater poll, appended immediately
 │                               # (retained per REPEATER_STATS_RETENTION_DAYS, see 8.2)
+│   └── <ADDRESS>_repeater_config.jsonl # One JSON object per nightly configuration read
+│                               # (retained per REPEATER_CONFIG_RETENTION_DAYS, see 8.3)
 ├── room_passwords/
-│   └── <ADDRESS>.json          # Room Server passwords per device (managed via GUI)
+│   └── <ADDRESS>_rooms.json    # Room Server passwords per device (managed via GUI)
 ├── bot/
 │   └── _<dev_id>_bot.json      # Bot channel selection and settings per device
 ├── bbs/
@@ -751,7 +769,7 @@ All persistent data is stored under `~/.meshcore-gui/` in your home directory. E
 rm ~/.meshcore-gui/cache/*.json
 
 # Remove a specific device's archive to free disk space
-rm ~/.meshcore-gui/archive/AA_BB_CC_DD_EE_FF_*.json
+rm ~/.meshcore-gui/archive/AA_BB_CC_DD_EE_FF_*.json ~/.meshcore-gui/archive/AA_BB_CC_DD_EE_FF_*.jsonl
 
 # View the BBS config
 cat ~/.meshcore-gui/bbs/bbs_config.json
@@ -819,6 +837,18 @@ Restart the instance after editing; the file is read once at startup.
   sent once a login has been attempted, including after a timeout.
 - A failed poll is archived too, with `ok: false` and a reason, so a gap in the
   message archive can be matched against the poll moments.
+- A repeater that does not answer is retried within the same poll, up to
+  `REPEATER_POLL_MAX_ATTEMPTS` times (default 5) with
+  `REPEATER_POLL_RETRY_DELAY` seconds (default 5) in between. Every attempt is
+  the complete login / status / logout sequence. Only one record is written per
+  poll, with an `attempts` field holding the number of attempts used and the
+  error of the last one. A missing password is not retried.
+- Outgoing traffic has priority. A poll only starts when the command queue is
+  empty, and a running poll is cancelled as soon as a command is queued — a
+  message, a bot reply, a manual action. The logout still goes out, bounded by
+  `REPEATER_POLL_CANCEL_TIMEOUT` (default 5 s). A cancelled poll writes no
+  record; its repeater is due again immediately and is polled once the queue is
+  empty.
 - After a login that produces no confirmation, the poller calls `reset_path()`.
   The device forgets the stored route, the next poll floods and relearns a path
   from the ACK. A repeater that became unreachable because its stored path went
@@ -866,11 +896,93 @@ or an error message.
 One JSON object per line, appended immediately:
 
 ```json
-{"polled_at": "2026-09-01T10:15:00+00:00", "pubkey": "0123…", "name": "NoodNet Zwolle", "ok": true, "error": null, "status": {"bat": 4021, "uptime": 91234, "…": "…"}}
+{"polled_at": "2026-09-01T10:15:00+00:00", "pubkey": "0123…", "name": "NoodNet Zwolle", "ok": true, "error": null, "attempts": 1, "status": {"bat": 4021, "uptime": 91234, "…": "…"}}
 ```
 
 Retention is `REPEATER_STATS_RETENTION_DAYS` in `config.py` (default 90) and is
 applied by the existing daily cleanup task.
+
+## 8.3. Repeater Configuration Read
+
+Once a night, every repeater in the configuration file of
+[8.2](#82-repeater-statistics-polling) is also asked for its settings. These
+are configuration, not telemetry: they change only when somebody edits them,
+and no binary request returns them, so each value costs its own CLI round trip
+over the radio. Reading them once a day instead of every fifteen minutes keeps
+that airtime small.
+
+No extra configuration file is needed — the same repeater list and password
+are used.
+
+### Settings read
+
+The commands are sent in this order (`REPEATER_CONFIG_POLL_KEYS` in
+`config.py`):
+
+```
+get flood.max
+get flood.max.unscoped
+get flood.max.advert
+get loop.detect
+get txdelay
+get rxdelay
+get int.thresh
+get radio.rxgain
+get agc.reset.interval
+region
+```
+
+Each value is stored under the command name without the `get ` verb, so
+`get flood.max` ends up as `flood.max`. Adding or removing a command in the
+list needs no code change.
+
+### Behaviour
+
+- A read is a login, one CLI command per setting, and a logout. The logout is
+  always sent once a login has been attempted.
+- The window opens at `REPEATER_CONFIG_POLL_HOUR` (default 03:00 local time)
+  and stays open for `REPEATER_CONFIG_POLL_WINDOW_HOURS` (default 3 hours). A
+  repeater that has never been read is read at the first opportunity, so a
+  fresh install does not stay empty until the next night.
+- A repeater is read at most once a day. A failed read also counts as read for
+  that day, so an unreachable repeater does not cost a night of airtime.
+- A setting that does not answer within `REPEATER_CONFIG_REPLY_TIMEOUT`
+  (default 30 s) is listed as missing and the next setting is tried.
+- The configuration read and the statistics poll share one task slot: they are
+  never on the radio at the same time, and the configuration read goes first
+  when both are due. The same traffic priority applies — a read is cancelled
+  when a command is queued, writes no record and is retried once the queue is
+  empty.
+- A repeater answers a CLI command with a direct message of text type
+  `REPEATER_CONFIG_REPLY_TXT_TYPE` (`CLI_DATA`). Those replies are consumed by
+  the poller and never appear in the message list.
+- Values are stored exactly as the repeater reports them, as text — no
+  conversion, since a value such as the region is not numeric.
+
+> **Note:** the reply text type and reply format were taken from the `meshcore`
+> 2.3.9.1 library source, not observed on a live repeater. Both the text type
+> and the command list are config keys, so a deviation can be corrected
+> without a code change.
+
+`REPEATER_CONFIG_POLL_ENABLED = False` switches the nightly read off without
+affecting the statistics poll.
+
+### Archive
+
+```
+~/.meshcore-gui/archive/<ADDRESS>_repeater_config.jsonl
+```
+
+One JSON object per line, appended immediately. Separate from the statistics
+archive, whose schema is unchanged:
+
+```json
+{"polled_at": "2026-09-19T03:00:11+00:00", "pubkey": "0123…", "name": "NoodNet Zwolle", "ok": true, "error": null, "config": {"flood.max": "3", "…": "…"}, "missing": ["txdelay"]}
+```
+
+Retention is `REPEATER_CONFIG_RETENTION_DAYS` in `config.py` (default 365) and
+is applied by the existing daily cleanup task. The poller reads its schedule
+back from this file, so a restart does not trigger a new round of queries.
 
 ## 9. Functionality
 
@@ -948,16 +1060,15 @@ Room Servers (type=3 contacts) allow group-style messaging via a shared server n
 
 ### 9.8. Message Archive
 
-All incoming messages and RX log entries are automatically persisted to disk in `~/.meshcore-gui/archive/`. One JSON file per data type per device identifier.
+All incoming messages and RX log entries are automatically persisted to disk in `~/.meshcore-gui/archive/`. One JSON file per data type per device identifier; the RX log is additionally written to an append-only `<ADDRESS>_rxlog.jsonl` stream, one line per received packet, for external consumers that want the raw feed in real time.
 
-Click the **📚 Archive** button in the Messages panel header to open the archive viewer in a new tab. The archive viewer provides:
+Open the archive viewer from the **📚 ARCHIVE** entry in the drawer (**ALL**, **DM** or a single channel). The archive viewer provides:
 
 - **Pagination** — 50 messages per page, with Previous/Next navigation
 - **Channel filter** — Filter by specific channel or view all
 - **Time range filter** — Last 24 hours, 7 days, 30 days, 90 days, or all time
 - **Text search** — Case-insensitive search in message text
-- **Inline route tables** — Expandable route display per message (sender, repeaters, receiver with names and IDs)
-- **Reply from archive** — Expandable reply panel per message with pre-filled @sender mention
+- **Click-to-route** — Clicking a message opens its route visualization via the message hash
 
 Old data is automatically cleaned up based on configurable retention periods (`MESSAGE_RETENTION_DAYS`, `RXLOG_RETENTION_DAYS` in `config.py`).
 
@@ -1271,6 +1382,10 @@ Each repeater gets one card:
   reason as recorded in the archive.
 - **Status fields** — every field from the last successful status response, in
   two columns.
+- **Settings** — the values from the last successful nightly configuration
+  read (see [8.3](#83-repeater-configuration-read)), with the age of that read
+  and a *No reply* line listing settings that did not answer. The block is
+  absent until the first read has landed.
 
 Fields are rendered from the response itself rather than from a fixed list, so
 a field a future firmware adds appears without a code change. Known fields get
@@ -1288,7 +1403,7 @@ objects that have no password field at all.
 
 ## 10. Architecture
 
-<!-- CHANGED: Architecture diagram updated — added BBS, ChannelService, PublicAPIService, MapSnapshotService -->
+<!-- CHANGED: Architecture diagram updated — added BBS, ChannelService, PublicAPIService, MapSnapshotService; repeater statistics and configuration pollers (v1.24.5) -->
 
 ```
 ┌─────────────────┐     ┌─────────────────┐
@@ -1311,7 +1426,7 @@ objects that have no password field at all.
 │  │ ArchivePg │  │  │  │   │  Cache  │   │
 │  │ RoomSrvPnl│  │  │  │   │  BBS    │   │
 │  │  BBSPanel │  │  │  │   │Repeater │   │
-│  │  BotPanel │  │  │  │   │ Poller  │   │
+│  │  BotPanel │  │  │  │   │ Pollers │   │
 │  │RepeaterPnl│  │  │  │   └─────────┘   │
 │  └───────────┘  │  │  │   ┌─────────┐   │
 │                 │  │  │   │Reconnect│   │
@@ -1336,27 +1451,30 @@ objects that have no password field at all.
                                   │ MapSnapshot   │
                                   │ RepeaterConfig│
                                   │  + StatsArchiv│
+                                  │  + ConfigArchv│
                                   └───────────────┘
 ```
 
 - **Worker (Serial/BLE)**: Runs in separate thread with its own asyncio loop. Auto-detected transport: `SerialWorker` for USB serial, `BLEWorker` for Bluetooth LE (with PIN agent and bond management). Both share a common base class with disconnect detection, auto-reconnect and background key retry
 - **CommandHandler**: Executes commands (send message, advert, refresh, purge unpinned, set auto-add, set bot name, restore name, login room, send room msg, remove single contact)
-- **EventHandler**: Processes incoming device events (messages, RX log) with path hash caching between RX_LOG and fallback handlers, and resolves repeater names at receive time for self-contained archive data
+- **EventHandler**: Processes incoming device events (messages, RX log) with path hash caching between RX_LOG and fallback handlers, and resolves repeater names at receive time for self-contained archive data; repeater CLI replies are dropped rather than shown as DMs
 - **PacketDecoder**: Decodes raw LoRa packets and extracts route data
 - **MeshBot**: Keyword-triggered auto-reply on configured channels with automatic device name switching
 - **DualDeduplicator**: Prevents duplicate messages (hash-based + content-based)
 - **DeviceCache**: Local JSON cache per device for instant startup and offline resilience
-- **MessageArchive**: Persistent storage for messages and RX log with configurable retention and automatic cleanup
+- **MessageArchive**: Persistent storage for messages and RX log with configurable retention and automatic cleanup; the RX log is also streamed to an append-only JSONL file
 - **PinStore**: Persistent pin state storage per device (JSON-backed)
 - **ContactCleanerService**: Bulk-delete logic for unpinned contacts with statistics
-- **ChannelService**: Manages channel discovery, add, delete and re-indexing; persists channel keys to the device cache
+- **ChannelService**: Pure helpers for channel management — random private channel secrets, hashtag-channel key derivation, MeshCore QR code URLs and inline QR rendering
 - **BbsService**: Bulletin Board System — processes DM commands, manages the SQLite message store and whitelist
 - **PublicApiService**: Aggregates data from SharedData and MessageArchive for the REST API; enforces privacy filtering (no private channel messages)
 - **MapSnapshotService**: Builds a point-in-time snapshot of node positions and device state for use by the REST API `/api/v1/nodes` endpoint
 - **RepeaterConfigStore**: Per-device repeater configuration from `~/.meshcore-gui/repeaters/`; the login password is reachable through a single method that only the poller calls
-- **RepeaterPoller**: Runs the login / status request / logout sequence per repeater on its own interval, and on demand via the `poll_repeater` command; resets a stale path after a login without confirmation
+- **RepeaterPoller**: Runs the login / status request / logout sequence per repeater on its own interval, and on demand via the `poll_repeater` command; retries a silent repeater within the same poll and resets a stale path after a login without confirmation. Runs as a cancellable task that yields to queued commands
+- **RepeaterConfigPoller**: Reads the repeater settings in `REPEATER_CONFIG_POLL_KEYS` once a night over the repeater CLI (login / one command per setting / logout); shares the cancellable task slot with RepeaterPoller
 - **RepeaterStatsArchive**: Append-only JSONL archive of every poll, successful or not, with retention via the existing daily cleanup task
-- **RepeaterStatsPanel**: Read-only card per repeater showing every field from the last status response; renders unknown fields too
+- **RepeaterConfigArchive**: Append-only JSONL archive of every nightly configuration read, with its own lock and its own retention
+- **RepeaterStatsPanel**: Read-only card per repeater showing every field from the last status response and, below it, the settings from the last configuration read; renders unknown fields too
 - **RoomServerPanel**: Per-room-server card management with login/logout, message display and send functionality
 - **RoomPasswordStore**: Persistent Room Server password storage per device in `~/.meshcore-gui/room_passwords/` (JSON-backed, analogous to PinStore)
 - **SharedData**: Thread-safe data sharing between serial worker and GUI via Protocol interfaces
@@ -1569,7 +1687,7 @@ Debug output is written to both stdout and a per-device rotating log file at `~/
 
 ### 14.2. Project Structure
 
-<!-- CHANGED: Project structure updated — added repeater_stats_panel, repeater_config_store, repeater_poller, repeater_stats_archive, channel_discovery, ble_connector; docs/ tree corrected (adr/, ble/, examples/); bridge and observer moved to their own repositories -->
+<!-- CHANGED: Project structure updated — added repeater_stats_panel, repeater_config_store, repeater_poller, repeater_stats_archive, channel_discovery, ble_connector; docs/ tree corrected (adr/, ble/, examples/); bridge and observer moved to their own repositories; added repeater_config_poller, repeater_config_archive, channel_sort_store (v1.24.5) -->
 
 ```
 meshcore-gui/
@@ -1614,7 +1732,7 @@ meshcore-gui/
 │   │       ├── bot_panel.py         # Bot enable/configure panel (channel selection, private mode)
 │   │       ├── channel_panel.py     # Add Channel dialog (Hashtag / Private New / Private Existing)
 │   │       ├── channel_backup_panel.py # Channel Backup & Restore dialogs (export PSKs, preview diff, restore)
-│   │       ├── repeater_stats_panel.py # Read-only REPEATERS panel with a Poll now button per repeater
+│   │       ├── repeater_stats_panel.py # Read-only REPEATERS panel with a Poll now button and settings block per repeater
 │   │       ├── room_server_panel.py # Per-room-server card with login/logout and messages
 │   │       └── rxlog_panel.py       # RX log table
 │   └── services/                    # Business logic
@@ -1625,15 +1743,18 @@ meshcore-gui/
 │       ├── bot_config_store.py      # Bot channel/mode persistence per device (~/.meshcore-gui/bot/)
 │       ├── cache.py                 # Local JSON cache per device (~/.meshcore-gui/cache/)
 │       ├── channel_discovery.py     # Pure helpers for merging a discovery result into cached channel names
-│       ├── channel_service.py       # Channel discovery, add, delete, re-indexing and key caching
+│       ├── channel_service.py       # Channel secrets, hashtag key derivation and QR code helpers
 │       ├── channel_backup_store.py  # Channel backup/restore store (~/.meshcore-gui/channel_backups/)
+│       ├── channel_sort_store.py    # Drawer channel sort preference (~/.meshcore-gui/channel_sort.json)
 │       ├── contact_cleaner.py       # Bulk-delete logic for unpinned contacts
 │       ├── dedup.py                 # Message deduplication
-│       ├── device_identity.py       # Device address normalisation helpers
+│       ├── device_identity.py       # Writes ~/.meshcore-gui/device_identity.json for MeshCore Observer
 │       ├── map_snapshot_service.py  # Builds node-position snapshots for the REST API
 │       ├── message_archive.py       # Persistent message and RX log archive with retention and cleanup
 │       ├── pin_store.py             # Persistent pin state storage per device (~/.meshcore-gui/pins/)
 │       ├── public_api_service.py    # Data aggregation layer for /api/v1/ (enforces privacy filtering)
+│       ├── repeater_config_archive.py # Append-only JSONL archive of every nightly configuration read
+│       ├── repeater_config_poller.py # Nightly read of repeater settings over the repeater CLI
 │       ├── repeater_config_store.py # Per-device repeater configuration (~/.meshcore-gui/repeaters/)
 │       ├── repeater_poller.py       # Login / status / logout sequence per repeater, scheduled and on demand
 │       ├── repeater_stats_archive.py # Append-only JSONL archive of every repeater poll
@@ -1690,7 +1811,7 @@ This project is under active development. The most common features from the offi
 - [ ] **Observer mode** — passively monitor mesh traffic without transmitting, useful for network analysis, coverage mapping and long-term logging; in development at [meshcore-observer](https://github.com/pe1hvh/meshcore-observer)
 - [ ] **Room Server administration** — authenticate as admin to manage Room Server settings and users directly from the GUI
 - [x] **Repeater statistics** — poll repeater nodes for their status on an interval or on demand, and archive every response (see [8.2](#82-repeater-statistics-polling) and [9.16](#916-repeaters))
-- [ ] **Repeater configuration** — adjust repeater settings from the GUI; reading the status works, writing does not
+- [ ] **Repeater configuration** — adjust repeater settings from the GUI; the settings are read nightly (see [8.3](#83-repeater-configuration-read)), writing them is not implemented
 
 Have a feature request or want to contribute? Open an issue or submit a pull request.
 

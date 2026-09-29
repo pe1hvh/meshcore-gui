@@ -11,6 +11,58 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.24.5] - 2026-09-29 — Documentation brought in line with the changelog
+
+### Changed
+- 📝 **`README.md`**: new section *8.3 Repeater Configuration Read* for the
+  nightly settings read of 1.24.4 (commands, window, archive, behaviour).
+  Section 8.2 now describes the retries of 1.24.2 and the traffic priority /
+  cancellable poll of 1.24.3; the archive example shows the `attempts`
+  field. The configuration table gains the eleven repeater keys added in
+  1.24.2–1.24.4 plus `CHANNEL_SORT_MODE_DEFAULT`, `API_ENABLED` and
+  `API_CORS_ORIGINS`. The data directory tree lists `_rxlog.jsonl`
+  (1.22.1) and `_repeater_config.jsonl`. Section 9.16 describes the settings
+  block, sections 10 and 14.2 the new modules, the roadmap the read-only
+  settings.
+- 📝 **`docs/MULTI_INSTANCE.md`**: data separation table and cleanup
+  commands list every per-device file (RX log stream, repeater archives,
+  bot settings, channel backup, repeater list); notes which files are
+  shared between instances and that a repeater is polled by one instance
+  only.
+- 📝 **`docs/FEATURE_MESSAGE_PERSISTENCE.md`**: new *RX Log Stream (JSONL)*
+  section (1.22.1); message and RX log example records match the fields
+  the archive writes today.
+- 📝 **`docs/MeshCore_GUI_Design.docx`**: design document v5.11.0 (BLE-only,
+  February 2026) rewritten to v6.0.0 for application 1.24.5 — dual
+  transport workers, composition root, drawer layout, channel discovery,
+  Room Server, BBS, channel management, map, REST API, repeater polling and
+  configuration read, configuration table. Original formatting retained.
+- 📝 **`CLAUDE.md`**: references to the non-existent `INSTALLATIE.md` and
+  `TROUBLESHOOTING.md` point to the matching README sections.
+- `VERSION` bumped `1.24.4` → `1.24.5` in `config.py` and `__init__.py`.
+
+### Fixed
+- 📝 Stale values in the documentation: `MAX_CHANNELS` default 8 → 255,
+  `RXLOG_RETENTION_DAYS` default 7 → 14, `BOT_DEVICE_NAME` default, Room
+  Server password file name (`<ADDRESS>_rooms.json`), PinStore location
+  (`pins/`), the archive viewer (drawer entry and click-to-route instead of
+  the removed Archive button and inline route tables), and the descriptions
+  of `channel_service.py` and `device_identity.py`.
+
+### Impact
+- Documentation only. No code, configuration value, archive schema, cache
+  schema or public API changed.
+
+### Rationale
+The documentation had fallen behind the code: most documents were last
+touched at 1.22.2 and the design document at 1.9.0 (design v5.11.0), while
+the changelog had moved on to 1.24.4. A documentation check against the
+changelog showed missing features, wrong defaults and references to files
+that do not exist.
+
+---
+
+
 ## [1.24.4] - 2026-09-18 — Nightly repeater configuration read
 
 ### Added

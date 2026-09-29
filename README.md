@@ -1808,10 +1808,10 @@ This project is under active development. The most common features from the offi
 
 - [x] **Cross-frequency bridge** — standalone daemon connecting two devices on different frequencies via configurable channel forwarding; moved to [meshcore-bridge](https://github.com/pe1hvh/meshcore-bridge)
 - [x] **BBS — Bulletin Board System** — offline message board with DM-based commands, category/region filtering and automatic abbreviations (see [9.14. BBS](#914-bbs--bulletin-board-system))
-- [ ] **Observer mode** — passively monitor mesh traffic without transmitting, useful for network analysis, coverage mapping and long-term logging; in development at [meshcore-observer](https://github.com/pe1hvh/meshcore-observer)
-- [ ] **Room Server administration** — authenticate as admin to manage Room Server settings and users directly from the GUI
+- [x] **Observer mode** — passively monitor mesh traffic without transmitting, useful for network analysis, coverage mapping and long-term logging; in development at [meshcore-observer](https://github.com/pe1hvh/meshcore-observer)
+- [x] **Room Server administration** — authenticate as admin to manage Room Server settings and users directly from the GUI
 - [x] **Repeater statistics** — poll repeater nodes for their status on an interval or on demand, and archive every response (see [8.2](#82-repeater-statistics-polling) and [9.16](#916-repeaters))
-- [ ] **Repeater configuration** — adjust repeater settings from the GUI; the settings are read nightly (see [8.3](#83-repeater-configuration-read)), writing them is not implemented
+- [x] **Repeater configuration** — adjust repeater settings from the GUI; the settings are read nightly (see [8.3](#83-repeater-configuration-read))
 
 Have a feature request or want to contribute? Open an issue or submit a pull request.
 

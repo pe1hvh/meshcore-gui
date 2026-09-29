@@ -1370,8 +1370,7 @@ the GUI — see [8.2. Repeater Statistics Polling](#82-repeater-statistics-polli
 for the file, the fields and the permissions. The panel is absent from the
 drawer when no configuration file exists.
 
-<img width="903" height="716" alt="image" src="https://github.com/user-attachments/assets/3f6eb57a-9217-46e7-a2ec-085cd529c1be" />
-
+<img width="908" height="1264" alt="image" src="https://github.com/user-attachments/assets/50705dd5-3078-444f-9060-90863bee2415" />
 
 Each repeater gets one card:
 

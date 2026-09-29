@@ -25,6 +25,7 @@ The architectural decision (why two layers, why independent locks, lock-ordering
 │   MessageArchive (persistent)        │
 │   - All messages (JSON)              │
 │   - All rx_log (JSON)                │
+│   - rx_log stream (JSONL, unbuffered)│
 │   - Retention filtering              │
 │   - Automatic cleanup (daily)        │
 │   - Separate Lock (no contention)   │
@@ -44,15 +45,18 @@ The architectural decision (why two layers, why independent locks, lock-ordering
   "messages": [
     {
       "time": "12:34:56",
+      "date": "2026-02-07",
       "timestamp_utc": "2026-02-07T12:34:56.123456Z",
       "sender": "PE1HVH",
       "text": "Hello mesh!",
       "channel": 0,
+      "channel_name": "Public",
       "direction": "in",
       "snr": 8.5,
       "path_len": 2,
       "sender_pubkey": "abc123...",
       "path_hashes": ["a1", "b2"],
+      "path_names": ["Repeater A", "Repeater B"],
       "message_hash": "def456..."
     }
   ]
@@ -75,13 +79,31 @@ The architectural decision (why two layers, why independent locks, lock-ordering
       "rssi": -95.0,
       "payload_type": "MSG",
       "hops": 2,
-      "message_hash": "def456..."
+      "message_hash": "def456...",
+      "path_hashes": ["a1", "b2"],
+      "path_names": ["Repeater A", "Repeater B"],
+      "sender": "PE1HVH",
+      "receiver": "",
+      "raw_payload": "15023a...",
+      "packet_len": 64,
+      "payload_len": 48,
+      "route_type": "F",
+      "packet_type_num": 5
     }
   ]
 }
 ```
 
 **Note:** The `message_hash` field enables correlation between RX log entries and messages. It will be empty for packets that are not messages (e.g., announcements, broadcasts).
+
+### RX Log Stream (JSONL)
+**Location:** `~/.meshcore-gui/archive/<ADDRESS>_rxlog.jsonl`
+
+Every RX log entry is also appended to this file immediately, one JSON object per line, with the same fields as an entry in `<ADDRESS>_rxlog.json`. The write is direct — no batch buffer — so the line appears within a second of reception. It is a real-time source for separate local services that want the raw RX feed without depending on the batched JSON file.
+
+- The batched `<ADDRESS>_rxlog.json` archive is unchanged and remains the source for the GUI, the REST API and the archive viewer.
+- A failed append is logged via `debug_print` and does not affect the batched archive; the two paths are independent.
+- Daily cleanup rewrites the stream file with the same `RXLOG_RETENTION_DAYS` cutoff. Corrupt lines (for example a partial last line after a crash) are skipped during cleanup.
 
 ## Configuration
 
@@ -92,7 +114,7 @@ Add to `meshcore_gui/config.py`:
 MESSAGE_RETENTION_DAYS: int = 30
 
 # Retention period for RX log entries (in days)
-RXLOG_RETENTION_DAYS: int = 7
+RXLOG_RETENTION_DAYS: int = 14
 
 # Retention period for contacts (in days)
 CONTACT_RETENTION_DAYS: int = 90
@@ -184,7 +206,7 @@ if shared.archive:
 - No impact on UI responsiveness
 
 ### Storage Size
-With default retention (30 days messages, 7 days rxlog):
+With default retention (30 days messages, 14 days rxlog):
 - Typical message: ~200 bytes JSON
 - 100 messages/day → ~6KB/day → ~180KB/month
 - Expected archive size: <10MB
@@ -194,7 +216,7 @@ With default retention (30 days messages, 7 days rxlog):
 The worker runs cleanup daily (every 86400 seconds):
 
 1. **Message Cleanup**: Removes messages older than `MESSAGE_RETENTION_DAYS`
-2. **RxLog Cleanup**: Removes entries older than `RXLOG_RETENTION_DAYS`
+2. **RxLog Cleanup**: Removes entries older than `RXLOG_RETENTION_DAYS` from both `<ADDRESS>_rxlog.json` and the `<ADDRESS>_rxlog.jsonl` stream
 3. **Contact Cleanup**: Removes contacts not seen for `CONTACT_RETENTION_DAYS`
 
 Cleanup is non-blocking and runs in the background worker thread.

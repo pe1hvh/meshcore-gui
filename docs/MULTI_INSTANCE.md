@@ -4,7 +4,7 @@
 
 ## Overview
 
-MeshCore GUI supports running multiple instances simultaneously — for example, to monitor two different MeshCore devices from the same machine. Each instance gets its own web port, serial connection, and all persistent data (cache, archive, logs, pins, room passwords) is automatically separated by device identifier (serial port).
+MeshCore GUI supports running multiple instances simultaneously — for example, to monitor two different MeshCore devices from the same machine. Each instance gets its own web port, serial connection, and all persistent data (cache, archive, logs, pins, room passwords, bot settings, channel backups, repeater configuration) is automatically separated by device identifier (serial port).
 
 ## Prerequisites
 
@@ -95,9 +95,19 @@ All persistent data is automatically separated by device identifier. No addition
 | Cache | `~/.meshcore-gui/cache/_dev_ttyUSB0.json` |
 | Message archive | `~/.meshcore-gui/archive/_dev_ttyUSB0_messages.json` |
 | RX log archive | `~/.meshcore-gui/archive/_dev_ttyUSB0_rxlog.json` |
+| RX log stream | `~/.meshcore-gui/archive/_dev_ttyUSB0_rxlog.jsonl` |
+| Repeater statistics archive | `~/.meshcore-gui/archive/_dev_ttyUSB0_repeater_stats.jsonl` |
+| Repeater configuration archive | `~/.meshcore-gui/archive/_dev_ttyUSB0_repeater_config.jsonl` |
 | Debug log | `~/.meshcore-gui/logs/_dev_ttyUSB0_meshcore_gui.log` |
 | Pin state | `~/.meshcore-gui/pins/_dev_ttyUSB0_pins.json` |
 | Room passwords | `~/.meshcore-gui/room_passwords/_dev_ttyUSB0_rooms.json` |
+| Bot settings | `~/.meshcore-gui/bot/__dev_ttyUSB0_bot.json` |
+| Channel backup | `~/.meshcore-gui/channel_backups/__dev_ttyUSB0_channels.json` |
+| Repeater list | `~/.meshcore-gui/repeaters/_dev_ttyUSB0_repeaters.json` |
+
+Repeaters are polled only by the instance that has them in its own repeater list, so two instances never query the same repeater. Give each repeater to one instance only.
+
+Not separated per device: `~/.meshcore-gui/bbs/` (BBS configuration and message store), `~/.meshcore-gui/channel_sort.json` (drawer sort order) and `~/.meshcore-gui/device_identity.json` (one file holding an entry per device).
 
 ## Useful Commands
 
@@ -125,9 +135,13 @@ Optionally remove the device's persistent data:
 ```bash
 rm ~/.meshcore-gui/cache/_dev_ttyUSB1.json
 rm ~/.meshcore-gui/archive/_dev_ttyUSB1_*.json
+rm ~/.meshcore-gui/archive/_dev_ttyUSB1_*.jsonl
 rm ~/.meshcore-gui/logs/_dev_ttyUSB1_meshcore_gui.log
 rm ~/.meshcore-gui/pins/_dev_ttyUSB1_pins.json
 rm ~/.meshcore-gui/room_passwords/_dev_ttyUSB1_rooms.json
+rm ~/.meshcore-gui/bot/__dev_ttyUSB1_bot.json
+rm ~/.meshcore-gui/channel_backups/__dev_ttyUSB1_channels.json
+rm ~/.meshcore-gui/repeaters/_dev_ttyUSB1_repeaters.json
 ```
 
 ## Troubleshooting

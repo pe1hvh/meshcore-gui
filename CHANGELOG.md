@@ -11,6 +11,58 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.25.1] - 2026-11-09 — BBS fixes: retention, whitelist label, config reload, operator delete
+
+### Fixed
+- 🐛 **Retention never applied** (`ble/worker.py`): `BbsService.purge_all_expired()`
+  existed but was never called, so messages stayed past the board's
+  `retention_hours`. The worker now purges on the first main-loop iteration
+  (directly after connect) and then every `BBS_PURGE_INTERVAL` seconds.
+- 🐛 **Settings changes only effective after restart** (`services/bbs_config_store.py`):
+  the worker, the dashboard panel and the settings page each hold their own
+  `BbsConfigStore`, which only read the file at construction. A channel added
+  in the settings was unknown to the worker (`!bbs` ignored on it), and a save
+  from one instance could overwrite a newer state (e.g. a key whitelisted via
+  `!bbs`) with stale in-memory data. Every public method now re-reads the file
+  when its modification time changed; writes record the new modification time.
+  This also covers several application processes sharing `~/.meshcore-gui/bbs/`.
+- 🐛 **One button for several channels** (`gui/panels/bbs_panel.py`): the single
+  board appeared as one selector button labelled with all channel names
+  (`NOODNET-OV, nl-vr04`). The linked channels are whitelist entry points, not
+  separate boards, so they are now shown as a read-only label
+  `Whitelist: NOODNET-OV, nl-vr04`.
+- 🐛 **No way to remove a message** (`gui/panels/bbs_panel.py`,
+  `services/bbs_service.py`): each message row gets a delete icon (same style
+  as the panel's gear button) with a confirmation dialog (pattern of
+  `ContactsPanel`). New `BbsService.delete_message(msg_id)`. Deletion is
+  operator-only by construction: no `!`-command calls this method.
+- 📝 **README §9.14**: first contact is `!bbs` on the channel (the code accepts
+  exactly `!bbs` there), not `!bbs help`. Added a *Deleting messages* section.
+- 🐛 **Unclear reply for unknown senders** (`services/bbs_service.py`): `!bbs`
+  from a sender that is not in the node's contact list (no advert received)
+  replied `BBS whitelist failed: sender key unknown.` without telling what to
+  do. A channel message carries no public key, so the sender must send a flood
+  advert first. The reply now says so; README §9.14 documents the advert step.
+
+### Added
+- `config.py`: `BBS_PURGE_INTERVAL = 300.0` — seconds between BBS retention purges.
+
+### Impact
+- `!r`, `!p`, `!s`, `!h` remain DM-only, as designed since v1.14.0; typed on the
+  channel they are still ignored. Only `!bbs` is handled on the channel.
+- DM `!p` still stores messages under the board's first channel; `!r` reads
+  all board channels — unchanged.
+- No change to the message database schema or the config file format.
+
+### Rationale
+Retention and a usable panel are part of the BBS contract; without the purge a
+1-hour board kept messages indefinitely. Re-reading on modification time keeps
+the existing constructors and wiring unchanged (no breaking change) while
+fixing stale state across all instances and processes. Deletion was kept out of
+the mesh command set so that only the node operator can remove content.
+
+---
+
 ## [1.25.0] - 2026-11-09 — Regions (flood scope) for channel messages
 
 ### Added

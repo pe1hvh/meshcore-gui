@@ -1215,8 +1215,10 @@ MeshCore GUI includes an offline BBS that lets mesh nodes exchange structured me
 The operator links one or more channels to the BBS. Anyone who sends a message on a configured BBS channel is automatically added to the whitelist. After that, they can send commands via **Direct Message** to the BBS node — the channel itself stays clean.
 
 ```
-First contact:  !bbs help  on the configured channel
-                → node sees the public key → whitelists it
+Step 1:         send a flood advert from your node
+                → the BBS node adds you to its contacts (needed for your key)
+First contact:  !bbs  on the configured channel (registers your key)
+                → node looks up your public key in its contacts → whitelists it
 After that:     !p U need assistance  as DM to the node
                 → processed, reply sent back via DM
 ```
@@ -1312,6 +1314,11 @@ BBS [NoodNet Zwolle, NoodNet Dalfsen] | !p [cat] [text] | !r [cat] [1-5] | !s [c
 | Unknown category | Lists valid categories and abbreviations |
 | Ambiguous abbreviation | Lists all matching categories |
 | Sender not on whitelist | Silent drop — no reply |
+| `!bbs` from a sender unknown to the node (no advert received) | `BBS: unknown sender. Send a flood advert first, then !bbs again.` |
+
+#### Deleting messages
+
+Messages can only be deleted by the operator, from the BBS panel in MeshCore GUI (delete icon on each message, with confirmation). There is no mesh command for deleting messages. Expired messages (older than **Retain**) are removed automatically every `BBS_PURGE_INTERVAL` seconds (default 300) and directly after connect.
 
 #### Storage
 

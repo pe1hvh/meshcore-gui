@@ -39,6 +39,7 @@ from meshcore import MeshCore, EventType
 
 import meshcore_gui.config as _config
 from meshcore_gui.config import (
+    BBS_PURGE_INTERVAL,
     DEFAULT_TIMEOUT,
     CHANNEL_CACHE_ENABLED,
     CHANNEL_DISCOVERY_ABORT_THRESHOLD,
@@ -185,9 +186,13 @@ class _BaseWorker(abc.ABC):
 
         # BBS handler — wired directly into EventHandler for DM routing.
         # Independent of the bot; uses a shared config store and service.
-        _bbs_config = BbsConfigStore()
-        _bbs_service = BbsService()
-        self._bbs_handler = BbsCommandHandler(service=_bbs_service, config_store=_bbs_config)
+        # The service and store are kept as attributes so the main loop
+        # can run the BBS retention purge (see ``_purge_bbs``).
+        self._bbs_config = BbsConfigStore()
+        self._bbs_service = BbsService()
+        self._bbs_handler = BbsCommandHandler(
+            service=self._bbs_service, config_store=self._bbs_config,
+        )
 
         # Repeater statistics poller — created only when both the
         # configuration store and the archive are supplied, so callers
@@ -289,6 +294,9 @@ class _BaseWorker(abc.ABC):
         last_cleanup = time.time()
         last_msg_poll = time.time()
         last_repeater_poll = time.time()
+        # 0.0 → the BBS retention purge runs on the first loop iteration,
+        # so expired messages are removed directly after (re)connect.
+        last_bbs_purge = 0.0
 
         while self.running and not self._disconnected:
             # Traffic has priority over background work: a running poll
@@ -323,6 +331,10 @@ class _BaseWorker(abc.ABC):
             if now - last_cleanup > CLEANUP_INTERVAL:
                 await self._cleanup_old_data()
                 last_cleanup = now
+
+            if now - last_bbs_purge > BBS_PURGE_INTERVAL:
+                self._purge_bbs()
+                last_bbs_purge = now
 
             if MSG_POLL_INTERVAL > 0 and now - last_msg_poll > MSG_POLL_INTERVAL:
                 await self._poll_pending_messages()
@@ -1094,6 +1106,19 @@ class _BaseWorker(abc.ABC):
             )
         except Exception as exc:  # noqa: BLE001 — cleanup must not break the loop
             debug_print(f"Repeater poll cancellation error: {exc}")
+
+    def _purge_bbs(self) -> None:
+        """Delete BBS messages older than each board's retention period.
+
+        Runs on the first main-loop iteration and then every
+        ``BBS_PURGE_INTERVAL`` seconds.  Retention is configured per
+        board (``retention_hours``) on the BBS settings page.  Errors are
+        logged and never break the main loop.
+        """
+        try:
+            self._bbs_service.purge_all_expired(self._bbs_config.get_boards())
+        except Exception as exc:  # noqa: BLE001 — purge must not break the loop
+            debug_print(f"BBS purge failed: {exc}")
 
     async def _cleanup_old_data(self) -> None:
         try:

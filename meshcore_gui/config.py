@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.25.0"
+VERSION: str = "1.25.1"
 
 
 # ==============================================================================
@@ -572,3 +572,8 @@ CHANNEL_SORT_MODE_DEFAULT: str = "index"
 # BBS channel configuration is managed at runtime via BbsConfigStore.
 # Settings are persisted to ~/.meshcore-gui/bbs/bbs_config.json
 # and edited through the BBS Settings panel in the GUI.
+
+# Seconds between BBS retention purges in the worker main loop.  The
+# first purge runs directly after connect; each board's own
+# ``retention_hours`` decides which messages are expired.
+BBS_PURGE_INTERVAL: float = 300.0

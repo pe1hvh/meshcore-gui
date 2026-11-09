@@ -23,6 +23,16 @@ v2  — board-based config (list of boards, each with a channels list).
 Thread safety
 ~~~~~~~~~~~~~
 All public methods acquire an internal ``threading.Lock``.
+
+Disk consistency (v1.25.1)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+Several independent instances read and write the same file: the worker
+(DM / channel command routing), the dashboard panel, the settings page,
+and — with multiple devices on one host — other application processes.
+Every public method therefore re-reads the file first when its
+modification time differs from the last load or save, so a change made
+by one instance is seen by all others without a restart and a write
+never overwrites a newer state with stale in-memory data.
 """
 
 import json
@@ -119,7 +129,9 @@ class BbsConfigStore:
         self._path = config_path
         self._lock = threading.Lock()
         self._boards: List[BbsBoard] = []
+        self._mtime_ns: Optional[int] = None
         self._load()
+        self._mtime_ns = self._current_mtime_ns()
 
     # ------------------------------------------------------------------
     # Load / save
@@ -202,6 +214,46 @@ class BbsConfigStore:
             encoding="utf-8",
         )
         tmp.replace(self._path)
+        self._mtime_ns = self._current_mtime_ns()
+
+    def _current_mtime_ns(self) -> Optional[int]:
+        """Return the modification time of the config file in nanoseconds.
+
+        Returns:
+            Modification time, or ``None`` when the file cannot be read.
+        """
+        try:
+            return self._path.stat().st_mtime_ns
+        except OSError:
+            return None
+
+    def _reload_if_changed_unlocked(self) -> None:
+        """Re-read the config file when it changed on disk.
+
+        MUST be called with ``self._lock`` held.  The file is written
+        atomically (temp file + replace), so a changed modification time
+        always refers to a complete file.  On a read or parse error, or
+        an unexpected config version, the in-memory state is kept.
+        """
+        mtime = self._current_mtime_ns()
+        if mtime is None or mtime == self._mtime_ns:
+            return
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            debug_print(f"BBS config: reload error ({exc}), keeping current config")
+            return
+        if data.get("version", 1) != CONFIG_VERSION:
+            debug_print(
+                f"BBS config: reload skipped, version {data.get('version')} "
+                f"!= {CONFIG_VERSION}"
+            )
+            return
+        self._boards = [BbsBoard.from_dict(b) for b in data.get("boards", [])]
+        self._mtime_ns = mtime
+        debug_print(
+            f"BBS config: reloaded {len(self._boards)} boards (changed on disk)"
+        )
 
     def save(self) -> None:
         """Flush current configuration to disk."""
@@ -219,6 +271,7 @@ class BbsConfigStore:
             List of ``BbsBoard`` instances.
         """
         with self._lock:
+            self._reload_if_changed_unlocked()
             return list(self._boards)
 
     def get_board(self, board_id: str) -> Optional[BbsBoard]:
@@ -231,6 +284,7 @@ class BbsConfigStore:
             ``BbsBoard`` instance or ``None``.
         """
         with self._lock:
+            self._reload_if_changed_unlocked()
             for b in self._boards:
                 if b.id == board_id:
                     return BbsBoard.from_dict(b.to_dict())
@@ -248,6 +302,7 @@ class BbsConfigStore:
             ``BbsBoard`` instance or ``None``.
         """
         with self._lock:
+            self._reload_if_changed_unlocked()
             for b in self._boards:
                 if channel_idx in b.channels:
                     return BbsBoard.from_dict(b.to_dict())
@@ -264,6 +319,7 @@ class BbsConfigStore:
             board: ``BbsBoard`` to persist.
         """
         with self._lock:
+            self._reload_if_changed_unlocked()
             for i, b in enumerate(self._boards):
                 if b.id == board.id:
                     self._boards[i] = BbsBoard.from_dict(board.to_dict())
@@ -284,6 +340,7 @@ class BbsConfigStore:
             ``True`` if removed, ``False`` if not found.
         """
         with self._lock:
+            self._reload_if_changed_unlocked()
             before = len(self._boards)
             self._boards = [b for b in self._boards if b.id != board_id]
             if len(self._boards) < before:
@@ -302,6 +359,7 @@ class BbsConfigStore:
             ``True`` if a board with this id exists.
         """
         with self._lock:
+            self._reload_if_changed_unlocked()
             return any(b.id == board_id for b in self._boards)
 
     # ------------------------------------------------------------------
@@ -315,6 +373,7 @@ class BbsConfigStore:
             The first ``BbsBoard`` in the store, or ``None``.
         """
         with self._lock:
+            self._reload_if_changed_unlocked()
             if self._boards:
                 return BbsBoard.from_dict(self._boards[0].to_dict())
         return None
@@ -365,6 +424,7 @@ class BbsConfigStore:
             allowed_keys=merged_keys,
         )
         with self._lock:
+            self._reload_if_changed_unlocked()
             self._boards = [board]
             self._save_unlocked()
             debug_print(
@@ -375,6 +435,7 @@ class BbsConfigStore:
     def clear_board(self) -> None:
         """Remove the configured board (disable BBS on this node)."""
         with self._lock:
+            self._reload_if_changed_unlocked()
             self._boards = []
             self._save_unlocked()
             debug_print("BBS config: board cleared")
@@ -395,6 +456,7 @@ class BbsConfigStore:
         if not sender_key:
             return False
         with self._lock:
+            self._reload_if_changed_unlocked()
             if not self._boards:
                 return False
             board = self._boards[0]

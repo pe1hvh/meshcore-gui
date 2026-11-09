@@ -20,6 +20,15 @@ text type ``REPEATER_CONFIG_REPLY_TXT_TYPE``.  Those frames belong to
 which waits for them on the dispatcher, and are not conversation: they
 are dropped here instead of ending up in the message list as a direct
 message nobody sent.
+
+Regions
+~~~~~~~
+A channel message received via ``RX_LOG_DATA`` with a transport route type
+carries a region transport code.  The optional
+:class:`~meshcore_gui.services.region_service.RegionService` attributes it
+to a known region; the result is stored on the message and cached so the
+``CHANNEL_MSG_RECV`` fallback (which has no raw packet) can recover it,
+in the same way as the path hashes.
 """
 
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional
@@ -33,6 +42,7 @@ from meshcore_gui.services.dedup import DualDeduplicator
 
 if TYPE_CHECKING:
     from meshcore_gui.services.bbs_service import BbsCommandHandler
+    from meshcore_gui.services.region_service import RegionService
 
 
 class EventHandler:
@@ -43,6 +53,9 @@ class EventHandler:
         decoder: PacketDecoder for raw LoRa packet decryption.
         dedup:   DualDeduplicator for message deduplication.
         bot:     MeshBot for auto-reply logic.
+        region_service: Optional RegionService for attributing received
+                 transport codes to regions.  Without it no region is
+                 shown on received messages.
     """
 
     # Maximum entries in the path cache before oldest are evicted.
@@ -56,6 +69,7 @@ class EventHandler:
         bot: MeshBot,
         bbs_handler: Optional["BbsCommandHandler"] = None,
         command_sink: Optional[Callable[[Dict], None]] = None,
+        region_service: Optional["RegionService"] = None,
     ) -> None:
         self._shared = shared
         self._decoder = decoder
@@ -74,6 +88,13 @@ class EventHandler:
         # meshcoredecoder differs from the one in CHANNEL_MSG_RECV
         # (two independent libraries may disagree on the hash format).
         self._path_cache_by_content: Dict[str, list] = {}
+
+        self._region_service = region_service
+
+        # Region cache for the on_channel_msg fallback, keyed by
+        # message_hash and by "sender:text[:100]" (same keys as the path
+        # caches).  Only populated for packets that carry a region.
+        self._region_cache: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Helpers — resolve names at receive time
@@ -122,6 +143,40 @@ class EventHandler:
     # ------------------------------------------------------------------
     # RX_LOG_DATA — the single source of truth for path info
     # ------------------------------------------------------------------
+
+    def _region_of(self, decoded) -> str:
+        """Return the region label of a decoded packet.
+
+        Args:
+            decoded: :class:`~meshcore_gui.ble.packet_decoder.DecodedPacket`.
+
+        Returns:
+            Region name, ``"?xxxx"`` for an unknown region, or an empty
+            string when the packet is unscoped or no service is wired.
+        """
+        if self._region_service is None or decoded.transport_code is None:
+            return ""
+        try:
+            payload_type = decoded.payload_type.value
+        except (AttributeError, ValueError):
+            return ""
+        return self._region_service.match_transport_code(
+            decoded.transport_code, payload_type, decoded.payload_raw,
+        )
+
+    def _cache_region(self, key: str, region: str) -> None:
+        """Remember *region* under *key* for the on_channel_msg fallback.
+
+        Args:
+            key:    message_hash or ``"sender:text[:100]"`` content key.
+            region: Region label (non-empty).
+        """
+        if not key or not region:
+            return
+        self._region_cache[key] = region
+        if len(self._region_cache) > self._PATH_CACHE_MAX:
+            oldest = next(iter(self._region_cache))
+            del self._region_cache[oldest]
 
     def on_rx_log(self, event) -> None:
         """Handle RX log data events."""
@@ -182,6 +237,19 @@ class EventHandler:
                         oldest_ck = next(iter(self._path_cache_by_content))
                         del self._path_cache_by_content[oldest_ck]
                 
+                # Region of a scoped GroupText packet (cached for the
+                # on_channel_msg fallback, like the path hashes above).
+                msg_region = ""
+                if decoded.payload_type == PayloadType.GroupText:
+                    msg_region = self._region_of(decoded)
+                    if msg_region:
+                        self._cache_region(message_hash, msg_region)
+                        if decoded.is_decrypted and decoded.sender:
+                            self._cache_region(
+                                f"{decoded.sender}:{decoded.text[:100]}",
+                                msg_region,
+                            )
+
                 # Process decoded message if it's a group text
                 if decoded.payload_type == PayloadType.GroupText and decoded.is_decrypted:
                     if decoded.channel_idx is None:
@@ -226,6 +294,7 @@ class EventHandler:
                             path_hashes=decoded.path_hashes,
                             path_names=rx_path_names,
                             message_hash=decoded.message_hash,
+                            region=msg_region,
                         ))
 
                         debug_print(
@@ -393,6 +462,11 @@ class EventHandler:
 
         path_names = self._resolve_path_names(path_hashes)
 
+        # Recover the region from the RX_LOG decode, same keys as above.
+        region = self._region_cache.pop(msg_hash, "") if msg_hash else ""
+        if not region and sender and msg_text:
+            region = self._region_cache.pop(f"{sender}:{msg_text[:100]}", "")
+
         self._shared.add_message(Message.incoming(
             sender,
             msg_text,
@@ -403,6 +477,7 @@ class EventHandler:
             path_hashes=path_hashes,
             path_names=path_names,
             message_hash=msg_hash,
+            region=region,
         ))
 
         # BBS channel hook: auto-whitelist sender + bootstrap reply for !-commands.

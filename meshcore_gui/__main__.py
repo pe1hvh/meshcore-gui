@@ -50,6 +50,7 @@ from meshcore_gui.gui.archive_page import ArchivePage
 from meshcore_gui.services.pin_store import PinStore
 from meshcore_gui.services.room_password_store import RoomPasswordStore
 from meshcore_gui.services.bot_config_store import BotConfigStore
+from meshcore_gui.services.channel_region_store import ChannelRegionStore
 from meshcore_gui.services.repeater_config_archive import RepeaterConfigArchive
 from meshcore_gui.services.repeater_config_store import RepeaterConfigStore
 from meshcore_gui.services.repeater_stats_archive import RepeaterStatsArchive
@@ -68,6 +69,7 @@ _bot_config_store = None
 _repeater_config_store = None
 _repeater_stats_archive = None
 _repeater_config_archive = None
+_channel_region_store = None
 _device_id = ""
 
 
@@ -84,6 +86,7 @@ def _page_dashboard():
             repeater_config_store=_repeater_config_store,
             repeater_stats_archive=_repeater_stats_archive,
             repeater_config_archive=_repeater_config_archive,
+            channel_region_store=_channel_region_store,
         ).render()
 
 
@@ -183,7 +186,7 @@ def main():
     Parses CLI arguments, auto-detects the transport, initialises all
     components and starts the NiceGUI server.
     """
-    global _shared, _dashboard, _route_page, _bbs_settings_page, _archive_page, _pin_store, _room_password_store, _bot_config_store, _device_id, _repeater_config_store, _repeater_stats_archive, _repeater_config_archive
+    global _shared, _dashboard, _route_page, _bbs_settings_page, _archive_page, _pin_store, _room_password_store, _bot_config_store, _device_id, _repeater_config_store, _repeater_stats_archive, _repeater_config_archive, _channel_region_store
 
     args, flags = _parse_flags(sys.argv[1:])
 
@@ -289,6 +292,7 @@ def main():
     _repeater_config_store = RepeaterConfigStore(device_id)
     _repeater_stats_archive = RepeaterStatsArchive(device_id)
     _repeater_config_archive = RepeaterConfigArchive(device_id)
+    _channel_region_store = ChannelRegionStore(device_id)
     _dashboard = DashboardPage(
         _shared,
         _pin_store,
@@ -298,6 +302,7 @@ def main():
         repeater_config_store=_repeater_config_store,
         repeater_stats_archive=_repeater_stats_archive,
         repeater_config_archive=_repeater_config_archive,
+        channel_region_store=_channel_region_store,
     )
     _route_page = RoutePage(_shared)
     _archive_page = ArchivePage(_shared)
@@ -322,6 +327,7 @@ def main():
         repeater_config_store=_repeater_config_store,
         repeater_stats_archive=_repeater_stats_archive,
         repeater_config_archive=_repeater_config_archive,
+        channel_region_store=_channel_region_store,
     )
     worker.start()
 

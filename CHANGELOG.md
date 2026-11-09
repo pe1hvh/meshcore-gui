@@ -11,6 +11,103 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.25.0] - 2026-11-09 — Regions (flood scope) for channel messages
+
+### Added
+- 🌐 **Default region per channel** (`gui/panels/channel_panel.py`): the
+  Channel Manager gains a fifth mode, *Region (default)*. Pick a channel and
+  a region; new region names can be typed into the select. A channel without
+  a region of its own is pre-selected with the device default region. The
+  setting is stored locally per device by the new
+  `services/channel_region_store.py` (`~/.meshcore-gui/regions/<ADDRESS>_regions.json`,
+  keyed by channel name so it survives a move / reindex; atomic writes).
+- 🌐 **Per-message region override** (`gui/panels/messages_panel.py`): a
+  region select after the channel select in the send row (*Channel default*
+  + known regions); a new name can be typed and is added to the known
+  regions. It applies to one message and returns to *Channel default* after
+  sending. The command carries an optional `region` key.
+- 🌐 **Set device default region** (`gui/panels/actions_panel.py`): new row
+  *Default region* + **Set** in the Actions card, pre-selected with the value
+  read from the radio, with typing; *None* clears. New command
+  `set_default_region` (`ble/commands.py`) sends `CMD_SET_DEFAULT_FLOOD_SCOPE`
+  and reads the value back. The frame is built by
+  `region_service.default_scope_payload()` because meshcore 2.3.17
+  `set_default_flood_scope()` cannot clear (`None` raises, `""` sends an
+  empty name the firmware rejects) and pads by characters instead of bytes.
+- 🌐 **Region of received channel messages**: `ble/packet_decoder.py` keeps
+  the route type, `transport_codes[0]` and the payload bytes of every packet
+  (`DecodedPacket.route_type` / `transport_code` / `payload_raw`, all with
+  defaults). `ble/events.py` attributes the code to a known region and
+  stores it on the message; a region cache next to the path cache lets the
+  `CHANNEL_MSG_RECV` fallback recover it.
+- 🌐 **Device default region** (`ble/worker.py`): read from the radio after
+  `send_device_query` with `get_default_flood_scope()` and kept in the region
+  store, so it appears in the selects and as label on messages sent without
+  an override.
+- `services/region_service.py`: region key `SHA-256("#" + name)[:16]`
+  (firmware `TransportKeyStore::getAutoKeyFor`), transport code
+  `HMAC-SHA256(key, payload_type ‖ payload)[:2]` (firmware
+  `TransportKey::calcTransportCode`), send-region decision and code matching.
+- `Message.region` (`core/models.py`), declared last with default `""`;
+  `format_line` shows `[#name]` after the channel tag, `[?xxxx]` for an
+  unknown region. The archive writes the `region` field.
+
+### Changed
+- `ble/commands.py` — `_cmd_send_message`: when a region applies (override,
+  else channel default), the device send override is set with
+  `set_flood_scope(<16-byte key>)` before the chunks are sent and reset with
+  `set_flood_scope(None)` in a `finally` block. Without a region the send
+  path is unchanged. Bot and BBS replies use the channel default.
+- 🧭 **ACTIONS merged into DEVICE** (`gui/dashboard.py`): the ACTIONS menu
+  item is removed; the DEVICE panel renders the Device card with the Actions
+  card below it. `DevicePanel` and `ActionsPanel` keep their own class and
+  card. `?panel=actions` opens DEVICE.
+- `requirements.txt`: `meshcore @ git+…/meshcore_py.git@fix/event-race-condition`
+  → `meshcore>=2.3.17`. The fork (2.2.7) was no longer in use: the code
+  already calls `del_channel` and `send_login_sync`, which the fork lacks,
+  and README / install scripts install `meshcore` from PyPI. 2.3.17 contains
+  the subscribe-before-send fix (1.4.0) and `get_default_flood_scope()`.
+- `__main__.py`, `gui/dashboard.py`: one `ChannelRegionStore` is created and
+  passed to the dashboard and the worker (same pattern as
+  `repeater_config_store`).
+- `VERSION` bumped `1.24.5` → `1.25.0` in `config.py` and `__init__.py`.
+- 📝 `README.md`: features list, 5.4 (meshcore version note), 6.3, 8.1
+  (`regions/`), 9.1, 9.4, 9.12, new section 9.17 *Regions (Flood Scope)*, 12 (known
+  limitation 8), 14.2, roadmap.
+
+### Impact
+- Archive JSON schema: field `region` added (default `""`); older entries
+  load unchanged. Cache JSON schema unchanged.
+- No public method signature changed: new constructor parameters
+  (`EventHandler`, `CommandHandler`, workers, `DashboardPage`,
+  `ChannelPanel`, `MessagesPanel`) are optional keyword arguments; without a
+  region store everything behaves as in 1.24.5.
+- No new `config.py` keys: like the other per-device stores, the region store
+  keeps its path in its own module.
+- UI: the ACTIONS menu item no longer exists; its controls are in DEVICE.
+- DMs, room messages and adverts are never sent with a channel region: the
+  override is reset after every scoped channel send.
+- Received regions are recognised only for known region names; codes of
+  other regions show as `[?xxxx]`. DMs show no region.
+- Not yet verified against a real scoped packet; key and code derivation
+  follow the firmware source (MeshCore `main`, 2026-10-15).
+
+### Rationale
+Issue #33 asks for regions on messages: a default per channel, an override
+per message and the region on received messages. The companion firmware has
+one device default scope and one session-wide send override, and marks
+per-channel scope as TODO (`companion_radio/MyMesh.cpp`), so the per-channel
+default has to live in the application. Because that override applies to
+every flood packet, it is set only for the duration of one channel send.
+`CHANNEL_MSG_RECV` carries no region information; only the raw RX log packet
+has the transport code, and the name cannot be recovered from it — hence the
+attribution by trying known regions, the same approach the decoder already
+uses for channel keys. The key is computed in the application and passed as
+bytes so the result does not depend on whether the library adds the `#`.
+
+---
+
+
 ## [1.24.5] - 2026-09-29 — Documentation brought in line with the changelog
 
 ### Changed

@@ -4,17 +4,32 @@ Device command handlers for MeshCore GUI.
 Extracted from ``SerialWorker`` so that each command is an isolated unit
 of work.  New commands can be registered without modifying existing
 code (Open/Closed Principle).
+
+Regions
+~~~~~~~
+``send_message`` accepts an optional ``region`` key (a per-message
+override).  Without it the channel default from the
+:class:`~meshcore_gui.services.region_service.RegionService` applies.  When
+a region results, the device send override is set for this send only and
+reset afterwards, because the firmware applies that override to every
+flood packet — including DMs sent later.
 """
 
 import asyncio
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from meshcore import MeshCore, EventType
+from meshcore.packets import CommandType
 
 from meshcore_gui.config import BOT_DEVICE_NAME, DEVICE_NAME, debug_print
 from meshcore_gui.core.models import Message
 from meshcore_gui.core.protocols import SharedDataWriter
 from meshcore_gui.services.cache import DeviceCache
+from meshcore_gui.services.region_service import (
+    RegionService,
+    default_scope_payload,
+    region_key,
+)
 
 
 class CommandHandler:
@@ -28,6 +43,11 @@ class CommandHandler:
         cache:           DeviceCache for persistent storage.
         repeater_poller: Poller used by the manual REPEATERS poll button.
                          Optional; the command is ignored when absent.
+        region_service:  Decides the send region of channel messages.
+                         Optional; without it messages are sent exactly
+                         as before (device default scope).
+        channel_name_lookup: Returns the channel name for a channel index;
+                         needed to find the channel default region.
     """
 
     def __init__(
@@ -36,11 +56,16 @@ class CommandHandler:
         shared: SharedDataWriter,
         cache: Optional[DeviceCache] = None,
         repeater_poller: Optional[object] = None,
+        region_service: Optional[RegionService] = None,
+        channel_name_lookup: Optional[Callable[[int], str]] = None,
     ) -> None:
         self._mc = mc
         self._shared = shared
         self._cache = cache
         self._repeater_poller = repeater_poller
+        self._region_service = region_service
+        self._channel_name_lookup = channel_name_lookup
+        self._default_scope_reader = None
 
         # Handler registry — add new commands here (OCP)
         self._handlers: Dict[str, object] = {
@@ -59,6 +84,7 @@ class CommandHandler:
             'del_channel': self._cmd_del_channel,
             'move_channel': self._cmd_move_channel,
             'poll_repeater': self._cmd_poll_repeater,
+            'set_default_region': self._cmd_set_default_region,
         }
 
     async def process_all(self) -> None:
@@ -127,21 +153,123 @@ class CommandHandler:
             return
         await self._repeater_poller.poll_now(self._mc, pubkey)
 
+    async def _set_send_scope(self, region: str) -> bool:
+        """Set the device send override to *region* (empty = reset).
+
+        Args:
+            region: Region name, or an empty string to reset the override
+                    so the device default scope applies again.
+
+        Returns:
+            True when the device accepted the command.
+        """
+        scope = region_key(region) if region else None
+        try:
+            result = await self._mc.commands.set_flood_scope(scope)
+        except Exception as exc:
+            debug_print(f"set_flood_scope({region or 'reset'}) exception: {exc}")
+            return False
+        if result is None or result.type == EventType.ERROR:
+            debug_print(
+                f"set_flood_scope({region or 'reset'}) failed: "
+                f"{result.payload if result else 'no response'}"
+            )
+            return False
+        return True
+
+    def _resolve_send_region(self, cmd: Dict) -> str:
+        """Return the region a ``send_message`` command must use.
+
+        Args:
+            cmd: Command dict with ``channel`` and optional ``region``.
+
+        Returns:
+            Region name for the send override, or an empty string.
+        """
+        if self._region_service is None:
+            return ""
+        channel_name = ""
+        if self._channel_name_lookup is not None:
+            channel_name = self._channel_name_lookup(cmd.get('channel', 0)) or ""
+        return self._region_service.resolve_send_region(
+            channel_name, cmd.get('region'),
+        )
+
+    async def _cmd_set_default_region(self, cmd: Dict) -> None:
+        """Set or clear the device default region (flood scope).
+
+        The frame is built by :func:`default_scope_payload`; an empty
+        ``region`` clears the default.  Afterwards the value is read back
+        from the device (callback set by the worker) so the GUI shows what
+        the radio actually stores.
+
+        Args:
+            cmd: Command dict with a ``region`` key.
+        """
+        region = cmd.get('region', '') or ''
+        try:
+            payload = default_scope_payload(region)
+        except ValueError as exc:
+            self._shared.set_status(f"⚠️ Default region: {exc}")
+            return
+        frame = bytes([CommandType.SET_DEFAULT_FLOOD_SCOPE.value]) + payload
+        try:
+            result = await self._mc.commands.send(
+                frame, [EventType.OK, EventType.ERROR],
+            )
+        except Exception as exc:
+            debug_print(f"set_default_region exception: {exc}")
+            result = None
+        if result is None or result.type == EventType.ERROR:
+            self._shared.set_status("⚠️ Default region not accepted by device")
+            debug_print(
+                f"set_default_region({region!r}) failed: "
+                f"{result.payload if result else 'no response'}"
+            )
+        else:
+            self._shared.set_status(
+                f"✅ Default region: {('#' + region.lstrip('#')) if region else 'none'}"
+            )
+        if self._default_scope_reader is not None:
+            await self._default_scope_reader()
+
+    def set_default_scope_reader(self, callback) -> None:
+        """Register the coroutine that re-reads the device default region.
+
+        Args:
+            callback: Async callable without arguments (worker method).
+        """
+        self._default_scope_reader = callback
+
     async def _cmd_send_message(self, cmd: Dict) -> None:
         channel = cmd.get('channel', 0)
         text = cmd.get('text', '')
         is_bot = cmd.get('_bot', False)
         if text:
-            chunks = self._split_reply(text)
-            for idx, chunk in enumerate(chunks):
-                await self._mc.commands.send_chan_msg(channel, chunk)
-                if idx + 1 < len(chunks):
-                    await asyncio.sleep(0.2)
+            region = self._resolve_send_region(cmd)
+            scoped = bool(region) and await self._set_send_scope(region)
+            try:
+                chunks = self._split_reply(text)
+                for idx, chunk in enumerate(chunks):
+                    await self._mc.commands.send_chan_msg(channel, chunk)
+                    if idx + 1 < len(chunks):
+                        await asyncio.sleep(0.2)
+            finally:
+                if scoped:
+                    await self._set_send_scope("")
             if not is_bot:
-                self._shared.add_message(Message.outgoing(text, channel))
+                label = ""
+                if self._region_service is not None:
+                    label = self._region_service.label_for_sent(
+                        region if scoped else ""
+                    )
+                self._shared.add_message(
+                    Message.outgoing(text, channel, region=label)
+                )
             debug_print(
                 f"{'BOT' if is_bot else 'Sent'} message to "
-                f"channel {channel}: {text[:30]}"
+                f"channel {channel}"
+                f"{f' (region #{region})' if scoped else ''}: {text[:30]}"
             )
 
     async def _cmd_send_dm(self, cmd: Dict) -> None:

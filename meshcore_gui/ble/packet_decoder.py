@@ -61,6 +61,12 @@ class DecodedPacket:
         channel_idx:   Channel index (GroupText only, resolved by key match).
         timestamp:     Message timestamp (GroupText only).
         is_decrypted:  True if payload was successfully decrypted.
+        route_type:    Numeric route type from the header (0 = transport
+                       flood, 1 = flood, 2 = direct, 3 = transport direct).
+        transport_code: ``transport_codes[0]`` (region scope) for transport
+                       route types, ``None`` otherwise.
+        payload_raw:   Payload bytes (after header, codes and path); input
+                       for region attribution of the transport code.
     """
 
     message_hash: str
@@ -74,6 +80,11 @@ class DecodedPacket:
     channel_idx: Optional[int] = None
     timestamp: int = 0
     is_decrypted: bool = False
+
+    # Region scope (transport route types only)
+    route_type: int = -1
+    transport_code: Optional[int] = None
+    payload_raw: bytes = b""
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +227,21 @@ class PacketDecoder:
             path_length=packet.path_length,
             path_hashes=list(packet.path) if packet.path else [],
         )
+
+        # ── Region scope: keep transport code and payload bytes ───────
+        try:
+            result.route_type = packet.route_type.value
+        except (AttributeError, ValueError):
+            pass
+        codes = getattr(packet, "transport_codes", None)
+        if codes:
+            result.transport_code = codes[0]
+        try:
+            result.payload_raw = bytes.fromhex(
+                (packet.payload or {}).get("raw", "") or ""
+            )
+        except (ValueError, AttributeError):
+            result.payload_raw = b""
 
         # ── Phase 2: per-key decryption (GroupText only) ──────────────
         if packet.payload_type == PayloadType.GroupText and self._secret_to_idx:

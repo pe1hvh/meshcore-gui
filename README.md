@@ -62,6 +62,7 @@ A full-featured desktop platform for MeshCore mesh radio devices. Connects via U
   - [9.14. BBS — Bulletin Board System](#914-bbs--bulletin-board-system)
   - [9.15. Channel Backup & Restore](#915-channel-backup--restore)
   - [9.16. Repeaters](#916-repeaters)
+  - [9.17. Regions (Flood Scope)](#917-regions-flood-scope)
 - [10. Architecture](#10-architecture)
 - [11. Cross-Frequency Bridge](#11-cross-frequency-bridge)
 - [12. Known Limitations](#12-known-limitations)
@@ -109,6 +110,7 @@ Under the hood it uses `meshcore` as the protocol layer, `meshcoredecoder` for r
 - **Real-time Dashboard** — Device info, contacts, messages and RX log
 - **Interactive Map** — Leaflet map with markers for own position and contacts
 - **Channel Messages** — Send and receive messages on channels
+- **Regions (Flood Scope)** — Give each channel a default region in the Channel Manager, override it per message in the send row, and see the region of received channel messages. The device default region is read from the radio at startup and can be set from the DEVICE panel. See [9.17. Regions](#917-regions-flood-scope)
 - **Direct Messages** — Click on a contact to send a DM
 - **Channel Management** — Channels are automatically discovered at startup. Add hashtag or private channels directly from the GUI; new private channels generate a shareable QR code and hex key. Each channel has an inline 🗑 delete button that automatically re-indexes remaining slots. **Channel Backup & Restore** writes the full channel table (names + PSKs) to a local JSON file so channels can be recreated after a firmware reflash, NVS erase or device swap, with a pre-write diff that classifies entries as restorable / conflict / identical / skipped before anything is written to the device
 - **Contact Management** — Pin/unpin contacts to protect them from deletion, individual and bulk-delete unpinned contacts, and toggle automatic contact addition from mesh adverts
@@ -259,6 +261,8 @@ pip install nicegui meshcore meshcoredecoder
 pip install bleak dbus_fast
 ```
 
+> **Note:** Regions (9.17) need `meshcore` 2.3.17 or newer; `pip install --upgrade meshcore` brings an existing install up to date.
+
 > **Note:** BLE dependencies (`bleak`, `dbus_fast`) are only needed when connecting via Bluetooth LE. Serial-only installs do not require them — they are imported lazily at runtime.
 
 ## 6. Usage
@@ -318,6 +322,8 @@ Open the **Messages** section in the left drawer and click **＋ Add Channel** a
 | **🔒 Private – Existing** | Join a private channel someone shared with you | Paste the 32-char hex key |
 
 After clicking **Add Channel**, the device is updated and channel discovery re-runs automatically. A new private channel shows a scannable QR code (`meshcore://channel/add?name=…&secret=…`) that the official MeshCore app can read directly.
+
+The same dialog also offers **↕️ Move / Reindex** and **🌐 Region (default)**; the latter sets the default region of a channel (see [9.17. Regions](#917-regions-flood-scope)).
 
 #### Deleting channels from the GUI
 
@@ -756,6 +762,9 @@ All persistent data is stored under `~/.meshcore-gui/` in your home directory. E
 ├── repeaters/
 │   └── <ADDRESS>_repeaters.json # Repeaters polled for statistics (see 8.2)
 │                               # Contains a login password: dir 0700, file 0600
+├── regions/
+│   └── <ADDRESS>_regions.json  # Channel default regions, known regions and the
+│                               # device default region per device (see 9.17)
 └── logs/
     └── <ADDRESS>_meshcore_gui.log  # Rotating debug log (max 20 MB, only with --debug-on)
 ```
@@ -988,6 +997,7 @@ back from this file, so a restart does not trigger a new round of queries.
 
 ### 9.1. Device Info
 - Name, frequency, SF/BW, TX power, location, firmware version
+- The **DEVICE** panel also holds the Actions card below the device info (see [9.12](#912-actions))
 
 ### 9.2. Contacts
 
@@ -1010,8 +1020,9 @@ back from this file, so a restart does not trigger a new round of queries.
 
 ### 9.4. Channel Messages
 - Select a channel in the dropdown
+- Optionally select a region in the dropdown after the channel (default: *Channel default*, see [9.17](#917-regions-flood-scope))
 - Type your message and click "Send"
-- Received messages appear in the messages list
+- Received messages appear in the messages list, with a `[#region]` tag when the packet was scoped to a region
 - Filter messages via the checkboxes
 
 ### 9.5. Direct Messages (DM)
@@ -1129,9 +1140,11 @@ The built-in bot automatically replies to messages containing recognised keyword
 - Received packets with SNR and type
 
 ### 9.12. Actions
+Since 1.25.0 the Actions card is part of the **DEVICE** panel, below the device info; the separate ACTIONS menu item is gone (an old `?panel=actions` link opens DEVICE).
 - Refresh data
 - Send advertisement
 - Set device name
+- Set the device default region — the select shows the value read from the radio; type a name to add a region, choose *None* to clear it (see [9.17](#917-regions-flood-scope))
 
 ### 9.13. Public REST API
 
@@ -1400,6 +1413,48 @@ raw second count. Smaller values drop the leading units, so 45 seconds shows as
 Passwords are never reachable from the panel: the configuration store hands out
 objects that have no password field at all.
 
+### 9.17. Regions (Flood Scope)
+
+MeshCore can limit how far a flood message travels with **regions** (also
+called *scopes*). A message sent with a region carries a transport code derived
+from the region name; repeaters configured for that region forward it, others
+drop it. Region names are hashtag names: the key is
+`SHA-256("#" + name)[:16]`, the same rule the firmware uses.
+
+**Device default region** — at startup the GUI reads the default region stored
+on the radio (`get_default_flood_scope`). Messages sent without a region of
+their own use this default; the radio applies it. Change it in the DEVICE panel
+(Actions card → *Default region* → **Set**); the radio stores it permanently and
+the GUI reads it back afterwards. *None* clears it. The name may be at most 30
+bytes including the `#`.
+
+**Default per channel** — open the Channel Manager (＋ Add Channel) and choose
+**🌐 Region (default)**. Pick a channel and a region; a new region name can be
+typed straight into the region field. A channel without a region of its own is
+pre-selected with the device default region. Choosing *Device default* removes
+the channel's own region. The setting is stored locally per device in
+`~/.meshcore-gui/regions/` — the firmware has no per-channel region, so the GUI
+sets the region just before each send on that channel and resets it right after,
+so DMs and other traffic are not affected.
+
+**Override per message** — the region dropdown after the channel dropdown in
+the send row overrides the channel default for one message; a new region name
+can be typed into it. It returns to *Channel default* after sending. Bot and
+BBS replies use the channel default.
+
+**Received messages** — the region of a received channel message is shown as
+`[#name]` after the channel tag. Only the transport code travels in the packet,
+not the name, so a code is matched against the known regions (every region set
+on a channel or typed in any region field, plus the device default). A code
+that matches none of them is shown as `[?xxxx]`; an unscoped message has no tag.
+Sent messages show the region they were sent with. The region is stored in the
+message archive.
+
+```
+2026-11-09 06:30:12 ← [#zwolsbotje] [#zwolle] [2h✓] PE1ABC: Hello mesh!
+2026-11-09 06:31:40 → [#zwolsbotje] [#zwolle] Me: Hi!
+```
+
 ## 10. Architecture
 
 <!-- CHANGED: Architecture diagram updated — added BBS, ChannelService, PublicAPIService, MapSnapshotService; repeater statistics and configuration pollers (v1.24.5) -->
@@ -1513,6 +1568,7 @@ repository.
 5. **BLE Linux only** — BLE mode requires Linux with BlueZ and D-Bus. macOS and Windows are not supported for BLE connections because the PIN agent relies on the D-Bus system bus
 6. **BlueZ 5.66+ instability** — Recent BlueZ versions (shipped with Ubuntu 24.04, Debian Bookworm, Raspberry Pi OS Bookworm) can cause BLE connection instability, pairing failures and unexpected disconnects. USB serial is not affected and is recommended as the most reliable transport
 7. **Room Server history timestamps** — Messages replayed from Room Server history carry their **receive** time, not their original send time. A message sent days earlier is archived at the moment it arrives. Whether the `CONTACT_MSG_RECV` payload carries a usable original timestamp has not been established, so no correction is applied rather than one that guesses
+8. **Region recognition** — A received region is recognised only when its name is among the known regions (see [9.17](#917-regions-flood-scope)); other codes show as `[?xxxx]`. Regions are shown for channel messages only, not for DMs. Reading the device default region needs `meshcore` 2.3.17+ and firmware that supports it; without either, the rest of the region feature still works
 
 ## 13. Troubleshooting
 
@@ -1744,6 +1800,7 @@ meshcore-gui/
 │       ├── channel_discovery.py     # Pure helpers for merging a discovery result into cached channel names
 │       ├── channel_service.py       # Channel secrets, hashtag key derivation and QR code helpers
 │       ├── channel_backup_store.py  # Channel backup/restore store (~/.meshcore-gui/channel_backups/)
+│       ├── channel_region_store.py  # Channel default regions + known regions per device (~/.meshcore-gui/regions/)
 │       ├── channel_sort_store.py    # Drawer channel sort preference (~/.meshcore-gui/channel_sort.json)
 │       ├── contact_cleaner.py       # Bulk-delete logic for unpinned contacts
 │       ├── dedup.py                 # Message deduplication
@@ -1752,6 +1809,7 @@ meshcore-gui/
 │       ├── message_archive.py       # Persistent message and RX log archive with retention and cleanup
 │       ├── pin_store.py             # Persistent pin state storage per device (~/.meshcore-gui/pins/)
 │       ├── public_api_service.py    # Data aggregation layer for /api/v1/ (enforces privacy filtering)
+│       ├── region_service.py        # Region keys, send-region decision and transport-code matching
 │       ├── repeater_config_archive.py # Append-only JSONL archive of every nightly configuration read
 │       ├── repeater_config_poller.py # Nightly read of repeater settings over the repeater CLI
 │       ├── repeater_config_store.py # Per-device repeater configuration (~/.meshcore-gui/repeaters/)
@@ -1811,6 +1869,7 @@ This project is under active development. The most common features from the offi
 - [x] **Room Server administration** — authenticate as admin to manage Room Server settings and users directly from the GUI
 - [x] **Repeater statistics** — poll repeater nodes for their status on an interval or on demand, and archive every response (see [8.2](#82-repeater-statistics-polling) and [9.16](#916-repeaters))
 - [x] **Repeater configuration** — adjust repeater settings from the GUI; the settings are read nightly (see [8.3](#83-repeater-configuration-read))
+- [x] **Regions** — default region per channel, per-message override and region display on received messages (see [9.17](#917-regions-flood-scope))
 
 Have a feature request or want to contribute? Open an issue or submit a pull request.
 

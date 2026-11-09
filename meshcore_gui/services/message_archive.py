@@ -140,6 +140,7 @@ class MessageArchive:
                 "path_hashes": msg.path_hashes,
                 "path_names": msg.path_names,
                 "message_hash": msg.message_hash,
+                "region": msg.region,
             }
             
             self._message_buffer.append(msg_dict)

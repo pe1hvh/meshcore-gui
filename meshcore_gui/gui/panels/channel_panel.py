@@ -2,7 +2,7 @@
 Channel panel — dialog for adding, moving and managing channels.
 
 Triggered by the ``＋ Add Channel`` button or the ``↕`` move button in
-the Messages submenu.  Four modes are supported:
+the Messages submenu.  Five modes are supported:
 
 Hashtag
     Name must start with ``#``.  The channel key is derived automatically
@@ -23,9 +23,18 @@ Move / Reindex
     Select an existing channel and assign it a different slot index.
     The secret is read from the DeviceCache by the command handler; the
     user only needs to pick a source channel and a target index.
+
+Region (default)
+    Select a channel and its default region (flood scope).  Messages sent
+    on that channel use this region unless overridden per message in the
+    send row.  The setting is stored locally per device (not on the radio,
+    whose firmware has no per-channel scope).  A channel without its own
+    region is pre-selected with the device default region read from the
+    radio.  New region names can be typed directly into the select.  This
+    mode is only offered when a region store is supplied.
 """
 
-from typing import Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional
 
 from nicegui import ui
 
@@ -34,17 +43,28 @@ from meshcore_gui.services.channel_service import (
     generate_secret,
     secret_to_hex,
 )
+from meshcore_gui.services.region_service import normalize_region_name
+
+if TYPE_CHECKING:
+    from meshcore_gui.services.channel_region_store import ChannelRegionStore
 
 
 class ChannelPanel:
     """NiceGUI dialog for adding or moving a channel on the MeshCore device.
 
     Args:
-        put_command: Callable to enqueue a command dict for the BLE worker.
+        put_command:  Callable to enqueue a command dict for the BLE worker.
+        region_store: Optional per-device region store; enables the
+                      *Region (default)* mode.
     """
 
-    def __init__(self, put_command: Callable[[Dict], None]) -> None:
+    def __init__(
+        self,
+        put_command: Callable[[Dict], None],
+        region_store: Optional["ChannelRegionStore"] = None,
+    ) -> None:
         self._put_command = put_command
+        self._region_store = region_store
         self._channels: List[Dict] = []
 
         # Dialog + form widget references (populated in render())
@@ -69,6 +89,11 @@ class ChannelPanel:
         self._move_section: Optional[ui.column] = None
         self._move_select: Optional[ui.select] = None
 
+        # Region-mode widgets
+        self._region_section: Optional[ui.column] = None
+        self._region_channel_select: Optional[ui.select] = None
+        self._region_select: Optional[ui.select] = None
+
         # Transient state
         self._generated_secret: Optional[bytes] = None
 
@@ -92,13 +117,16 @@ class ChannelPanel:
                 ui.label('📡 Channel Manager').classes('font-bold text-gray-600 text-base')
 
                 # ── Mode selection ──────────────────────────────────
+                mode_options = {
+                    'hashtag': '# Hashtag channel',
+                    'private_new': '🔒 Private – New',
+                    'private_existing': '🔒 Private – Existing (join)',
+                    'move': '↕️ Move / Reindex',
+                }
+                if self._region_store is not None:
+                    mode_options['region'] = '🌐 Region (default)'
                 self._mode_radio = ui.radio(
-                    options={
-                        'hashtag': '# Hashtag channel',
-                        'private_new': '🔒 Private – New',
-                        'private_existing': '🔒 Private – Existing (join)',
-                        'move': '↕️ Move / Reindex',
-                    },
+                    options=mode_options,
                     value='hashtag',
                     on_change=self._on_mode_change,
                 ).classes('w-full')
@@ -157,6 +185,26 @@ class ChannelPanel:
                         'retrieved automatically from the cache.'
                     ).classes('text-xs text-gray-500')
 
+                # ── Region section ───────────────────────────────────
+                self._region_section = ui.column().classes('w-full gap-1')
+                with self._region_section:
+                    self._region_channel_select = ui.select(
+                        options={},
+                        label='Channel',
+                        on_change=self._on_region_channel_change,
+                    ).classes('w-full')
+                    self._region_select = ui.select(
+                        options={'': 'Device default'},
+                        value='',
+                        label='Default region',
+                        new_value_mode='add-unique',
+                    ).classes('w-full')
+                    ui.label(
+                        'Messages on this channel are sent with this region '
+                        'unless overridden in the send row. Type a name to '
+                        'add a new region. Stored locally, not on the device.'
+                    ).classes('text-xs text-gray-500')
+
                 # ── Action buttons ───────────────────────────────────
                 with ui.row().classes('gap-2 justify-end w-full'):
                     ui.button(
@@ -201,9 +249,10 @@ class ChannelPanel:
 
         Args:
             mode:          One of ``'hashtag'``, ``'private_new'``,
-                           ``'private_existing'``, or ``'move'``.
-            preselect_idx: When mode is ``'move'``, pre-select this channel
-                           index in the source selector.
+                           ``'private_existing'``, ``'move'`` or
+                           ``'region'``.
+            preselect_idx: When mode is ``'move'`` or ``'region'``,
+                           pre-select this channel index.
         """
         if self._dialog is None:
             return
@@ -250,6 +299,7 @@ class ChannelPanel:
 
         # Populate move-mode selector
         self._refresh_move_options(preselect_idx)
+        self._refresh_region_options(preselect_idx)
         self._apply_visibility(mode)
 
     def _refresh_move_options(self, preselect_idx: Optional[int] = None) -> None:
@@ -270,6 +320,53 @@ class ChannelPanel:
                 self._move_select.value = next(iter(opts))
         self._move_select.update()
 
+    def _refresh_region_options(self, preselect_idx: Optional[int] = None) -> None:
+        """Rebuild the channel and region selectors for region mode."""
+        if not self._region_channel_select or self._region_store is None:
+            return
+        opts = {
+            ch['idx']: f"[{ch['idx']}] {ch['name']}"
+            for ch in self._channels
+        }
+        self._region_channel_select.options = opts
+        if opts:
+            if preselect_idx is not None and preselect_idx in opts:
+                self._region_channel_select.value = preselect_idx
+            elif self._region_channel_select.value not in opts:
+                self._region_channel_select.value = next(iter(opts))
+        self._region_channel_select.update()
+        self._on_region_channel_change()
+
+    def _region_select_options(self) -> Dict[str, str]:
+        """Return the options for the default-region selector."""
+        device_default = self._region_store.get_device_default() if self._region_store else ''
+        label = f'Device default (#{device_default})' if device_default else 'Device default'
+        opts: Dict[str, str] = {'': label}
+        if self._region_store is not None:
+            for name in self._region_store.get_known_regions():
+                opts[name] = f'#{name}'
+        return opts
+
+    def _on_region_channel_change(self, event=None) -> None:
+        """Show the stored region of the selected channel.
+
+        A channel without its own region is pre-selected with the device
+        default region read from the radio (when one is set).
+        """
+        if not self._region_select or self._region_store is None:
+            return
+        idx = self._region_channel_select.value if self._region_channel_select else None
+        name = next((ch['name'] for ch in self._channels if ch['idx'] == idx), '')
+        current = self._region_store.get_channel_region(name) if name else ''
+        if not current:
+            current = self._region_store.get_device_default()
+        opts = self._region_select_options()
+        if current and current not in opts:
+            opts[current] = f'#{current}'
+        self._region_select.options = opts
+        self._region_select.value = current
+        self._region_select.update()
+
     def _on_mode_change(self, event=None) -> None:
         """React to mode-radio change — update field visibility."""
         mode = self._mode_radio.value if self._mode_radio else 'hashtag'
@@ -280,6 +377,8 @@ class ChannelPanel:
             self._qr_section.set_visibility(False)
         if mode == 'move':
             self._refresh_move_options()
+        if mode == 'region':
+            self._refresh_region_options()
         self._apply_visibility(mode)
 
     def _apply_visibility(self, mode: str) -> None:
@@ -288,6 +387,7 @@ class ChannelPanel:
         is_private = mode in ('private_new', 'private_existing')
         is_private_new = mode == 'private_new'
         is_move = mode == 'move'
+        is_region = mode == 'region'
 
         if self._hashtag_info:
             self._hashtag_info.set_visibility(is_hashtag)
@@ -298,9 +398,13 @@ class ChannelPanel:
         if self._copy_btn:
             self._copy_btn.set_visibility(is_private_new)
         if self._name_input:
-            self._name_input.set_visibility(not is_move)
+            self._name_input.set_visibility(not is_move and not is_region)
         if self._move_section:
             self._move_section.set_visibility(is_move)
+        if self._region_section:
+            self._region_section.set_visibility(is_region)
+        if self._idx_input:
+            self._idx_input.set_visibility(not is_region)
 
         # Adjust index label contextually
         if self._idx_input:
@@ -308,7 +412,7 @@ class ChannelPanel:
             self._idx_input.props(f'label="{label}"')
 
         # Adjust name placeholder
-        if self._name_input and not is_move:
+        if self._name_input and not is_move and not is_region:
             placeholder = 'e.g. #localmesh' if is_hashtag else 'e.g. TeamName'
             self._name_input.props(f'placeholder="{placeholder}"')
 
@@ -339,6 +443,10 @@ class ChannelPanel:
 
         if mode == 'move':
             self._submit_move()
+            return
+
+        if mode == 'region':
+            self._submit_region()
             return
 
         # ── Add modes ────────────────────────────────────────────────
@@ -440,4 +548,23 @@ class ChannelPanel:
             type='info',
             timeout=2500,
         )
+        self._close()
+
+    def _submit_region(self) -> None:
+        """Store the default region of the selected channel."""
+        if self._region_store is None or not self._region_channel_select:
+            return
+        idx = self._region_channel_select.value
+        name = next((ch['name'] for ch in self._channels if ch['idx'] == idx), '')
+        if not name:
+            ui.notify('Select a channel', type='warning', timeout=3000)
+            return
+
+        region = normalize_region_name(
+            str(self._region_select.value or '') if self._region_select else ''
+        )
+        self._region_store.set_channel_region(name, region)
+
+        shown = f'#{region}' if region else 'device default'
+        ui.notify(f"[{idx}] {name} → {shown}", type='info', timeout=2500)
         self._close()

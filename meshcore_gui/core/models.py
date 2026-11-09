@@ -47,6 +47,13 @@ class Message:
                        case :meth:`from_dict` derives it from ``timestamp_utc``.
                        Declared last so positional construction stays
                        backward-compatible.
+        region:        Region (flood scope) name without ``#``.  For a
+                       received message the region whose transport code
+                       matched, ``"?xxxx"`` for an unknown region, or empty
+                       for an unscoped packet.  For a sent message the
+                       region it was sent with.  Added in 1.25.0; empty for
+                       older archive entries.  Declared after ``date`` so
+                       positional construction stays backward-compatible.
     """
 
     time: str
@@ -62,6 +69,7 @@ class Message:
     message_hash: str = ""
     channel_name: str = ""
     date: str = ""
+    region: str = ""
 
     @staticmethod
     def from_dict(d: dict) -> "Message":
@@ -89,6 +97,7 @@ class Message:
             date=d.get("date") or Message._date_from_timestamp(
                 d.get("timestamp_utc")
             ),
+            region=d.get("region", ""),
         )
 
     # -- Timestamp helpers -----------------------------------------------
@@ -161,6 +170,7 @@ class Message:
         path_hashes: Optional[List[str]] = None,
         path_names: Optional[List[str]] = None,
         message_hash: str = "",
+        region: str = "",
     ) -> "Message":
         """Create an incoming message with auto-generated timestamp.
 
@@ -176,6 +186,7 @@ class Message:
             path_hashes:   List of 2-char hex strings per repeater.
             path_names:    Resolved display names for each path hash.
             message_hash:  Deterministic packet identifier (hex string).
+            region:        Region the packet was scoped to (see class doc).
         """
         return cls(
             time=time or cls.now_timestamp(),
@@ -190,6 +201,7 @@ class Message:
             path_hashes=path_hashes or [],
             path_names=path_names or [],
             message_hash=message_hash,
+            region=region,
         )
 
     @classmethod
@@ -199,6 +211,7 @@ class Message:
         channel: Optional[int],
         *,
         sender_pubkey: str = "",
+        region: str = "",
     ) -> "Message":
         """Create an outgoing message (sender ``'Me'``, auto-timestamp).
 
@@ -206,6 +219,7 @@ class Message:
             text:          Message body.
             channel:       Channel index, or ``None`` for a DM.
             sender_pubkey: Recipient public key (hex string).
+            region:        Region the message was sent with.
         """
         return cls(
             time=cls.now_timestamp(),
@@ -215,6 +229,7 @@ class Message:
             channel=channel,
             direction='out',
             sender_pubkey=sender_pubkey,
+            region=region,
         )
 
     # -- Display formatting ----------------------------------------------
@@ -231,7 +246,10 @@ class Message:
         local date when it is known (legacy archive entries without a
         date fall back to time only), e.g.::
 
-            2026-08-16 12:34:56 ← [Public] [2h✓] PE1ABC: Hello mesh!
+            2026-08-16 12:34:56 ← [Public] [#zwolle] [2h✓] PE1ABC: Hello mesh!
+
+        The ``[#region]`` tag appears only when the message carries a
+        region; an unknown region is shown as ``[?xxxx]``.
 
         When *show_channel* is ``False`` the ``[channel]`` / ``[DM]``
         tag is omitted (useful when the panel header already indicates
@@ -263,6 +281,14 @@ class Message:
             else:
                 ch_label = '[DM] '
 
+        if self.region:
+            if self.region.startswith('?'):
+                region_tag = f'[{self.region}] '
+            else:
+                region_tag = f'[#{self.region}] '
+        else:
+            region_tag = ''
+
         if self.direction == 'in' and self.path_len > 0:
             hop_tag = f'[{self.path_len}h{"✓" if self.path_hashes else ""}] '
         else:
@@ -273,8 +299,8 @@ class Message:
         stamp = self.display_timestamp()
 
         if self.sender:
-            return f"{stamp} {direction} {ch_label}{hop_tag}{sender_display}: {self.text}"
-        return f"{stamp} {direction} {ch_label}{hop_tag}{self.text}"
+            return f"{stamp} {direction} {ch_label}{region_tag}{hop_tag}{sender_display}: {self.text}"
+        return f"{stamp} {direction} {ch_label}{region_tag}{hop_tag}{self.text}"
 
 
 # ---------------------------------------------------------------------------

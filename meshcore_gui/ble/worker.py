@@ -63,6 +63,7 @@ from meshcore_gui.services.bot import BotConfig, MeshBot
 from meshcore_gui.services.bbs_service import BbsCommandHandler, BbsService
 from meshcore_gui.services.bbs_config_store import BbsConfigStore
 from meshcore_gui.services.bot_config_store import BotConfigStore
+from meshcore_gui.services.channel_region_store import ChannelRegionStore
 from meshcore_gui.services.cache import DeviceCache
 from meshcore_gui.services.channel_discovery import (
     ChannelDiscoveryResult,
@@ -73,6 +74,7 @@ from meshcore_gui.services.channel_discovery import (
 from meshcore_gui.services.dedup import DualDeduplicator
 from meshcore_gui.services.device_identity import write_device_identity
 from meshcore_gui.services.pin_store import PinStore
+from meshcore_gui.services.region_service import RegionService
 from meshcore_gui.services.repeater_config_archive import RepeaterConfigArchive
 from meshcore_gui.services.repeater_config_poller import RepeaterConfigPoller
 from meshcore_gui.services.repeater_config_store import RepeaterConfigStore
@@ -96,8 +98,8 @@ def create_worker(device_id: str, shared: SharedDataWriter, **kwargs):
 
     Keyword arguments are forwarded to the worker constructor
     (e.g. ``baudrate``, ``cx_dly`` for serial, ``pin_store``,
-    ``repeater_config_store``, ``repeater_stats_archive`` and
-    ``repeater_config_archive`` for all).
+    ``repeater_config_store``, ``repeater_stats_archive``,
+    ``repeater_config_archive`` and ``channel_region_store`` for all).
     """
     from meshcore_gui.config import is_ble_address
 
@@ -109,6 +111,7 @@ def create_worker(device_id: str, shared: SharedDataWriter, **kwargs):
             repeater_config_store=kwargs.get("repeater_config_store"),
             repeater_stats_archive=kwargs.get("repeater_stats_archive"),
             repeater_config_archive=kwargs.get("repeater_config_archive"),
+            channel_region_store=kwargs.get("channel_region_store"),
         )
     return SerialWorker(
         device_id,
@@ -119,6 +122,7 @@ def create_worker(device_id: str, shared: SharedDataWriter, **kwargs):
         repeater_config_store=kwargs.get("repeater_config_store"),
         repeater_stats_archive=kwargs.get("repeater_stats_archive"),
         repeater_config_archive=kwargs.get("repeater_config_archive"),
+        channel_region_store=kwargs.get("channel_region_store"),
     )
 
 
@@ -147,6 +151,7 @@ class _BaseWorker(abc.ABC):
         repeater_config_store: Optional[RepeaterConfigStore] = None,
         repeater_stats_archive: Optional[RepeaterStatsArchive] = None,
         repeater_config_archive: Optional[RepeaterConfigArchive] = None,
+        channel_region_store: Optional[ChannelRegionStore] = None,
     ) -> None:
         self.device_id = device_id
         self.shared = shared
@@ -224,6 +229,17 @@ class _BaseWorker(abc.ABC):
 
         # Dynamically discovered channels from device
         self._channels: List[Dict] = []
+
+        # Regions (flood scope) — optional; without a store messages are
+        # sent and shown exactly as before.
+        self._channel_region_store = channel_region_store
+        self._region_service: Optional[RegionService] = None
+        if channel_region_store is not None:
+            self._region_service = RegionService(
+                known_regions=channel_region_store.get_known_regions,
+                channel_region=channel_region_store.get_channel_region,
+                device_default=channel_region_store.get_device_default,
+            )
 
     # ── abstract properties / methods ─────────────────────────────
 
@@ -375,12 +391,16 @@ class _BaseWorker(abc.ABC):
             bot=self._bot,
             bbs_handler=self._bbs_handler,
             command_sink=self.shared.put_command,
+            region_service=self._region_service,
         )
         self._cmd_handler = CommandHandler(
             mc=self.mc, shared=self.shared, cache=self._cache,
             repeater_poller=self._repeater_poller,
+            region_service=self._region_service,
+            channel_name_lookup=self._channel_name_for_idx,
         )
         self._cmd_handler.set_load_data_callback(self._load_data)
+        self._cmd_handler.set_default_scope_reader(self._read_default_scope)
 
         self.mc.subscribe(EventType.CHANNEL_MSG_RECV, self._evt_handler.on_channel_msg)
         self.mc.subscribe(EventType.CONTACT_MSG_RECV, self._evt_handler.on_contact_msg)
@@ -616,6 +636,9 @@ class _BaseWorker(abc.ABC):
         # Export device identity for MeshCore Observer
         await self._export_device_identity()
 
+        # Device default region (flood scope)
+        await self._read_default_scope()
+
         # Channels
         await self._discover_channels()
 
@@ -644,6 +667,52 @@ class _BaseWorker(abc.ABC):
                 debug_print(f"{pfx}: get_contacts failed — payload={pp(r.payload)}, keeping cached contacts")
         except Exception as exc:
             debug_print(f"{pfx}: get_contacts exception: {exc}")
+
+    def _channel_name_for_idx(self, idx: int) -> str:
+        """Return the name of the discovered channel at *idx*.
+
+        Args:
+            idx: Channel index.
+
+        Returns:
+            Channel name, or an empty string when unknown.
+        """
+        for ch in self._channels:
+            if ch.get('idx') == idx:
+                return ch.get('name', '')
+        return ''
+
+    async def _read_default_scope(self) -> None:
+        """Read the device default flood scope into the region store.
+
+        Requires ``meshcore`` ≥ 2.3.17 (``get_default_flood_scope``) and
+        firmware that supports ``CMD_GET_DEFAULT_FLOOD_SCOPE``.  When either
+        is missing the stored value is left untouched and the rest of the
+        region feature keeps working.
+        """
+        if self._channel_region_store is None:
+            return
+        getter = getattr(self.mc.commands, 'get_default_flood_scope', None)
+        if getter is None:
+            debug_print("Default scope: meshcore library has no get_default_flood_scope")
+            return
+        try:
+            r = await getter()
+        except Exception as exc:
+            debug_print(f"Default scope: read exception: {exc}")
+            return
+        if r is None or r.type == EventType.ERROR:
+            debug_print(
+                f"Default scope: not supported or failed — "
+                f"{r.payload if r else 'no response'}"
+            )
+            return
+        name = (r.payload or {}).get('scope_name', '')
+        self._channel_region_store.set_device_default(name)
+        print(
+            f"{self._log_prefix}: Default region: "
+            f"{('#' + name.lstrip('#')) if name else '(none)'}"
+        )
 
     async def _get_contacts_with_timeout(self):
         """Fetch contacts with a bounded timeout to avoid hanging refresh."""
@@ -1072,6 +1141,7 @@ class SerialWorker(_BaseWorker):
         repeater_config_store: Optional[RepeaterConfigStore] = None,
         repeater_stats_archive: Optional[RepeaterStatsArchive] = None,
         repeater_config_archive: Optional[RepeaterConfigArchive] = None,
+        channel_region_store: Optional[ChannelRegionStore] = None,
     ) -> None:
         super().__init__(
             port,
@@ -1080,6 +1150,7 @@ class SerialWorker(_BaseWorker):
             repeater_config_store=repeater_config_store,
             repeater_stats_archive=repeater_stats_archive,
             repeater_config_archive=repeater_config_archive,
+            channel_region_store=channel_region_store,
         )
         self.port = port
         self.baudrate = baudrate
@@ -1230,6 +1301,7 @@ class BLEWorker(_BaseWorker):
         repeater_config_store: Optional[RepeaterConfigStore] = None,
         repeater_stats_archive: Optional[RepeaterStatsArchive] = None,
         repeater_config_archive: Optional[RepeaterConfigArchive] = None,
+        channel_region_store: Optional[ChannelRegionStore] = None,
     ) -> None:
         super().__init__(
             address,
@@ -1238,6 +1310,7 @@ class BLEWorker(_BaseWorker):
             repeater_config_store=repeater_config_store,
             repeater_stats_archive=repeater_stats_archive,
             repeater_config_archive=repeater_config_archive,
+            channel_region_store=channel_region_store,
         )
         self.address = address
 

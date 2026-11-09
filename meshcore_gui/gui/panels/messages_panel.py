@@ -1,11 +1,15 @@
 """Messages panel — filtered message display with channel selection and message input."""
 
-from typing import Callable, Dict, Iterable, List, Set
+from typing import TYPE_CHECKING, Callable, Dict, Iterable, List, Optional, Set
 
 from nicegui import ui
 
 from meshcore_gui.core.models import Message
 from meshcore_gui.gui.constants import resolve_contact_icon
+from meshcore_gui.services.region_service import normalize_region_name
+
+if TYPE_CHECKING:
+    from meshcore_gui.services.channel_region_store import ChannelRegionStore
 
 
 class MessagesPanel:
@@ -15,12 +19,25 @@ class MessagesPanel:
     :meth:`set_active_channel`.  The message input, channel selector
     and send button appear below the message list.
 
+    When a region store is supplied, a region selector follows the channel
+    selector.  It overrides the channel default region for a single
+    message and returns to *Channel default* after sending.  A region name
+    can be typed into it; a typed name is added to the known regions.
+
     Args:
-        put_command: Callable to enqueue a command dict for the worker.
+        put_command:  Callable to enqueue a command dict for the worker.
+        region_store: Optional per-device region store supplying the known
+                      regions for the per-message override.
     """
 
-    def __init__(self, put_command: Callable[[Dict], None]) -> None:
+    def __init__(
+        self,
+        put_command: Callable[[Dict], None],
+        region_store: Optional["ChannelRegionStore"] = None,
+    ) -> None:
         self._put_command = put_command
+        self._region_store = region_store
+        self._region_select = None
         self._container = None
         self._channel_filters: Dict = {}
         self._last_channels: List[Dict] = []
@@ -149,6 +166,14 @@ class MessagesPanel:
                     options={0: '[0] Public'}, value=0
                 ).classes('w-32')
 
+                if self._region_store is not None:
+                    self._region_select = ui.select(
+                        options={'': 'Channel default'}, value='',
+                        new_value_mode='add-unique',
+                        on_change=self._on_region_change,
+                    ).classes('w-32')
+                    self._region_select.tooltip('Region for this message')
+
                 ui.button(
                     'Send', on_click=self._send_message
                 ).classes('bg-blue-500 text-white')
@@ -178,8 +203,10 @@ class MessagesPanel:
         """Update the channel dropdown options.
 
         Includes an equality check to avoid sending redundant updates
-        to the NiceGUI client on every 500 ms timer tick.
+        to the NiceGUI client on every 500 ms timer tick.  The region
+        selector is refreshed on the same tick.
         """
+        self._update_region_options()
         if not self._channel_select or not channels:
             return
         opts = {ch['idx']: f"[{ch['idx']}] {ch['name']}" for ch in channels}
@@ -190,18 +217,60 @@ class MessagesPanel:
             self._channel_select.value = list(opts.keys())[0]
         self._channel_select.update()
 
+    def _update_region_options(self) -> None:
+        """Refresh the region selector from the known regions.
+
+        Skips the DOM update when the options are unchanged; a selected
+        region that disappeared falls back to *Channel default*.
+        """
+        if self._region_select is None or self._region_store is None:
+            return
+        opts = {'': 'Channel default'}
+        for name in self._region_store.get_known_regions():
+            opts[name] = f'#{name}'
+        if self._region_select.options == opts:
+            return  # unchanged — skip DOM update
+        self._region_select.options = opts
+        if self._region_select.value not in opts:
+            self._region_select.value = ''
+        self._region_select.update()
+
+    def _on_region_change(self, event=None) -> None:
+        """Normalize a typed region name and add it to the known regions.
+
+        Adding it to the store first keeps the per-tick option refresh
+        from discarding the typed value.
+        """
+        if self._region_select is None or self._region_store is None:
+            return
+        value = self._region_select.value or ''
+        name = normalize_region_name(str(value))
+        if not name:
+            return
+        if name not in self._region_store.get_known_regions():
+            self._region_store.add_known_region(name)
+        if value != name:
+            self._update_region_options()
+            self._region_select.value = name
+
     # -- Send message (moved from InputPanel) --------------------------
 
     def _send_message(self) -> None:
         text = self._msg_input.value
         channel = self._channel_select.value
         if text:
-            self._put_command({
+            cmd = {
                 'action': 'send_message',
                 'channel': channel,
                 'text': text,
-            })
+            }
+            region = self._region_select.value if self._region_select else ''
+            if region:
+                cmd['region'] = region
+            self._put_command(cmd)
             self._msg_input.value = ''
+            if self._region_select is not None and region:
+                self._region_select.value = ''
 
     # -- Message display -----------------------------------------------
 

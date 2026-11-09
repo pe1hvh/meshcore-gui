@@ -276,7 +276,6 @@ _STANDALONE_ITEMS = [
     ('\U0001f465', 'CONTACTS', 'contacts'),
     ('\U0001f5fa\ufe0f', 'MAP',      'map'),
     ('\U0001f4e1', 'DEVICE',   'device'),
-    ('\u26a1',     'ACTIONS',  'actions'),
     ('\U0001f4ca', 'RX LOG',   'rxlog'),
     ('\U0001f916', 'BOT',      'bot'),
     ('\U0001f4cb', 'BBS',      'bbs'),
@@ -299,6 +298,27 @@ _MENU_BTN_STYLE = (
 )
 
 
+class _DevicePanelGroup:
+    """Renders the Device card with the Actions card below it.
+
+    ACTIONS was merged into the DEVICE panel in 1.25.0; both panels keep
+    their own class and card, this only places them in one container.
+
+    Args:
+        device:  DevicePanel instance.
+        actions: ActionsPanel instance.
+    """
+
+    def __init__(self, device: DevicePanel, actions: ActionsPanel) -> None:
+        self._device = device
+        self._actions = actions
+
+    def render(self) -> None:
+        """Render both cards in order."""
+        self._device.render()
+        self._actions.render()
+
+
 class DashboardPage:
     """Main dashboard rendered at ``/``.
 
@@ -306,8 +326,11 @@ class DashboardPage:
         shared: SharedDataReader for data access and command dispatch.
     """
 
-    def __init__(self, shared: SharedDataReader, pin_store: PinStore, room_password_store: RoomPasswordStore, bot_config_store: BotConfigStore | None = None, device_id: str = "", repeater_config_store=None, repeater_stats_archive=None, repeater_config_archive=None) -> None:
+    def __init__(self, shared: SharedDataReader, pin_store: PinStore, room_password_store: RoomPasswordStore, bot_config_store: BotConfigStore | None = None, device_id: str = "", repeater_config_store=None, repeater_stats_archive=None, repeater_config_archive=None, channel_region_store=None) -> None:
         self._shared = shared
+        # Region store — injected from __main__ so dashboard and worker
+        # share one instance; None disables the region UI.
+        self._channel_region_store = channel_region_store
         self._pin_store = pin_store
         self._room_password_store = room_password_store
         self._device_id = device_id
@@ -398,8 +421,8 @@ class DashboardPage:
         self._device = DevicePanel()
         self._contacts = ContactsPanel(put_cmd, self._pin_store, self._shared.set_auto_add_enabled, self._on_add_room_server)
         self._map = MapPanel()
-        self._messages = MessagesPanel(put_cmd)
-        self._actions = ActionsPanel(put_cmd)
+        self._messages = MessagesPanel(put_cmd, self._channel_region_store)
+        self._actions = ActionsPanel(put_cmd, self._channel_region_store)
         self._rxlog = RxLogPanel()
         self._room_server = RoomServerPanel(put_cmd, self._room_password_store)
         self._bbs = BbsPanel(put_cmd, self._bbs_service, self._bbs_config_store)
@@ -420,7 +443,7 @@ class DashboardPage:
                 config_archive=self._repeater_config_archive,
             )
 
-        self._channel_panel = ChannelPanel(put_cmd)
+        self._channel_panel = ChannelPanel(put_cmd, self._channel_region_store)
         self._channel_panel.render()
 
         self._channel_backup_panel = ChannelBackupPanel(
@@ -620,8 +643,7 @@ class DashboardPage:
             ('messages', self._messages),
             ('contacts', self._contacts),
             ('map',      self._map),
-            ('device',   self._device),
-            ('actions',  self._actions),
+            ('device',   _DevicePanelGroup(self._device, self._actions)),
             ('rxlog',    self._rxlog),
             ('rooms',    self._room_server),
             ('bbs',      self._bbs),
@@ -873,6 +895,10 @@ class DashboardPage:
         panel = params.get('panel') or 'landing'
         channel = params.get('channel')
 
+        # ACTIONS was merged into DEVICE (1.25.0); keep old links working.
+        if panel == 'actions':
+            panel = 'device'
+
         if panel not in self._panel_containers:
             panel = 'landing'
             channel = None
@@ -953,12 +979,11 @@ class DashboardPage:
 
         if self._active_panel == 'device':
             self._device.update(data)
+            self._actions.update(data)
         elif self._active_panel == 'map':
             if force_map_center:
                 data['force_center'] = True
             self._map.update(data)
-        elif self._active_panel == 'actions':
-            self._actions.update(data)
         elif self._active_panel == 'contacts':
             self._contacts.update(data)
         elif self._active_panel == 'messages':
@@ -1073,16 +1098,13 @@ class DashboardPage:
             if self._active_panel == 'device':
                 if data['device_updated'] or is_first:
                     self._device.update(data)
+                self._actions.update(data)
 
             elif self._active_panel == 'map':
                 # Keep sending snapshots while the map panel is active.
                 # The browser runtime coalesces pending payloads, so only
                 # the newest snapshot is applied.
                 self._map.update(data)
-
-            elif self._active_panel == 'actions':
-                if data['channels_updated'] or is_first:
-                    self._actions.update(data)
 
             elif self._active_panel == 'contacts':
                 if data['contacts_updated'] or is_first:

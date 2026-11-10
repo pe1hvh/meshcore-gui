@@ -11,6 +11,136 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.25.2] - 2026-11-10 — DM protocol (ACK per part), DM length limit, faster sender lookup after advert
+
+### Fixed
+- 🐛 **`!h` / `!help` / `!bbs help` got no answer** (`ble/commands.py`,
+  `services/bbs_service.py`): the device refused the help text with
+  `ERR_CODE_TABLE_FULL`. In the MeshCore companion firmware every failed DM
+  send is reported with that code; a DM text longer than `MAX_TEXT_LEN`
+  (10 × 16 = 160 bytes, `BaseChatMesh::composeMsgPacket`) is one such case.
+  The help text was 171 bytes on one line once regions and categories were
+  configured. It is now built with one part per line, so it is split on line
+  boundaries over several DMs when needed.
+- 🐛 **DM replies (`!r`) split above the device limit** (`ble/commands.py`):
+  `_split_reply()` cut DM chunks at 180 characters. DM chunks are now cut at
+  `MAX_DM_TEXT_BYTES = 160` UTF-8 bytes; a hard cut never splits a multi-byte
+  character. Channel messages keep the existing `MAX_REPLY_LEN = 180`
+  character limit.
+- 🐛 **BBS knew a new sender only minutes after the advert** (`ble/worker.py`):
+  `!bbs` looks the sender up in the contact list of meshcore-gui, which was
+  only refreshed every `CONTACT_REFRESH_SECONDS` (300 s). The worker now
+  subscribes to `EventType.ADVERTISEMENT`; an advert from a public key that is
+  not in the contact list flags a refresh, done by the main loop at most once
+  per `CONTACT_REFRESH_MIN_INTERVAL` (15 s). Adverts of known contacts are
+  ignored. The periodic refresh stays.
+
+- 🐛 **Multi-part DM replies sent outside the DM protocol** (`ble/commands.py`,
+  `ble/worker.py`): the parts of a long reply (e.g. `!r`) were sent 0.2 s apart
+  without waiting for any `ACK`; the result of `send_msg()` was ignored and
+  "Sent DM" was logged even after an `ERROR`. Every part is now an ordinary
+  DM: the next part is sent only after the `ACK` of the previous part.
+  Without an `ACK` within the device's `suggested_timeout` × 1.2 the same part
+  is sent again with the same timestamp and the next attempt number; before
+  the third attempt the path to the contact is reset (flood). After
+  `DM_MAX_ATTEMPTS` the remaining parts of that reply are dropped and logged.
+  A device `ERROR` counts as a failed attempt. Behaviour mirrors
+  `meshcore` `send_msg_with_retry()`, but without blocking: the worker main
+  loop advances the deliveries one step per iteration
+  (`CommandHandler.process_dm_deliveries()`), confirmations come from an
+  `EventType.ACK` subscription (`CommandHandler.on_ack()`).
+  Each recipient has its own queue, so an unreachable recipient does not
+  delay replies to others; replies to the same recipient stay in order.
+
+### Changed
+- Help text (`!h`) starts with `BBS` instead of `BBS [<board name>]`: the
+  board name is the list of linked whitelist channels, which was confusing
+  in a DM-based help.
+- `README.md` §9.14: example help reply updated to the multi-line format.
+- `config.py`: new `DM_MAX_ATTEMPTS = 3` and `DM_FLOOD_AFTER = 2`.
+- `ble/worker.py`: a repeater poll is not started, and a running one is
+  cancelled, while DM parts are being delivered (same rule as for queued
+  commands).
+- `ble/commands.py`: the `CommandHandler` class docstring is moved to the top
+  of the class (it was placed after `MAX_REPLY_LEN`).
+- `config.py`: new `CONTACT_REFRESH_MIN_INTERVAL: float = 15.0`.
+- `core/protocols.py`: `SharedDataWriter` gains `get_contact_by_prefix()`
+  (already implemented by `SharedData`; additive, no breaking change).
+- `CLAUDE.md`: the pitfall "`!h` is reserved by the firmware" was wrong for a
+  DM to the companion and is replaced by the 160-byte DM text limit.
+
+### Impact
+- Help text with regions and many categories arrives as two or more DMs.
+- All DMs via `send_dm` (BBS replies and DMs typed in the GUI) now wait for
+  ACKs and are retried; a reply with several parts takes at least one
+  round trip per part.
+- If only the `ACK` is lost while the part did arrive, the recipient can get
+  that part twice (same behaviour as the MeshCore app's retry).
+- DM deliveries in progress are lost on a reconnect (the command handler is
+  recreated).
+
+### Known issues
+- In the 2026-11-10 journal no `ACK` was seen for any DM part. If ACKs do not
+  come back on a path, every part is sent three times and the reply stops
+  after the first part. Not yet verified on the node.
+
+### Rationale
+- Each part is a normal DM following the protocol (send, wait for `ACK`,
+  retry), instead of a fixed delay; the worker never waits, so channel
+  replies and GUI commands keep flowing.
+
+## [1.25.1] - 2026-11-09 — BBS fixes: retention, whitelist label, config reload, operator delete
+
+### Fixed
+- 🐛 **Retention never applied** (`ble/worker.py`): `BbsService.purge_all_expired()`
+  existed but was never called, so messages stayed past the board's
+  `retention_hours`. The worker now purges on the first main-loop iteration
+  (directly after connect) and then every `BBS_PURGE_INTERVAL` seconds.
+- 🐛 **Settings changes only effective after restart** (`services/bbs_config_store.py`):
+  the worker, the dashboard panel and the settings page each hold their own
+  `BbsConfigStore`, which only read the file at construction. A channel added
+  in the settings was unknown to the worker (`!bbs` ignored on it), and a save
+  from one instance could overwrite a newer state (e.g. a key whitelisted via
+  `!bbs`) with stale in-memory data. Every public method now re-reads the file
+  when its modification time changed; writes record the new modification time.
+  This also covers several application processes sharing `~/.meshcore-gui/bbs/`.
+- 🐛 **One button for several channels** (`gui/panels/bbs_panel.py`): the single
+  board appeared as one selector button labelled with all channel names
+  (`NOODNET-OV, nl-vr04`). The linked channels are whitelist entry points, not
+  separate boards, so they are now shown as a read-only label
+  `Whitelist: NOODNET-OV, nl-vr04`.
+- 🐛 **No way to remove a message** (`gui/panels/bbs_panel.py`,
+  `services/bbs_service.py`): each message row gets a delete icon (same style
+  as the panel's gear button) with a confirmation dialog (pattern of
+  `ContactsPanel`). New `BbsService.delete_message(msg_id)`. Deletion is
+  operator-only by construction: no `!`-command calls this method.
+- 📝 **README §9.14**: first contact is `!bbs` on the channel (the code accepts
+  exactly `!bbs` there), not `!bbs help`. Added a *Deleting messages* section.
+- 🐛 **Unclear reply for unknown senders** (`services/bbs_service.py`): `!bbs`
+  from a sender that is not in the node's contact list (no advert received)
+  replied `BBS whitelist failed: sender key unknown.` without telling what to
+  do. A channel message carries no public key, so the sender must send a flood
+  advert first. The reply now says so; README §9.14 documents the advert step.
+
+### Added
+- `config.py`: `BBS_PURGE_INTERVAL = 300.0` — seconds between BBS retention purges.
+
+### Impact
+- `!r`, `!p`, `!s`, `!h` remain DM-only, as designed since v1.14.0; typed on the
+  channel they are still ignored. Only `!bbs` is handled on the channel.
+- DM `!p` still stores messages under the board's first channel; `!r` reads
+  all board channels — unchanged.
+- No change to the message database schema or the config file format.
+
+### Rationale
+Retention and a usable panel are part of the BBS contract; without the purge a
+1-hour board kept messages indefinitely. Re-reading on modification time keeps
+the existing constructors and wiring unchanged (no breaking change) while
+fixing stale state across all instances and processes. Deletion was kept out of
+the mesh command set so that only the node operator can remove content.
+
+---
+
 ## [1.25.0] - 2026-11-09 — Regions (flood scope) for channel messages
 
 ### Added

@@ -144,6 +144,30 @@ class BbsService:
                 )
                 return msg.id
 
+    def delete_message(self, msg_id: int) -> bool:
+        """Delete a single BBS message by row id.
+
+        Only called from the GUI (``BbsPanel``).  There is deliberately
+        no mesh command (``!``-DM or channel text) that reaches this
+        method, so messages can only be removed by the operator of this
+        meshcore-gui instance.
+
+        Args:
+            msg_id: Database row id.
+
+        Returns:
+            ``True`` if a row was deleted, ``False`` if not found.
+        """
+        with self._lock:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "DELETE FROM bbs_messages WHERE id = ?", (msg_id,)
+                )
+                conn.commit()
+                deleted = cur.rowcount > 0
+        debug_print(f"BBS: delete id={msg_id} → {'deleted' if deleted else 'not found'}")
+        return deleted
+
     # ------------------------------------------------------------------
     # Read  (channels is a list to support multi-channel boards)
     # ------------------------------------------------------------------
@@ -404,7 +428,9 @@ class BbsCommandHandler:
             return None
         if not sender_key:
             debug_print("BBS: !bbs ignored on channel because sender key is empty")
-            return "BBS whitelist failed: sender key unknown."
+            # The sender is not in this node's contact list: a channel
+            # message carries no public key, only an advert does.
+            return "BBS: unknown sender. Send a flood advert first, then !bbs again."
         added = self._config_store.add_allowed_key(sender_key)
         if added:
             return "Add to BBS OK. Use !h in DM-BBS for help."
@@ -854,14 +880,30 @@ class BbsCommandHandler:
     # ------------------------------------------------------------------
 
     def _handle_help(self, board) -> str:
+        """Return the help text for *board*, one part per line.
+
+        The parts are separated by newlines so the DM sender can split a
+        help text longer than one DM (160 UTF-8 bytes, firmware
+        ``MAX_TEXT_LEN``) on line boundaries into several DMs, just like
+        a ``!r`` reply.  As one line the text was refused by the device
+        once regions and categories made it longer than that limit.
+
+        The board name (the linked whitelist channels) is not shown: the
+        BBS is used by DM, so a channel name in the help was confusing.
+
+        Args:
+            board: Board whose regions and categories are shown.
+
+        Returns:
+            Multi-line help text.
+        """
         abbr = self._abbrev_table(board.categories)
-        header = (
-            f"BBS [{board.name}] | "
-            f"!p [cat] [text] | "
-            f"!r [cat] [1-5] | "
-            f"!s [cat] [query]"
-        )
+        lines = [
+            "BBS",
+            "!p [cat] [text] | !r [cat] [1-5] | !s [cat] [query]",
+        ]
         if board.regions:
-            regs = ", ".join(board.regions)
-            return f"{header} | Regions: {regs} | {abbr}"
-        return f"{header} | {abbr}"
+            lines.append(f"Regions: {', '.join(board.regions)}")
+        if abbr:
+            lines.append(abbr)
+        return "\n".join(lines)

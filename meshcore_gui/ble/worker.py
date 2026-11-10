@@ -39,9 +39,11 @@ from meshcore import MeshCore, EventType
 
 import meshcore_gui.config as _config
 from meshcore_gui.config import (
+    BBS_PURGE_INTERVAL,
     DEFAULT_TIMEOUT,
     CHANNEL_CACHE_ENABLED,
     CHANNEL_DISCOVERY_ABORT_THRESHOLD,
+    CONTACT_REFRESH_MIN_INTERVAL,
     CONTACT_REFRESH_SECONDS,
     MAX_CHANNELS,
     MSG_POLL_INTERVAL,
@@ -185,9 +187,13 @@ class _BaseWorker(abc.ABC):
 
         # BBS handler — wired directly into EventHandler for DM routing.
         # Independent of the bot; uses a shared config store and service.
-        _bbs_config = BbsConfigStore()
-        _bbs_service = BbsService()
-        self._bbs_handler = BbsCommandHandler(service=_bbs_service, config_store=_bbs_config)
+        # The service and store are kept as attributes so the main loop
+        # can run the BBS retention purge (see ``_purge_bbs``).
+        self._bbs_config = BbsConfigStore()
+        self._bbs_service = BbsService()
+        self._bbs_handler = BbsCommandHandler(
+            service=self._bbs_service, config_store=self._bbs_config,
+        )
 
         # Repeater statistics poller — created only when both the
         # configuration store and the archive are supplied, so callers
@@ -223,6 +229,12 @@ class _BaseWorker(abc.ABC):
         # Running repeater poll, if any.  Held as a task so the main loop
         # can cancel it the moment there is traffic to send.
         self._repeater_task: Optional[asyncio.Task] = None
+
+        # Set by ``_on_advertisement`` when an advert arrives from a public
+        # key that is not in the contact list yet; the main loop then
+        # refreshes the contacts (at most once per
+        # ``CONTACT_REFRESH_MIN_INTERVAL``) and clears the flag.
+        self._contact_refresh_due: bool = False
 
         # Channel indices that still need keys from device
         self._pending_keys: Set[int] = set()
@@ -289,19 +301,29 @@ class _BaseWorker(abc.ABC):
         last_cleanup = time.time()
         last_msg_poll = time.time()
         last_repeater_poll = time.time()
+        # 0.0 → the BBS retention purge runs on the first loop iteration,
+        # so expired messages are removed directly after (re)connect.
+        last_bbs_purge = 0.0
 
         while self.running and not self._disconnected:
             # Traffic has priority over background work: a running poll
             # is cancelled before any queued command is dispatched, so a
             # bot reply never waits for a repeater that does not answer.
+            # DM parts awaiting delivery count as traffic too.
             if self._repeater_task is not None:
                 if self._repeater_task.done():
                     self._repeater_task = None
-                elif self.shared.has_pending_commands():
+                elif (
+                    self.shared.has_pending_commands()
+                    or self._cmd_handler.has_dm_deliveries()
+                ):
                     await self._cancel_repeater_poll()
 
             try:
                 await self._cmd_handler.process_all()
+                # Sends the next DM part per recipient once the previous
+                # part is confirmed (ACK) or timed out; never waits itself.
+                await self._cmd_handler.process_dm_deliveries()
             except Exception as e:
                 error_str = str(e).lower()
                 if any(kw in error_str for kw in self._disconnect_keywords):
@@ -312,7 +334,13 @@ class _BaseWorker(abc.ABC):
 
             now = time.time()
 
-            if now - last_contact_refresh > CONTACT_REFRESH_SECONDS:
+            # Periodic refresh, or an earlier one when an advert from an
+            # unknown public key arrived (see ``_on_advertisement``).
+            if now - last_contact_refresh > CONTACT_REFRESH_SECONDS or (
+                self._contact_refresh_due
+                and now - last_contact_refresh >= CONTACT_REFRESH_MIN_INTERVAL
+            ):
+                self._contact_refresh_due = False
                 await self._refresh_contacts()
                 last_contact_refresh = now
 
@@ -323,6 +351,10 @@ class _BaseWorker(abc.ABC):
             if now - last_cleanup > CLEANUP_INTERVAL:
                 await self._cleanup_old_data()
                 last_cleanup = now
+
+            if now - last_bbs_purge > BBS_PURGE_INTERVAL:
+                self._purge_bbs()
+                last_bbs_purge = now
 
             if MSG_POLL_INTERVAL > 0 and now - last_msg_poll > MSG_POLL_INTERVAL:
                 await self._poll_pending_messages()
@@ -338,6 +370,7 @@ class _BaseWorker(abc.ABC):
                 )
                 and self._repeater_task is None
                 and not self.shared.has_pending_commands()
+                and not self._cmd_handler.has_dm_deliveries()
                 and now - last_repeater_poll > REPEATER_POLL_CHECK_INTERVAL
             ):
                 self._repeater_task = asyncio.create_task(self._poll_repeaters())
@@ -406,6 +439,39 @@ class _BaseWorker(abc.ABC):
         self.mc.subscribe(EventType.CONTACT_MSG_RECV, self._evt_handler.on_contact_msg)
         self.mc.subscribe(EventType.RX_LOG_DATA, self._evt_handler.on_rx_log)
         self.mc.subscribe(EventType.LOGIN_SUCCESS, self._on_login_success)
+        self.mc.subscribe(EventType.ADVERTISEMENT, self._on_advertisement)
+        self.mc.subscribe(EventType.ACK, self._cmd_handler.on_ack)
+
+    # ── ADVERTISEMENT handler (contact refresh) ───────────────────
+
+    def _on_advertisement(self, event) -> None:
+        """Flag a contact refresh when an advert comes from an unknown key.
+
+        The device pushes ``ADVERTISEMENT`` (push code 0x80) for every
+        received advert of a contact it stores, including a contact it
+        has just auto-added.  The payload holds only ``public_key``.  A
+        key that is not in ``SharedData`` means a new node: the BBS can
+        only whitelist it (``!bbs`` lookup by name) after the contact
+        list has been refreshed.  Adverts of known contacts are ignored.
+
+        Nothing blocking happens here; the main loop performs the
+        refresh, at most once per ``CONTACT_REFRESH_MIN_INTERVAL``.
+
+        Args:
+            event: MeshCore event whose payload contains ``public_key``
+                (64 hex characters).
+        """
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        pubkey = payload.get('public_key', '')
+        if not pubkey:
+            return
+        if self.shared.get_contact_by_prefix(pubkey) is not None:
+            return
+        if not self._contact_refresh_due:
+            debug_print(
+                f"Advert from unknown key {pubkey[:12]} — contact refresh due"
+            )
+        self._contact_refresh_due = True
 
     # ── LOGIN_SUCCESS handler (Room Server) ───────────────────────
 
@@ -1094,6 +1160,19 @@ class _BaseWorker(abc.ABC):
             )
         except Exception as exc:  # noqa: BLE001 — cleanup must not break the loop
             debug_print(f"Repeater poll cancellation error: {exc}")
+
+    def _purge_bbs(self) -> None:
+        """Delete BBS messages older than each board's retention period.
+
+        Runs on the first main-loop iteration and then every
+        ``BBS_PURGE_INTERVAL`` seconds.  Retention is configured per
+        board (``retention_hours``) on the BBS settings page.  Errors are
+        logged and never break the main loop.
+        """
+        try:
+            self._bbs_service.purge_all_expired(self._bbs_config.get_boards())
+        except Exception as exc:  # noqa: BLE001 — purge must not break the loop
+            debug_print(f"BBS purge failed: {exc}")
 
     async def _cleanup_old_data(self) -> None:
         try:

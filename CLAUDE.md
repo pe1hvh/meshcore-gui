@@ -171,8 +171,18 @@ root-level bestanden mee). Verifieer voor oplevering. User uploads bevatten
   NiceGUI. Gebruik inline CSS of `style=`.
 - **`v-show` verbergt met `display:none`** en breekt Leaflet-init.
   Gebruik conditional rendering.
-- **`!h` is gereserveerd door MeshCore-firmware** en bereikt nooit een
-  applicatie-handler. Gebruik alternatieven (`!i`, `!info`).
+- **DM-tekst maximaal 160 bytes.** De companion-firmware weigert een
+  langere DM-tekst (`MAX_TEXT_LEN`, UTF-8 bytes) met `ERR_CODE_TABLE_FULL`;
+  die code betekent elke mislukte verzending, niet alleen een volle wachtrij.
+  Antwoorden via `send_dm` worden daarom per regel gesplitst op
+  `MAX_DM_TEXT_BYTES`. (De eerdere valkuil "`!h` is gereserveerd door de
+  firmware" klopte niet: `!h` per DM bereikt de handler wel.)
+- **Een DM in delen volgt het DM-protocol.** Elk deel is een gewone DM;
+  het volgende deel gaat pas na de `ACK` van het vorige (retry en flood
+  zoals `send_msg_with_retry`). Nooit delen met een vaste pauze achter
+  elkaar versturen, en nooit in de worker blokkerend op een `ACK` wachten:
+  `CommandHandler.process_dm_deliveries()` zet per main-loop-iteratie één
+  stap, per ontvanger een eigen rij.
 - **Channel-key brute-force.** Decoder en firmware berekenen verschillende
   channel-identifiers voor dezelfde secret; loop door alle bekende keys
   in plaats van op hash te matchen.

@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.25.0"
+VERSION: str = "1.25.2"
 
 
 # ==============================================================================
@@ -396,6 +396,24 @@ RECONNECT_BASE_DELAY: float = 5.0
 # only present in cache are kept so offline nodes are preserved).
 CONTACT_REFRESH_SECONDS: float = 300.0  # 5 minutes
 
+# Minimum interval in seconds between two contact refreshes triggered by
+# an advert (EventType.ADVERTISEMENT) of a public key that is not yet in
+# the contact list.  An unknown key means a new node was auto-added on the
+# device; refreshing makes it known to the BBS (!bbs) within seconds
+# instead of waiting for the periodic CONTACT_REFRESH_SECONDS refresh.
+CONTACT_REFRESH_MIN_INTERVAL: float = 15.0
+
+# Direct messages (send_dm) follow the MeshCore DM protocol: a reply that
+# is split into several DMs sends the next part only after the ACK of the
+# previous part.  Without an ACK within the device's suggested timeout
+# (x 1.2) the same part is sent again, at most DM_MAX_ATTEMPTS times in
+# total; before attempt number DM_FLOOD_AFTER + 1 the path to the contact
+# is reset so the part goes out as flood.  Values mirror the defaults of
+# meshcore.commands.send_msg_with_retry().  When a part is still not
+# confirmed, the remaining parts of that reply are dropped.
+DM_MAX_ATTEMPTS: int = 3
+DM_FLOOD_AFTER: int = 2
+
 # Interval in seconds between safety-net polls of the device message queue.
 #
 # The meshcore library fetches messages only in response to a
@@ -572,3 +590,8 @@ CHANNEL_SORT_MODE_DEFAULT: str = "index"
 # BBS channel configuration is managed at runtime via BbsConfigStore.
 # Settings are persisted to ~/.meshcore-gui/bbs/bbs_config.json
 # and edited through the BBS Settings panel in the GUI.
+
+# Seconds between BBS retention purges in the worker main loop.  The
+# first purge runs directly after connect; each board's own
+# ``retention_hours`` decides which messages are expired.
+BBS_PURGE_INTERVAL: float = 300.0

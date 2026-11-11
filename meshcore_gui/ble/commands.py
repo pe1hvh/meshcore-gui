@@ -16,12 +16,21 @@ flood packet — including DMs sent later.
 """
 
 import asyncio
-from typing import Callable, Dict, List, Optional
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Callable, Deque, Dict, List, Optional, Set
 
 from meshcore import MeshCore, EventType
 from meshcore.packets import CommandType
 
-from meshcore_gui.config import BOT_DEVICE_NAME, DEVICE_NAME, debug_print
+from meshcore_gui.config import (
+    BOT_DEVICE_NAME,
+    DEVICE_NAME,
+    DM_FLOOD_AFTER,
+    DM_MAX_ATTEMPTS,
+    debug_print,
+)
 from meshcore_gui.core.models import Message
 from meshcore_gui.core.protocols import SharedDataWriter
 from meshcore_gui.services.cache import DeviceCache
@@ -32,9 +41,38 @@ from meshcore_gui.services.region_service import (
 )
 
 
-class CommandHandler:
-    MAX_REPLY_LEN: int = 180
+@dataclass
+class _DmDelivery:
+    """One DM reply being delivered part by part to one recipient.
 
+    Attributes:
+        pubkey:       Recipient key as given in the ``send_dm`` command
+                      (full key or prefix, hex).
+        contact_name: Label used in log lines.
+        chunks:       Parts of the reply, each within ``MAX_DM_TEXT_BYTES``.
+        index:        Index of the part currently being delivered.
+        attempt:      Number of send attempts already made for that part.
+        timestamp:    Sender timestamp of that part (Unix seconds); kept
+                      for every retry so the receiver sees the same message.
+        acks:         Expected ACK codes (8 hex characters) of all attempts
+                      of that part; an ACK of any attempt confirms it.
+        waiting:      True while a sent part awaits its ACK.
+        deadline:     ``time.monotonic()`` value after which the waiting
+                      part counts as not confirmed.
+    """
+
+    pubkey: str
+    contact_name: str
+    chunks: List[str]
+    index: int = 0
+    attempt: int = 0
+    timestamp: int = 0
+    acks: Set[str] = field(default_factory=set)
+    waiting: bool = False
+    deadline: float = 0.0
+
+
+class CommandHandler:
     """Dispatches and executes commands sent from the GUI.
 
     Args:
@@ -48,6 +86,17 @@ class CommandHandler:
                          as before (device default scope).
         channel_name_lookup: Returns the channel name for a channel index;
                          needed to find the channel default region.
+    """
+
+    MAX_REPLY_LEN: int = 180
+    """Chunk limit in characters for channel messages (``send_message``)."""
+
+    MAX_DM_TEXT_BYTES: int = 160
+    """Chunk limit in UTF-8 bytes for direct messages (``send_dm``).
+
+    Equals ``MAX_TEXT_LEN`` (10 x 16 bytes) of the MeshCore firmware: a
+    longer DM text is refused by the device with ``ERR_CODE_TABLE_FULL``
+    (``BaseChatMesh::composeMsgPacket`` returns no packet).
     """
 
     def __init__(
@@ -66,6 +115,11 @@ class CommandHandler:
         self._region_service = region_service
         self._channel_name_lookup = channel_name_lookup
         self._default_scope_reader = None
+
+        # DM replies in delivery, one queue per recipient (key = pubkey in
+        # lower case).  Only the head of each queue is active; see
+        # ``process_dm_deliveries``.
+        self._dm_queues: Dict[str, Deque[_DmDelivery]] = {}
 
         # Handler registry — add new commands here (OCP)
         self._handlers: Dict[str, object] = {
@@ -107,25 +161,71 @@ class CommandHandler:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _split_reply(self, text: str) -> List[str]:
-        """Split long replies into transport-safe chunks on line boundaries."""
+    def _split_reply(
+        self, text: str, max_bytes: Optional[int] = None,
+    ) -> List[str]:
+        """Split long replies into transport-safe chunks on line boundaries.
+
+        Lines are joined with ``\\n`` as long as the chunk fits; a single
+        line that does not fit on its own is cut hard.
+
+        Args:
+            text:      Reply text, possibly multi-line.
+            max_bytes: Chunk limit in UTF-8 bytes.  ``None`` keeps the
+                       character limit ``MAX_REPLY_LEN``.  With a byte
+                       limit a hard cut never splits a multi-byte
+                       character.
+
+        Returns:
+            List of chunks in send order; empty for empty *text*.
+        """
         if not text:
             return []
+
+        def fits(part: str) -> bool:
+            """Return True when *part* is within the active limit.
+
+            Args:
+                part: Candidate chunk text.
+
+            Returns:
+                True if *part* fits in one chunk.
+            """
+            if max_bytes is None:
+                return len(part) <= self.MAX_REPLY_LEN
+            return len(part.encode("utf-8")) <= max_bytes
+
+        def head(part: str) -> str:
+            """Return the longest leading piece of *part* that fits.
+
+            Args:
+                part: Line that does not fit as a whole.
+
+            Returns:
+                Leading piece of *part*; at least one character, so the
+                caller always makes progress.
+            """
+            if max_bytes is None:
+                return part[:self.MAX_REPLY_LEN]
+            cut = part.encode("utf-8")[:max_bytes].decode("utf-8", "ignore")
+            return cut or part[:1]
+
         lines = str(text).splitlines() or [str(text)]
         chunks: List[str] = []
         current = ""
         for line in lines:
             line = line.rstrip()
             candidate = line if not current else f"{current}\n{line}"
-            if len(candidate) <= self.MAX_REPLY_LEN:
+            if fits(candidate):
                 current = candidate
                 continue
             if current:
                 chunks.append(current)
                 current = ""
-            while len(line) > self.MAX_REPLY_LEN:
-                chunks.append(line[:self.MAX_REPLY_LEN])
-                line = line[self.MAX_REPLY_LEN:]
+            while not fits(line):
+                piece = head(line)
+                chunks.append(piece)
+                line = line[len(piece):]
             current = line
         if current:
             chunks.append(current)
@@ -273,17 +373,180 @@ class CommandHandler:
             )
 
     async def _cmd_send_dm(self, cmd: Dict) -> None:
+        """Queue a DM for delivery according to the MeshCore DM protocol.
+
+        The text is split into parts of at most ``MAX_DM_TEXT_BYTES``.
+        Nothing is sent here: ``process_dm_deliveries`` (called by the
+        worker main loop) sends one part at a time and the next part only
+        after the ACK of the previous one.
+
+        Args:
+            cmd: Command dict with ``pubkey``, ``text`` and optional
+                 ``contact_name``.
+        """
         pubkey = cmd.get('pubkey', '')
         text = cmd.get('text', '')
         contact_name = cmd.get('contact_name', pubkey[:8])
         if text and pubkey:
-            chunks = self._split_reply(text)
-            for idx, chunk in enumerate(chunks):
-                await self._mc.commands.send_msg(pubkey, chunk)
-                if idx + 1 < len(chunks):
-                    await asyncio.sleep(0.2)
+            chunks = self._split_reply(text, max_bytes=self.MAX_DM_TEXT_BYTES)
+            queue = self._dm_queues.setdefault(pubkey.lower(), deque())
+            queue.append(_DmDelivery(
+                pubkey=pubkey, contact_name=contact_name, chunks=chunks,
+            ))
             self._shared.add_message(Message.outgoing(text, None, sender_pubkey=pubkey))
-            debug_print(f"Sent DM to {contact_name}: {text[:30]}")
+            debug_print(
+                f"DM to {contact_name} queued ({len(chunks)} part(s)): {text[:30]}"
+            )
+
+    # ------------------------------------------------------------------
+    # DM delivery (ACK-driven, one queue per recipient)
+    # ------------------------------------------------------------------
+
+    def has_dm_deliveries(self) -> bool:
+        """Return True while any DM reply is still being delivered.
+
+        Returns:
+            True if at least one recipient queue is not empty.
+        """
+        return any(self._dm_queues.values())
+
+    def on_ack(self, event) -> None:
+        """Confirm the DM part whose expected ACK code matches *event*.
+
+        Subscribed to ``EventType.ACK`` by the worker.  Only marks the
+        part as confirmed; the next part is sent by
+        ``process_dm_deliveries``.
+
+        Args:
+            event: MeshCore event whose payload holds ``code`` (8 hex
+                characters).
+        """
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        code = str(payload.get('code', '')).lower()
+        if not code:
+            return
+        for queue in self._dm_queues.values():
+            if not queue:
+                continue
+            delivery = queue[0]
+            if delivery.waiting and code in delivery.acks:
+                debug_print(
+                    f"DM to {delivery.contact_name} part "
+                    f"{delivery.index + 1}/{len(delivery.chunks)} confirmed"
+                )
+                delivery.waiting = False
+                delivery.index += 1
+                delivery.attempt = 0
+                delivery.acks.clear()
+                return
+
+    async def process_dm_deliveries(self) -> None:
+        """Advance every recipient queue by at most one step.
+
+        Called once per worker main-loop iteration; never waits for an
+        ACK itself, so other commands keep flowing.  Per queue head:
+
+        - part confirmed or not yet sent: send the next part, or finish
+          the reply when all parts are confirmed;
+        - waiting and deadline passed: send the same part again (same
+          timestamp, next attempt number), resetting the path to flood
+          before attempt ``DM_FLOOD_AFTER + 1``; after
+          ``DM_MAX_ATTEMPTS`` the rest of the reply is dropped.
+        """
+        now = time.monotonic()
+        for key in list(self._dm_queues):
+            queue = self._dm_queues[key]
+            if not queue:
+                del self._dm_queues[key]
+                continue
+            delivery = queue[0]
+            if delivery.waiting:
+                if now < delivery.deadline:
+                    continue
+                delivery.waiting = False
+                delivery.attempt += 1
+                debug_print(
+                    f"DM to {delivery.contact_name} part "
+                    f"{delivery.index + 1}/{len(delivery.chunks)}: no ACK"
+                )
+            if delivery.index >= len(delivery.chunks):
+                debug_print(
+                    f"DM to {delivery.contact_name} delivered "
+                    f"({len(delivery.chunks)} part(s))"
+                )
+                queue.popleft()
+                continue
+            if delivery.attempt >= DM_MAX_ATTEMPTS:
+                debug_print(
+                    f"DM to {delivery.contact_name} failed at part "
+                    f"{delivery.index + 1}/{len(delivery.chunks)} after "
+                    f"{delivery.attempt} attempt(s); remaining parts dropped"
+                )
+                queue.popleft()
+                continue
+            await self._send_dm_part(delivery)
+
+    async def _send_dm_part(self, delivery: _DmDelivery) -> None:
+        """Send the current part of *delivery* once and start waiting.
+
+        Args:
+            delivery: Queue head whose part ``index`` is sent with attempt
+                number ``attempt``.
+        """
+        if delivery.attempt == 0:
+            delivery.timestamp = int(time.time())
+        elif delivery.attempt == DM_FLOOD_AFTER:
+            await self._reset_dm_path(delivery)
+        chunk = delivery.chunks[delivery.index]
+        result = await self._mc.commands.send_msg(
+            delivery.pubkey, chunk,
+            timestamp=delivery.timestamp, attempt=delivery.attempt,
+        )
+        label = (
+            f"DM to {delivery.contact_name} part "
+            f"{delivery.index + 1}/{len(delivery.chunks)} "
+            f"attempt {delivery.attempt + 1}"
+        )
+        if result is None or result.type == EventType.ERROR:
+            # Counts as a failed attempt; retried on the next iteration.
+            delivery.attempt += 1
+            debug_print(
+                f"{label} refused by device: "
+                f"{result.payload if result else 'no response'}"
+            )
+            return
+        expected = result.payload.get('expected_ack', b'')
+        if isinstance(expected, (bytes, bytearray)):
+            expected = expected.hex()
+        timeout_ms = result.payload.get('suggested_timeout', 0) or 0
+        delivery.acks.add(str(expected).lower())
+        delivery.waiting = True
+        delivery.deadline = time.monotonic() + timeout_ms / 1000 * 1.2
+        debug_print(f"{label} sent, ACK {expected}, timeout {timeout_ms} ms")
+
+    async def _reset_dm_path(self, delivery: _DmDelivery) -> None:
+        """Reset the device path to the recipient so the next part floods.
+
+        ``reset_path`` needs the full 32-byte key; the BBS passes only a
+        prefix, so the full key is taken from the contact list.
+
+        Args:
+            delivery: Delivery whose recipient path is reset.
+        """
+        full_key = delivery.pubkey
+        if len(full_key) < 64:
+            contact = self._shared.get_contact_by_prefix(delivery.pubkey) or {}
+            full_key = str(contact.get('public_key', '') or '')
+        if len(full_key) < 64:
+            debug_print(
+                f"DM to {delivery.contact_name}: full key unknown, path not reset"
+            )
+            return
+        result = await self._mc.commands.reset_path(full_key)
+        if result is None or result.type == EventType.ERROR:
+            debug_print(f"DM to {delivery.contact_name}: reset_path failed")
+        else:
+            debug_print(f"DM to {delivery.contact_name}: path reset to flood")
 
     async def _cmd_send_advert(self, cmd: Dict) -> None:
         await self._mc.commands.send_advert(flood=True)

@@ -33,10 +33,15 @@ def _slug(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 class BbsPanel:
-    """BBS panel: board selector, category buttons, message list and post form.
+    """BBS panel: whitelist info, category buttons, message list and post form.
 
     Settings are on a separate page (/bbs-settings), reachable via the
     gear icon in the panel header.
+
+    The linked channels are shown as a read-only ``Whitelist:`` label:
+    they are the channels on which senders register with ``!bbs``; all
+    of them feed one board.  Messages can be deleted only here, via the
+    delete icon on each message row — there is no mesh delete command.
 
     Args:
         put_command:  Callable to enqueue a command dict for the worker.
@@ -141,7 +146,12 @@ class BbsPanel:
     # ------------------------------------------------------------------
 
     def _rebuild_board_buttons(self) -> None:
-        """Rebuild board selector buttons from current config."""
+        """Rebuild the whitelist info label from the current config.
+
+        One node has one board; its channels are whitelist entry points,
+        not separate boards.  They are therefore shown as a read-only
+        label instead of a (single, misleading) selector button.
+        """
         if not self._board_btn_row:
             return
         self._board_btn_row.clear()
@@ -154,11 +164,9 @@ class BbsPanel:
                 )
                 return
             for board in boards:
-                btn = ui.button(
-                    board.name,
-                    on_click=lambda b=board: self._select_board(b),
-                ).props('flat no-caps').classes('text-xs domca-menu-btn')
-                self._board_buttons[board.id] = btn
+                ui.label(f'Whitelist: {board.name}').classes(
+                    'text-xs text-gray-400'
+                ).tooltip('Channels on which senders register with !bbs')
 
         ids = [b.id for b in boards]
         if boards and (self._active_board is None or self._active_board.id not in ids):
@@ -279,12 +287,55 @@ class BbsPanel:
         region_label = f' [{msg.region}]' if msg.region else ''
         header = f'{ts}  {msg.sender}  [{msg.category}]{region_label}'
         with ui.column().classes('w-full min-w-0 gap-0 py-1 border-b border-gray-200'):
-            ui.label(header).classes('text-xs text-gray-500').style(
-                'word-break: break-all; overflow-wrap: break-word'
-            )
+            with ui.row().classes('w-full items-center justify-between no-wrap'):
+                ui.label(header).classes('text-xs text-gray-500').style(
+                    'word-break: break-all; overflow-wrap: break-word'
+                )
+                ui.button(
+                    icon='delete',
+                    on_click=lambda m=msg, h=header: self._open_delete_dialog(m, h),
+                ).props('flat round dense').tooltip('Delete message')
             ui.label(msg.text).classes('text-sm').style(
                 'word-break: break-word; overflow-wrap: break-word'
             )
+
+    # ------------------------------------------------------------------
+    # Delete (GUI only — no mesh command reaches BbsService.delete_message)
+    # ------------------------------------------------------------------
+
+    def _open_delete_dialog(self, msg: BbsMessage, header: str) -> None:
+        """Ask for confirmation and delete *msg* from the BBS.
+
+        Args:
+            msg:    Message to delete (must carry its database ``id``).
+            header: Display header of the message row, shown in the dialog.
+        """
+        if msg.id is None:
+            ui.notify('Message has no id; cannot delete.', type='warning')
+            return
+
+        with ui.dialog() as dialog, ui.card().classes('w-96'):
+            ui.label('Delete BBS message?').classes('font-bold text-lg')
+            ui.label(header).classes('text-xs text-gray-500')
+            ui.label(msg.text[:60]).classes('text-sm')
+
+            with ui.row().classes('w-full justify-end gap-2 mt-4'):
+                ui.button('Cancel', on_click=dialog.close).props('flat')
+
+                def confirm_delete() -> None:
+                    dialog.close()
+                    if self._service.delete_message(msg.id):
+                        debug_print(f'BBS panel: deleted message id={msg.id}')
+                        ui.notify('Message deleted.', type='positive')
+                    else:
+                        ui.notify('Message no longer exists.', type='warning')
+                    self._refresh_messages()
+
+                ui.button('Delete', on_click=confirm_delete).classes(
+                    'bg-blue-500 text-white'
+                )
+
+        dialog.open()
 
     # ------------------------------------------------------------------
     # Post

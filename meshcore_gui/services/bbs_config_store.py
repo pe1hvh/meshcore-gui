@@ -33,9 +33,22 @@ Every public method therefore re-reads the file first when its
 modification time differs from the last load or save, so a change made
 by one instance is seen by all others without a restart and a write
 never overwrites a newer state with stale in-memory data.
+
+Retention per category (v1.26.0)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Each board keeps a retention period in days per category
+(``category_retention_days``) plus a fallback for categories without an
+entry and for messages whose category is no longer configured
+(``default_retention_days``).  ``0`` means *keep forever*.  Older config
+files only have ``retention_hours``; they are read as a default
+retention of ``ceil(retention_hours / 24)`` days.  ``retention_hours``
+is still written (see :func:`legacy_retention_hours`) so that an older
+meshcore-gui version reading the same file never deletes a message that
+this version keeps.
 """
 
 import json
+import math
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,13 +73,114 @@ DEFAULT_CATEGORIES: List[str] = ["STATUS", "ALGEMEEN"]
 DEFAULT_REGIONS: List[str] = []
 DEFAULT_RETENTION_HOURS: int = 48
 
+DEFAULT_RETENTION_DAYS: int = 90
+"""Default retention in days for a new board and for categories without
+an own entry (v1.26.0).  ``0`` would mean *keep forever*."""
+
+KEEP_FOREVER_HOURS: int = 100 * 365 * 24
+"""``retention_hours`` written for older versions when a board keeps
+messages forever: 876 000 hours (100 years).  Older versions treat
+``retention_hours`` literally, so ``0`` there would delete everything."""
+
+
+# ---------------------------------------------------------------------------
+# Retention helpers (v1.26.0)
+# ---------------------------------------------------------------------------
+
+def clean_retention_days(value: object, fallback: int) -> int:
+    """Return *value* as a valid retention in days.
+
+    Args:
+        value:    Raw value from the config file or the settings page
+                  (``int``, numeric ``str`` or anything else).
+        fallback: Value returned when ``int(value)`` fails or gives a
+                  negative number.  A float is truncated (``2.7`` → ``2``),
+                  not rejected.
+
+    Returns:
+        Retention in days, ``>= 0``; ``0`` means *keep forever*.
+    """
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return days if days >= 0 else fallback
+
+
+def hours_to_days(hours: object) -> int:
+    """Convert a legacy ``retention_hours`` value to whole days.
+
+    Rounds up, so a board never loses messages earlier than before:
+    48 h → 2 days, 2160 h → 90 days, 1 h → 1 day.  Values for which
+    ``int()`` fails or gives ``<= 0`` give :data:`DEFAULT_RETENTION_DAYS`;
+    a float is truncated first.
+
+    Args:
+        hours: Legacy ``retention_hours`` value.
+
+    Returns:
+        Retention in days, ``>= 1``.
+    """
+    try:
+        value = int(hours)
+    except (TypeError, ValueError):
+        return DEFAULT_RETENTION_DAYS
+    if value <= 0:
+        return DEFAULT_RETENTION_DAYS
+    return math.ceil(value / 24)
+
+
+def category_days_for(
+    categories: List[str], days: Dict[str, int], fallback: int,
+) -> Dict[str, int]:
+    """Return the retention entries of *days* that belong to *categories*.
+
+    Args:
+        categories: Configured category names (any case).
+        days:       Retention in days per category name (any case).
+        fallback:   Value for entries that are not a whole number ``>= 0``.
+
+    Returns:
+        Mapping upper-case category name → days, only for names in
+        *categories*.
+    """
+    configured = {c.upper() for c in categories}
+    return {
+        str(cat).upper(): clean_retention_days(value, fallback)
+        for cat, value in days.items()
+        if str(cat).upper() in configured
+    }
+
+
+def legacy_retention_hours(
+    default_days: int, category_days: Dict[str, int],
+) -> int:
+    """Return the ``retention_hours`` to write for older versions.
+
+    Older versions purge every category with this single value, so it
+    is the *longest* retention of the board: ``KEEP_FOREVER_HOURS`` if
+    any period (default or category) is ``0``, otherwise the largest
+    period in days × 24.
+
+    Args:
+        default_days:  Board default retention in days.
+        category_days: Retention in days per category.
+
+    Returns:
+        Retention in hours, ``>= 24`` (or ``KEEP_FOREVER_HOURS``).
+    """
+    periods = [default_days, *category_days.values()]
+    if any(days == 0 for days in periods):
+        return KEEP_FOREVER_HOURS
+    return max(periods) * 24
+
 
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
 
 @dataclass
-class BbsBoard:
+class BbsBoard:  # pylint: disable=too-many-instance-attributes  # one field per JSON key
     """A BBS board grouping one or more MeshCore channels.
 
     Attributes:
@@ -75,8 +189,20 @@ class BbsBoard:
         channels:        List of MeshCore channel indices assigned to this board.
         categories:      Valid category tags for this board.
         regions:         Optional region tags; empty = no region filtering.
-        retention_hours: Message retention period in hours.
+        retention_hours: Legacy single retention in hours (before v1.26.0).
+                         Used only to derive ``default_retention_days``
+                         when that key is absent from the file; not used
+                         by the purge and not written back as is
+                         (``to_dict`` writes :func:`legacy_retention_hours`
+                         instead).
         allowed_keys:    Sender public key whitelist for DM-BBS access.
+        default_retention_days:  Retention in days for categories without
+                                 an entry in ``category_retention_days``
+                                 and for unconfigured categories;
+                                 ``0`` = keep forever (v1.26.0).
+        category_retention_days: Retention in days per category name
+                                 (upper case); ``0`` = keep forever
+                                 (v1.26.0).
     """
 
     id: str
@@ -86,30 +212,98 @@ class BbsBoard:
     regions: List[str] = field(default_factory=list)
     retention_hours: int = DEFAULT_RETENTION_HOURS
     allowed_keys: List[str] = field(default_factory=list)
+    default_retention_days: int = DEFAULT_RETENTION_DAYS
+    category_retention_days: Dict[str, int] = field(default_factory=dict)
+
+    def retention_days_for(self, category: str) -> int:
+        """Return the retention in days that applies to *category*.
+
+        Args:
+            category: Category name; matched case-insensitively.
+
+        Returns:
+            Days from ``category_retention_days`` when the category is
+            configured and has an entry, otherwise
+            ``default_retention_days``.  ``0`` means *keep forever*.
+        """
+        key = (category or "").upper()
+        if key in (c.upper() for c in self.categories):
+            for name, days in self.category_retention_days.items():
+                if name.upper() == key:
+                    return days
+        return self.default_retention_days
 
     def to_dict(self) -> Dict:
-        """Serialise to a JSON-compatible dict."""
+        """Serialise to a JSON-compatible dict.
+
+        ``retention_hours`` is written as :func:`legacy_retention_hours`
+        of the day fields, not as the stored attribute, so older
+        versions sharing the file never purge more than this version.
+
+        Returns:
+            Dict with all board fields, ready for ``json.dumps``.
+        """
         return {
             "id": self.id,
             "name": self.name,
             "channels": list(self.channels),
             "categories": list(self.categories),
             "regions": list(self.regions),
-            "retention_hours": self.retention_hours,
+            "retention_hours": legacy_retention_hours(
+                self.default_retention_days, self.category_retention_days,
+            ),
             "allowed_keys": list(self.allowed_keys),
+            "default_retention_days": self.default_retention_days,
+            "category_retention_days": dict(self.category_retention_days),
         }
 
     @staticmethod
     def from_dict(d: Dict) -> "BbsBoard":
-        """Deserialise from a config dict."""
+        """Deserialise from a config dict.
+
+        A dict without ``default_retention_days`` (config written before
+        v1.26.0) is migrated: the default becomes
+        :func:`hours_to_days` of ``retention_hours``.  An invalid or
+        negative ``default_retention_days`` becomes
+        :data:`DEFAULT_RETENTION_DAYS`; an invalid or negative category
+        entry becomes the board's default.  Category keys are stored
+        upper case.
+
+        Args:
+            d: Board dict as stored in ``bbs_config.json``.
+
+        Returns:
+            New ``BbsBoard`` instance.
+
+        Raises:
+            ValueError: ``retention_hours`` is a string ``int()`` cannot
+                convert (unchanged behaviour since before v1.26.0).
+            TypeError: ``retention_hours`` is of a type ``int()`` does not
+                accept, e.g. ``None`` or a list.
+            AttributeError: ``category_retention_days`` is present but not
+                a dict.
+        """
+        retention_hours = d.get("retention_hours", DEFAULT_RETENTION_HOURS)
+        if "default_retention_days" in d:
+            default_days = clean_retention_days(
+                d["default_retention_days"], DEFAULT_RETENTION_DAYS,
+            )
+        else:
+            default_days = hours_to_days(retention_hours)
+        category_days = {
+            str(name).upper(): clean_retention_days(days, default_days)
+            for name, days in (d.get("category_retention_days") or {}).items()
+        }
         return BbsBoard(
             id=d.get("id", ""),
             name=d.get("name", ""),
             channels=list(d.get("channels", [])),
             categories=list(d.get("categories", DEFAULT_CATEGORIES)),
             regions=list(d.get("regions", [])),
-            retention_hours=int(d.get("retention_hours", DEFAULT_RETENTION_HOURS)),
+            retention_hours=int(retention_hours),
             allowed_keys=list(d.get("allowed_keys", [])),
+            default_retention_days=default_days,
+            category_retention_days=category_days,
         )
 
 
@@ -198,6 +392,9 @@ class BbsConfigStore:
                 regions=list(ch.get("regions", [])),
                 retention_hours=int(ch.get("retention_hours", DEFAULT_RETENTION_HOURS)),
                 allowed_keys=list(ch.get("allowed_keys", [])),
+                default_retention_days=hours_to_days(
+                    ch.get("retention_hours", DEFAULT_RETENTION_HOURS)
+                ),
             ))
         return boards
 
@@ -378,7 +575,9 @@ class BbsConfigStore:
                 return BbsBoard.from_dict(self._boards[0].to_dict())
         return None
 
-    def configure_board(
+    # Public API since v1.14.0; v1.26.0 only appends optional arguments,
+    # so the argument count cannot be reduced without breaking callers.
+    def configure_board(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         channel_indices: List[int],
         channel_names: Dict[int, str],
@@ -386,6 +585,8 @@ class BbsConfigStore:
         retention_hours: int = DEFAULT_RETENTION_HOURS,
         regions: Optional[List[str]] = None,
         allowed_keys: Optional[List[str]] = None,
+        default_retention_days: Optional[int] = None,
+        category_retention_days: Optional[Dict[str, int]] = None,
     ) -> None:
         """Save the board configuration.
 
@@ -400,9 +601,25 @@ class BbsConfigStore:
             channel_indices: MeshCore channel indices to assign.
             channel_names:   Mapping ``idx → display name`` for labelling.
             categories:      Category tag list.
-            retention_hours: Message retention period in hours.
+            retention_hours: Legacy retention in hours; only used to
+                             derive ``default_retention_days`` when that
+                             argument is ``None``.
             regions:         Optional region tags.
             allowed_keys:    Manual sender key whitelist seed.
+            default_retention_days:  Retention in days for categories
+                                     without an entry; ``0`` = keep
+                                     forever.  ``None`` →
+                                     :func:`hours_to_days` of
+                                     *retention_hours*; invalid or
+                                     negative → ``DEFAULT_RETENTION_DAYS``
+                                     (v1.26.0).
+            category_retention_days: Retention in days per category;
+                                     ``0`` = keep forever.  Only
+                                     entries for names in *categories*
+                                     are kept; keys are stored upper
+                                     case; invalid or negative entries
+                                     get the default days.  ``None`` =
+                                     no own entries (v1.26.0).
         """
         name = ", ".join(
             channel_names.get(i, f"Ch {i}") for i in sorted(channel_indices)
@@ -414,6 +631,11 @@ class BbsConfigStore:
             existing.allowed_keys if existing else []
         )
 
+        default_days = (
+            hours_to_days(retention_hours) if default_retention_days is None
+            else clean_retention_days(default_retention_days, DEFAULT_RETENTION_DAYS)
+        )
+
         board = BbsBoard(
             id="bbs_board",
             name=name,
@@ -422,6 +644,10 @@ class BbsConfigStore:
             regions=list(regions) if regions else [],
             retention_hours=retention_hours,
             allowed_keys=merged_keys,
+            default_retention_days=default_days,
+            category_retention_days=category_days_for(
+                categories, category_retention_days or {}, default_days,
+            ),
         )
         with self._lock:
             self._reload_if_changed_unlocked()

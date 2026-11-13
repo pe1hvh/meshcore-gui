@@ -22,19 +22,91 @@ Storage
 ~~~~~~~
 ``~/.meshcore-gui/bbs/bbs_messages.db``
 ``~/.meshcore-gui/bbs/bbs_config.json``  (via BbsConfigStore)
+
+Tables in ``bbs_messages.db``:
+
+1. ``bbs_messages``: the messages (unchanged since v1.14.0).
+2. ``bbs_meta`` (v1.26.0): key/value pairs; ``epoch`` identifies this
+   database instance for the ``!x`` sync.
+3. ``bbs_deleted`` (v1.26.0): one row per message removed by the
+   operator (``delete_message``), so a syncing client can remove it too.
+   Rows are never purged.  Messages removed by the retention purge are
+   not recorded: a client applies the same retention itself.
+
+Sync protocol ``!x`` (v1.26.0)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Request (DM; same whitelist check as the other DM commands, so any
+sender when ``allowed_keys`` is empty): ``!x [since_id] [since_del]``.
+Both arguments are optional whole numbers from ``0`` to :data:`SYNC_MAX_ID`
+written with ASCII digits (default ``0``):
+``since_id`` is the highest message id the client has, ``since_del``
+the highest deletion sequence number it has processed.  Reply lines, each
+at most :data:`SYNC_LINE_MAX_BYTES` UTF-8 bytes:
+
+    X1|<epoch>|<n>|<more>|<del_seq>|<n_del>|<lines>
+    R|*:<days>,<abbr>:<days>,...
+    <id>|<unix_ts>|<abbr>|<region>|<sender>|<text>
+    +<id>|<continuation>
+    -<id>,<id>,...
+
+- ``X1``: header, protocol version 1.  ``n`` = records in this reply,
+  ``more`` = ``1`` when records with a higher id remain, ``del_seq`` =
+  highest deletion sequence number on the server, ``n_del`` = number of
+  ids in the ``-`` lines of this reply, ``lines`` = number of lines after
+  the header.  The DM sender may spread a reply over several DMs; a
+  client knows the reply is complete when it has ``lines`` lines.
+- ``R``: retention in days per category abbreviation (as in ``!h``),
+  ``*`` = categories not listed in the ``R`` lines (no longer
+  configured); ``0`` = keep forever.  More ``R``
+  lines follow when one line would exceed the byte limit.
+- record: ascending id (= order of arrival), at most
+  ``BbsCommandHandler.SYNC_LIMIT`` per reply.  ``abbr`` is the upper-case
+  full category name when the category is no longer configured.  ``|``
+  in sender and region is replaced by ``/``; sender, region and text are
+  split into lines (``str.splitlines``) and joined with single spaces, so
+  a trailing line break disappears.  ``text`` may contain ``|``: a client
+  splits a record only on its first five ``|``, after appending its ``+``
+  lines.
+- ``+``: continuation of the record with that id, appended without
+  separator, when the record is longer than the byte limit.  Whitespace
+  at a cut starts the next ``+`` line, so the DM sender's per-line strip
+  does not lose it (exceptions: see ``_record_lines``).
+- ``-``: ids of all messages deleted by the operator since
+  ``since_del``, on any channel and without a limit per reply
+  (``SYNC_LIMIT`` does not apply), so this part can take several DMs.
 """
+
+# The service and its command handler share this module since v1.14.0;
+# the v1.26.0 sync documentation pushed it past 1000 lines.  Splitting
+# the module is a refactor outside the scope of the sync feature.
+# pylint: disable=too-many-lines
 
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from meshcore_gui.config import debug_print
+from meshcore_gui.services.bbs_config_store import BbsBoard
 
 BBS_DIR = Path.home() / ".meshcore-gui" / "bbs"
 BBS_DB_PATH = BBS_DIR / "bbs_messages.db"
+
+SYNC_LINE_MAX_BYTES: int = 160
+"""Maximum UTF-8 bytes of one ``!x`` reply line: the firmware DM text
+limit ``MAX_TEXT_LEN`` (same value as ``CommandHandler.MAX_DM_TEXT_BYTES``).
+The DM sender splits replies on line boundaries, so a line within this
+limit is never cut."""
+
+SYNC_MAX_ID: int = 2 ** 63 - 1
+"""Largest ``!x`` argument accepted: the SQLite INTEGER maximum.  Larger
+values would raise ``OverflowError`` in the query."""
+
+SYNC_HEADER_TAG: str = "X1"
+"""First field of the ``!x`` reply header: sync protocol version 1."""
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +157,12 @@ class BbsService:
         self._init_db()
 
     def _init_db(self) -> None:
-        """Create the database directory and schema if not present."""
+        """Create the database directory and schema if not present.
+
+        Also stores the sync ``epoch`` (Unix seconds of the first start
+        with v1.26.0 or later) in ``bbs_meta`` when it is not there yet;
+        an existing epoch is never changed.
+        """
         BBS_DIR.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
@@ -107,6 +184,19 @@ class BbsService:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_timestamp ON bbs_messages(timestamp)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS bbs_meta ("
+                "key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO bbs_meta (key, value) VALUES ('epoch', ?)",
+                (str(int(time.time())),),
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS bbs_deleted ("
+                "seq INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "msg_id INTEGER NOT NULL, deleted_at TEXT NOT NULL)"
             )
             conn.commit()
         debug_print(f"BBS: database ready at {self._db_path}")
@@ -152,6 +242,9 @@ class BbsService:
         method, so messages can only be removed by the operator of this
         meshcore-gui instance.
 
+        A deleted message is recorded in ``bbs_deleted`` in the same
+        transaction (v1.26.0), so ``!x`` can report it to clients.
+
         Args:
             msg_id: Database row id.
 
@@ -163,8 +256,13 @@ class BbsService:
                 cur = conn.execute(
                     "DELETE FROM bbs_messages WHERE id = ?", (msg_id,)
                 )
-                conn.commit()
                 deleted = cur.rowcount > 0
+                if deleted:
+                    conn.execute(
+                        "INSERT INTO bbs_deleted (msg_id, deleted_at) VALUES (?, ?)",
+                        (msg_id, datetime.now(timezone.utc).isoformat()),
+                    )
+                conn.commit()
         debug_print(f"BBS: delete id={msg_id} → {'deleted' if deleted else 'not found'}")
         return deleted
 
@@ -291,6 +389,80 @@ class BbsService:
                 rows = conn.execute(query, params).fetchall()
         return [self._row_to_msg(r) for r in rows]
 
+    # ------------------------------------------------------------------
+    # Sync (v1.26.0)
+    # ------------------------------------------------------------------
+
+    def get_epoch(self) -> str:
+        """Return the sync epoch of this database.
+
+        Returns:
+            Unix seconds as decimal string, stored in ``bbs_meta`` on the
+            first start with v1.26.0 or later.  A new database (file
+            removed) gets a new epoch, which tells clients that ids
+            start again.  The resolution is one second, so a database
+            re-created within the same second gets the same epoch.
+            ``"0"`` when no epoch row exists.
+        """
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT value FROM bbs_meta WHERE key = 'epoch'"
+                ).fetchone()
+        return row[0] if row else "0"
+
+    def get_messages_since(
+        self, channels: List[int], since_id: int, limit: int,
+    ) -> List[BbsMessage]:
+        """Return messages with an id above *since_id*, lowest id first.
+
+        Args:
+            channels: MeshCore channel indices of the board.
+            since_id: Highest id the client already has; ``0`` = all.
+            limit:    Maximum number of messages returned.
+
+        Returns:
+            Up to *limit* ``BbsMessage`` objects ordered by id ascending;
+            empty when *channels* is empty.
+        """
+        if not channels:
+            return []
+        placeholders = ",".join("?" * len(channels))
+        query = (
+            f"SELECT id, channel, region, category, sender, sender_key, text, timestamp "
+            f"FROM bbs_messages WHERE channel IN ({placeholders}) AND id > ? "
+            f"ORDER BY id ASC LIMIT ?"
+        )
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    query, list(channels) + [since_id, limit]
+                ).fetchall()
+        return [self._row_to_msg(r) for r in rows]
+
+    def get_deletions_since(self, since_seq: int) -> Tuple[List[int], int]:
+        """Return operator deletions after *since_seq*.
+
+        Args:
+            since_seq: Highest deletion sequence number the client has
+                       processed; ``0`` = all.
+
+        Returns:
+            Tuple of (message ids deleted after *since_seq*, in deletion
+            order; highest sequence number in ``bbs_deleted``, ``0`` when
+            nothing was ever deleted).
+        """
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT msg_id FROM bbs_deleted WHERE seq > ? ORDER BY seq",
+                    (since_seq,),
+                ).fetchall()
+                last = conn.execute(
+                    "SELECT COALESCE(MAX(seq), 0) FROM bbs_deleted"
+                ).fetchone()[0]
+        return [r[0] for r in rows], int(last)
+
     @staticmethod
     def _row_to_msg(row: tuple) -> BbsMessage:
         return BbsMessage(
@@ -332,14 +504,72 @@ class BbsService:
                     )
                 return deleted
 
+    def purge_board(self, board: BbsBoard) -> int:
+        """Delete expired messages of *board*, per category (v1.26.0).
+
+        Each configured category uses ``board.retention_days_for()``;
+        messages in a category that is no longer configured use
+        ``board.default_retention_days``.  A period of ``0`` days keeps
+        the messages forever.  Category names are compared
+        case-insensitively; ages are measured from the stored
+        ``timestamp``.  Deletions are not recorded in ``bbs_deleted``.
+
+        Args:
+            board: ``BbsBoard`` whose channels and retention apply.
+
+        Returns:
+            Number of rows deleted.
+        """
+        if not board.channels:
+            return 0
+        now = datetime.now(timezone.utc)
+        ch_marks = ",".join("?" * len(board.channels))
+        configured = [c.upper() for c in board.categories]
+        deleted = 0
+        with self._lock:
+            with self._connect() as conn:
+                for cat in configured:
+                    days = board.retention_days_for(cat)
+                    if days == 0:
+                        continue
+                    cutoff = (now - timedelta(days=days)).isoformat()
+                    deleted += conn.execute(
+                        f"DELETE FROM bbs_messages WHERE channel IN ({ch_marks}) "
+                        f"AND UPPER(category) = ? AND timestamp < ?",
+                        list(board.channels) + [cat, cutoff],
+                    ).rowcount
+                if board.default_retention_days > 0:
+                    cutoff = (
+                        now - timedelta(days=board.default_retention_days)
+                    ).isoformat()
+                    query = (
+                        f"DELETE FROM bbs_messages WHERE channel IN ({ch_marks}) "
+                        f"AND timestamp < ?"
+                    )
+                    params = list(board.channels) + [cutoff]
+                    if configured:
+                        cat_marks = ",".join("?" * len(configured))
+                        query += f" AND UPPER(category) NOT IN ({cat_marks})"
+                        params += configured
+                    deleted += conn.execute(query, params).rowcount
+                conn.commit()
+        if deleted:
+            debug_print(
+                f"BBS: purged {deleted} expired messages from ch={board.channels}"
+            )
+        return deleted
+
     def purge_all_expired(self, boards) -> None:
         """Run retention cleanup for all boards.
+
+        Since v1.26.0 retention is per category (:meth:`purge_board`);
+        :meth:`purge_expired` is kept for callers with a single period.
 
         Args:
             boards: Iterable of ``BbsBoard`` instances.
         """
         for board in boards:
-            self.purge_expired(board.channels, board.retention_hours)
+            self.purge_board(board)
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +602,10 @@ class BbsCommandHandler:
         !bbs read [region] [category]
         !bbs help
 
+    Machine syntax (v1.26.0), see the module docstring::
+
+        !x [since_id] [since_del]     — sync: messages, retention, deletions
+
     Category abbreviations are computed automatically as the shortest unique
     prefix per category within the configured list.  ``!r`` and ``!bbs help``
     always include the abbreviation table in the reply.
@@ -382,6 +616,9 @@ class BbsCommandHandler:
     """
 
     READ_LIMIT: int = 5
+
+    SYNC_LIMIT: int = 10
+    """Maximum number of message records in one ``!x`` reply (v1.26.0)."""
 
     def __init__(self, service: BbsService, config_store) -> None:
         self._service = service
@@ -510,6 +747,10 @@ class BbsCommandHandler:
         if first in ("!help", "!h"):
             return self._handle_help(board)
 
+        if first == "!x":
+            rest = text[len(first):].strip()
+            return self._handle_sync(board, rest)
+
         if first == "!bbs":
             parts = text.split(None, 2)
             sub = parts[1].lower() if len(parts) > 1 else ""
@@ -634,7 +875,7 @@ class BbsCommandHandler:
         )
         self._service.post_message(msg)
         region_label = f" [{region}]" if region else ""
-        return f"Posted [{category}]{region_label}: {text[:60]}"
+        return f"Posted #{msg.id} [{category}]{region_label}: {text[:60]}"
 
     def _handle_read_short(self, board, args):
         """Handle ``!r [region] [abbrev] [from-to]``.
@@ -804,7 +1045,7 @@ class BbsCommandHandler:
         )
         self._service.post_message(msg)
         region_label = f" [{region}]" if region else ""
-        return f"Posted [{category}]{region_label}: {text[:60]}"
+        return f"Posted #{msg.id} [{category}]{region_label}: {text[:60]}"
 
     def _handle_read(self, board, args):
         """Handle ``!bbs read [region] [category] [from-to]``."""
@@ -840,6 +1081,188 @@ class BbsCommandHandler:
             offset=offset, limit=limit,
             include_abbrevs=False,
         )
+
+    # ------------------------------------------------------------------
+    # Sync — !x (v1.26.0)
+    # ------------------------------------------------------------------
+
+    def _handle_sync(self, board: BbsBoard, args: str) -> str:
+        """Handle ``!x [since_id] [since_del]`` and build the sync reply.
+
+        The reply format is described in the module docstring.  Every
+        line is at most :data:`SYNC_LINE_MAX_BYTES` UTF-8 bytes.
+
+        Args:
+            board: Active ``BbsBoard``.
+            args:  Text after ``!x``: up to two whole numbers from ``0``
+                   to :data:`SYNC_MAX_ID`, ASCII digits only.
+
+        Returns:
+            Multi-line sync reply, or the usage line
+            ``Usage: !x <since_id> <since_del>`` when *args* is not valid.
+        """
+        tokens = args.split() if args else []
+        if len(tokens) > 2 or not all(
+            t.isascii() and t.isdigit() and int(t) <= SYNC_MAX_ID for t in tokens
+        ):
+            return "Usage: !x <since_id> <since_del>"
+        since_id = int(tokens[0]) if tokens else 0
+        since_del = int(tokens[1]) if len(tokens) > 1 else 0
+
+        batch = self._service.get_messages_since(
+            board.channels, since_id, self.SYNC_LIMIT + 1,
+        )
+        more = len(batch) > self.SYNC_LIMIT
+        records = batch[:self.SYNC_LIMIT]
+        deleted_ids, del_seq = self._service.get_deletions_since(since_del)
+
+        abbrev_of = {
+            cat: abbr
+            for abbr, cat in self.compute_abbreviations(board.categories).items()
+        }
+        retention = [f"*:{board.default_retention_days}"] + [
+            f"{abbrev_of.get(cat.upper(), cat.upper())}:{board.retention_days_for(cat)}"
+            for cat in board.categories
+        ]
+        lines = self._pack_items("R|", retention)
+        for msg in records:
+            lines += self._record_lines(msg, abbrev_of)
+        lines += self._pack_items("-", [str(i) for i in deleted_ids])
+        return "\n".join([
+            f"{SYNC_HEADER_TAG}|{self._service.get_epoch()}|{len(records)}|"
+            f"{int(more)}|{del_seq}|{len(deleted_ids)}|{len(lines)}"
+        ] + lines)
+
+    @staticmethod
+    def _sync_field(value: str) -> str:
+        """Make *value* safe for a non-final ``|``-separated sync field.
+
+        Args:
+            value: Raw sender or region text.
+
+        Returns:
+            *value* with ``|`` replaced by ``/`` and line breaks by spaces.
+        """
+        return " ".join((value or "").replace("|", "/").splitlines())
+
+    @staticmethod
+    def _cut_utf8(text: str, max_bytes: int) -> Tuple[str, str]:
+        """Split *text* after at most *max_bytes* UTF-8 bytes.
+
+        Never splits a multi-byte character.
+
+        Args:
+            text:      Text to split.
+            max_bytes: Byte budget for the first part, ``>= 4``.
+
+        Returns:
+            Tuple of (leading part within *max_bytes*, rest).  The
+            leading part is at least one character when *text* is not
+            empty.
+        """
+        head = text.encode("utf-8")[:max_bytes].decode("utf-8", "ignore")
+        if not head and text:
+            head = text[:1]
+        return head, text[len(head):]
+
+    def _record_lines(self, msg: BbsMessage, abbrev_of: Dict[str, str]) -> List[str]:
+        """Return the sync lines for one message record.
+
+        Args:
+            msg:       Message to encode.
+            abbrev_of: Mapping upper-case category name → abbreviation,
+                       for the configured categories.
+
+        Returns:
+            One record line, followed by ``+<id>|`` continuation lines
+            when the record exceeds :data:`SYNC_LINE_MAX_BYTES`.
+            ``CommandHandler._split_reply`` strips trailing whitespace per
+            line, so whitespace at a cut is moved to the start of the next
+            line, unless that part would then be only whitespace.
+
+        Warning:
+            A continuation part of only whitespace keeps it and loses it to
+            the DM sender: an inner run of whitespace loses
+            ``160 - len("+<id>|")`` bytes (157 for ids 1-9) per full part.
+            Trailing whitespace of the text is lost entirely.
+        """
+        cat = abbrev_of.get(msg.category.upper(), msg.category.upper())
+        text = " ".join((msg.text or "").splitlines())
+        line = (
+            f"{msg.id}|{self._to_unix(msg.timestamp)}|{cat}|"
+            f"{self._sync_field(msg.region)}|{self._sync_field(msg.sender)}|{text}"
+        )
+        first, rest = self._keep_whitespace(*self._cut_utf8(line, SYNC_LINE_MAX_BYTES))
+        lines = [first]
+        prefix = f"+{msg.id}|"
+        budget = SYNC_LINE_MAX_BYTES - len(prefix.encode("utf-8"))
+        while rest:
+            part, rest = self._keep_whitespace(*self._cut_utf8(rest, budget))
+            lines.append(prefix + part)
+        return lines
+
+    @staticmethod
+    def _keep_whitespace(head: str, rest: str) -> Tuple[str, str]:
+        """Move whitespace at the end of *head* to the start of *rest*.
+
+        Args:
+            head: Leading part of a cut, as returned by :meth:`_cut_utf8`.
+            rest: Remainder of the cut.
+
+        Returns:
+            Tuple of (*head* without trailing whitespace, that whitespace
+            followed by *rest*).  Unchanged when *rest* is empty (nothing
+            follows) or when *head* is only whitespace (the cut must make
+            progress).
+        """
+        kept = head.rstrip()
+        if not rest or not kept:
+            return head, rest
+        return kept, head[len(kept):] + rest
+
+    @staticmethod
+    def _pack_items(prefix: str, items: List[str]) -> List[str]:
+        """Pack comma-separated *items* into lines of at most the byte limit.
+
+        Args:
+            prefix: Line prefix, e.g. ``"R|"`` or ``"-"``.
+            items:  Short ASCII items (each far below the limit).
+
+        Returns:
+            Lines ``<prefix><item>,<item>,...``, each at most
+            :data:`SYNC_LINE_MAX_BYTES` bytes; empty when *items* is empty.
+        """
+        lines: List[str] = []
+        current = ""
+        for item in items:
+            candidate = f"{current},{item}" if current else item
+            if current and len((prefix + candidate).encode("utf-8")) > SYNC_LINE_MAX_BYTES:
+                lines.append(prefix + current)
+                candidate = item
+            current = candidate
+        if current:
+            lines.append(prefix + current)
+        return lines
+
+    @staticmethod
+    def _to_unix(timestamp: str) -> int:
+        """Convert a stored ISO-8601 timestamp to Unix seconds.
+
+        Args:
+            timestamp: ISO-8601 string; without UTC offset it is taken
+                       as UTC.
+
+        Returns:
+            Whole seconds since 1970-01-01T00:00:00Z; ``0`` when the
+            string cannot be parsed.
+        """
+        try:
+            moment = datetime.fromisoformat(timestamp)
+        except (TypeError, ValueError):
+            return 0
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return int(moment.timestamp())
 
     # ------------------------------------------------------------------
     # Shared message formatter

@@ -11,6 +11,102 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.26.1] - 2026-11-13 — BBS post stored once per DM, not once per attempt
+
+### Fixed
+- 🐛 **A BBS post was stored several times** (`ble/events.py`,
+  `services/dedup.py`): a sender that gets no `ACK` for a DM sends the same
+  DM again with a higher attempt number. Every attempt is a different packet,
+  so the firmware delivers each one as its own `CONTACT_MSG_RECV`, and each
+  reached `BbsCommandHandler.handle_dm()`: one `!p` gave one stored message
+  and one `Posted #<id>` reply per attempt. The BBS route now keeps the key
+  `pubkey_prefix` + `sender_timestamp` + text (the same for every attempt of
+  one DM) in `DualDeduplicator` and passes a repeat to the BBS handler only
+  once. A new command with the same text has a new `sender_timestamp` and is
+  handled as usual. A DM without `sender_timestamp` is handled as before. The
+  DM itself still goes to `add_message()`, which has its own deduplication.
+
+### Added
+- `DualDeduplicator.mark_dm()` / `is_dm_seen()`: third store for DM keys
+  (at most `max_size` keys, 200 in the worker; kept across reconnects because
+  the worker owns the deduplicator).
+- `tests/test_bbs_dm_dedup.py`: regression tests for the above.
+
+### Changed
+- 📝 `CLAUDE.md`, known pitfalls: deduplication is three independent systems.
+- 📝 `CLAUDE.md`, delivery: tests run before every delivery and the full
+  `tests/` folder is part of every result ZIP.
+
+### Restored
+- `tests/test_bbs_sync.py` (35 tests, as listed under 1.26.0) was missing
+  from the repository: the version with the header line count and the
+  whitespace-at-cut tests is back.
+
+---
+
+## [1.26.0] - 2026-11-11 — BBS retention per category, `!x` sync for apps
+
+### Added
+- 🆕 **Retention per category** (`services/bbs_config_store.py`,
+  `services/bbs_service.py`, `gui/panels/bbs_panel.py`): the BBS settings
+  page has one *Retain* field per category, in days, plus *Other
+  categories* for messages in a category that is no longer listed (also the
+  start value for a new category). `0` keeps messages forever, e.g. for an
+  address list. New board fields `default_retention_days` (default 90) and
+  `category_retention_days`; new `BbsService.purge_board()`, used by
+  `purge_all_expired()`.
+- 🆕 **`!x [since_id] [since_del]` — sync command for apps**
+  (`services/bbs_service.py`): compact reply with a header
+  `X1|<epoch>|<n>|<more>|<del_seq>|<n_del>|<lines>`, retention lines `R|...`, one
+  line per message `<id>|<unix_ts>|<abbr>|<region>|<sender>|<text>`
+  (ascending id, at most 10 per reply, `+<id>|` continuation lines) and `-` lines with
+  ids deleted by the operator. Every line is at most 160 bytes, so the DM
+  sender never cuts inside a line. `lines` (number of lines after the
+  header) tells an app when a reply spread over several DMs is complete;
+  `+` lines carry no count of their own. Whitespace at the cut of a long
+  record starts the next `+` line, so the DM sender's per-line strip does
+  not lose it. Same whitelist as the other DM commands.
+- 🆕 **Tables `bbs_meta` and `bbs_deleted`** in `bbs_messages.db`: the sync
+  epoch (set once, on the first start with this version) and one row per
+  message deleted by the operator. `bbs_messages` is unchanged.
+- 🆕 `tests/test_bbs_sync.py`: 35 tests for migration, purge per category,
+  deletions, epoch, the `!x` / `!p` replies, the `lines` count and cuts at
+  whitespace through the real DM splitter.
+
+### Changed
+- 🔄 **`!p` / `!bbs post` reply** includes the new message id:
+  `Posted #<id> [<CAT>]: ...` (was `Posted [<CAT>]: ...`).
+- 🔄 **`BbsService.delete_message()`** records each deletion in
+  `bbs_deleted` in the same transaction.
+- 🔄 **`BbsConfigStore.configure_board()`** accepts the optional keyword
+  arguments `default_retention_days` and `category_retention_days`;
+  existing calls with `retention_hours` keep working.
+- 🔄 **Config migration**: a board without `default_retention_days` (written
+  before 1.26.0) gets `ceil(retention_hours / 24)` days as default; no own
+  category entries. `retention_hours` is still written, as the longest period
+  of the board in hours (876 000 h = 100 years when any period is `0`), so an
+  older version sharing the same file never deletes more than this version.
+- 📝 README §9.14: settings, sync syntax, deletions, storage tables.
+
+### Known issues
+- Messages removed by the retention purge are not recorded in
+  `bbs_deleted`; a syncing client must apply the `R` retention itself.
+- An older meshcore-gui version (multi-instance on one host) still uses the
+  single `retention_hours` for all categories: it keeps everything as long as
+  the longest period of the board.
+- Line breaks inside a message text are sent as spaces in `!x` records.
+- Whitespace at the end of a message text is lost in `!x` records, and so
+  is, in a run of whitespace longer than one `+` line, 160 minus the
+  `+<id>|` prefix bytes per full line (157 for ids 1–9): the DM sender
+  strips trailing whitespace per line.
+
+### Impact
+- No change to `!r`, `!s`, `!h`, `!bbs`, the DM sender or the message table.
+- Clients that parse the `!p` confirmation text see the added `#<id>`.
+
+---
+
+
 ## [1.25.2] - 2026-11-10 — DM protocol (ACK per part), DM length limit, faster sender lookup after advert
 
 ### Fixed

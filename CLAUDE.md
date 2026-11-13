@@ -9,7 +9,7 @@ zie `docs/`.
 
 Richt-document voor wie aan deze codebase werkt: developers die overnemen
 of uitbreiden, en AI-assistenten (Claude) in vervolgsessies. Bevat de
-bindende regels, conventies en valkuilen die het gedrag bij **elke**
+bindende regels, conventies en aandachtspunten die het gedrag bij **elke**
 taak sturen. Beschrijft **niet** hoe het systeem technisch werkt —
 zie `MeshCore_GUI_Design.docx` en de feature-docs. Beschrijft **niet**
 hoe je installeert — zie `README.md` (§5 en §7) / `MULTI_INSTANCE.md`.
@@ -163,7 +163,16 @@ uit input). Behoud directory-structuur exact (root `meshcore_gui/`, alle
 root-level bestanden mee). Verifieer voor oplevering. User uploads bevatten
 `input`, AI-resultaten `result`. Maximaal 1 ZIP per chat.
 
-## Bekende valkuilen
+Tests staan in `tests/` (pytest, `python3 -m pytest -q -p no:cacheprovider`
+vanuit de repo-root) en draaien vóór elke oplevering. De result-ZIP wordt
+1-op-1 in de repo gekopieerd en daarna weggegooid: neem daarom de volledige
+map `tests/` altijd mee, ook als er geen test is gewijzigd. Ontbreekt
+`tests/` in de input, vraag er dan om vóór je begint.
+
+## Let op bij wijzigingen
+
+Plekken in de code waar een wijziging makkelijk misgaat, met de reden en
+hoe het wel moet. Elk punt komt uit een fout die al eens is gemaakt.
 
 - **NiceGUI middleware-stack is bevroren** voordat routes registreren.
   Gebruik `JSONResponse`-headers voor CORS, geen `add_middleware()`.
@@ -175,7 +184,7 @@ root-level bestanden mee). Verifieer voor oplevering. User uploads bevatten
   langere DM-tekst (`MAX_TEXT_LEN`, UTF-8 bytes) met `ERR_CODE_TABLE_FULL`;
   die code betekent elke mislukte verzending, niet alleen een volle wachtrij.
   Antwoorden via `send_dm` worden daarom per regel gesplitst op
-  `MAX_DM_TEXT_BYTES`. (De eerdere valkuil "`!h` is gereserveerd door de
+  `MAX_DM_TEXT_BYTES`. (Het eerdere punt "`!h` is gereserveerd door de
   firmware" klopte niet: `!h` per DM bereikt de handler wel.)
 - **Een DM in delen volgt het DM-protocol.** Elk deel is een gewone DM;
   het volgende deel gaat pas na de `ACK` van het vorige (retry en flood
@@ -186,8 +195,13 @@ root-level bestanden mee). Verifieer voor oplevering. User uploads bevatten
 - **Channel-key brute-force.** Decoder en firmware berekenen verschillende
   channel-identifiers voor dezelfde secret; loop door alle bekende keys
   in plaats van op hash te matchen.
-- **Dedup is twee onafhankelijke systemen.** `add_message` (hash-based)
-  en bot-cooldown (per-sender) — beide nodig.
+- **Dedup is drie onafhankelijke systemen.** `add_message` (fingerprint),
+  bot-cooldown (per-sender) en, in de BBS-tak van `on_contact_msg`,
+  herhaalde DM-pogingen (`DualDeduplicator.mark_dm`: `pubkey_prefix` +
+  `sender_timestamp` + tekst). Alle drie nodig: een afzender zonder ACK
+  verstuurt dezelfde DM opnieuw met een hoger attempt-nummer, de firmware
+  levert elke poging af, en zonder de derde controle slaat de BBS een `!p`
+  per poging op.
 - **`time.sleep` in GUI-thread** bevriest NiceGUI. Gebruik `asyncio.sleep`
   of een aparte thread.
 

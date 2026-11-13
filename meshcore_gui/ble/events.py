@@ -11,6 +11,9 @@ Direct Messages (``CONTACT_MSG_RECV``) whose text starts with ``!`` are
 forwarded to :class:`~meshcore_gui.services.bbs_service.BbsCommandHandler`
 **before** any other DM processing.  This path is completely independent of
 :class:`~meshcore_gui.services.bot.MeshBot`.
+A resent attempt of a DM already passed to the BBS handler (same ``pubkey_prefix``,
+``sender_timestamp`` and text) is not forwarded again, so a ``!p`` that
+the sender repeats for lack of an ``ACK`` is stored only once.
 
 CLI replies
 ~~~~~~~~~~~
@@ -637,10 +640,12 @@ class EventHandler:
             and self._command_sink is not None
             and dm_text.strip().startswith("!")
         ):
-            bbs_reply = self._bbs_handler.handle_dm(
-                sender=sender,
-                sender_key=pubkey,
-                text=dm_text,
+            bbs_reply = None if self._is_resent_dm(payload, pubkey, dm_text) else (
+                self._bbs_handler.handle_dm(
+                    sender=sender,
+                    sender_key=pubkey,
+                    text=dm_text,
+                )
             )
             if bbs_reply is not None:
                 debug_print(f"BBS DM reply to {sender} ({pubkey[:8]}): {bbs_reply[:60]}")
@@ -680,6 +685,40 @@ class EventHandler:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _is_resent_dm(self, payload: Dict, pubkey: str, text: str) -> bool:
+        """Tell whether a DM is a resent attempt of a DM already passed to the BBS handler.
+
+        A sender that gets no ``ACK`` sends the same DM again with a higher
+        attempt number.  Each attempt is a different packet, so the
+        firmware delivers every attempt as its own ``CONTACT_MSG_RECV``.
+        The attempts share ``pubkey_prefix``, ``sender_timestamp`` and
+        text.  The first DM with a given combination is recorded and
+        ``False`` is returned; later ones return ``True``.
+
+        A DM without ``sender_timestamp`` (missing or ``0``) is never
+        recorded and always returns ``False``, so it is handled as before.
+
+        Args:
+            payload: ``CONTACT_MSG_RECV`` payload from the meshcore library.
+            pubkey: ``pubkey_prefix`` of the sender (12 hex chars; empty string
+                if the payload lacks it).
+            text: DM text.
+
+        Returns:
+            ``True`` when the DM must not be handled again.
+        """
+        sender_timestamp = payload.get('sender_timestamp') or 0
+        if not sender_timestamp:
+            return False
+        if self._dedup.is_dm_seen(pubkey, sender_timestamp, text):
+            debug_print(
+                f"BBS DM from {pubkey[:8]} is a resent attempt, "
+                f"not handled again: {text[:30]}"
+            )
+            return True
+        self._dedup.mark_dm(pubkey, sender_timestamp, text)
+        return False
 
     @staticmethod
     def _extract_snr(payload: Dict) -> Optional[float]:

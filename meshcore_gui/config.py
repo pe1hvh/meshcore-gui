@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.25.2"
+VERSION: str = "1.26.1"
 
 
 # ==============================================================================
@@ -592,6 +592,7 @@ CHANNEL_SORT_MODE_DEFAULT: str = "index"
 # and edited through the BBS Settings panel in the GUI.
 
 # Seconds between BBS retention purges in the worker main loop.  The
-# first purge runs directly after connect; each board's own
-# ``retention_hours`` decides which messages are expired.
+# first purge runs directly after connect; each board's retention in
+# days per category (v1.26.0, ``0`` = keep forever) decides which
+# messages are expired.
 BBS_PURGE_INTERVAL: float = 300.0

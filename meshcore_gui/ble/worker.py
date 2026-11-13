@@ -1165,8 +1165,9 @@ class _BaseWorker(abc.ABC):
         """Delete BBS messages older than each board's retention period.
 
         Runs on the first main-loop iteration and then every
-        ``BBS_PURGE_INTERVAL`` seconds.  Retention is configured per
-        board (``retention_hours``) on the BBS settings page.  Errors are
+        ``BBS_PURGE_INTERVAL`` seconds.  Retention is configured in days
+        per category, with a default for other categories, on the BBS
+        settings page (v1.26.0; ``0`` = keep forever).  Errors are
         logged and never break the main loop.
         """
         try:

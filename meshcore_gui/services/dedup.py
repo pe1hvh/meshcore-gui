@@ -15,7 +15,14 @@ identifiers:
    ``message_hash``, so a composite key of ``channel:sender:text`` is
    used as a fallback.
 
-Both stores are bounded to prevent unbounded memory growth.
+3. **DM attempt-based** — a sender that gets no ``ACK`` sends the same DM
+   again with a higher attempt number.  Every attempt is a different
+   packet, so the firmware delivers each one as its own
+   ``CONTACT_MSG_RECV``.  All attempts share ``pubkey_prefix``,
+   ``sender_timestamp`` and text, which together form the key.  Used by
+   the BBS route so a resent command (e.g. ``!p``) is handled once.
+
+All stores are bounded to prevent unbounded memory growth.
 """
 
 from collections import OrderedDict
@@ -61,9 +68,10 @@ class MessageDeduplicator:
 class DualDeduplicator:
     """Combined hash-based and content-based deduplication.
 
-    Wraps two :class:`MessageDeduplicator` instances — one for
-    message hashes and one for content keys — behind a single
-    interface.
+    Wraps three :class:`MessageDeduplicator` instances — one for
+    message hashes, one for content keys and one for DM attempt keys —
+    behind a single interface.  The class keeps its name for backward
+    compatibility.
 
     Args:
         max_size: Maximum entries per store.
@@ -72,6 +80,8 @@ class DualDeduplicator:
     def __init__(self, max_size: int = 200) -> None:
         self._by_hash = MessageDeduplicator(max_size)
         self._by_content = MessageDeduplicator(max_size)
+        self._by_dm = MessageDeduplicator(max_size)
+        """Keys ``dm:<pubkey>:<sender_timestamp>:<text>`` of handled DMs."""
 
     # -- Hash-based --
 
@@ -96,13 +106,58 @@ class DualDeduplicator:
         key = self._content_key(sender, channel, text)
         return self._by_content.is_seen(key)
 
+    # -- DM attempt-based --
+
+    def mark_dm(self, pubkey: str, sender_timestamp: int, text: str) -> None:
+        """Record a DM as handled.
+
+        Args:
+            pubkey: ``pubkey_prefix`` of the sender (12 hex chars).
+            sender_timestamp: Sender's clock at sending, Unix seconds; the
+                same for every attempt of one DM.
+            text: DM text.
+        """
+        self._by_dm.mark(self._dm_key(pubkey, sender_timestamp, text))
+
+    def is_dm_seen(self, pubkey: str, sender_timestamp: int, text: str) -> bool:
+        """Check if an attempt of this DM was already handled.
+
+        Args:
+            pubkey: ``pubkey_prefix`` of the sender (12 hex chars).
+            sender_timestamp: Sender's clock at sending, Unix seconds.
+            text: DM text.
+
+        Returns:
+            ``True`` when :meth:`mark_dm` recorded the same sender,
+            timestamp and text and the key has not been evicted yet
+            (at most ``max_size`` keys are kept).
+        """
+        return self._by_dm.is_seen(self._dm_key(pubkey, sender_timestamp, text))
+
     # -- Bulk --
 
     def clear(self) -> None:
-        """Clear both stores."""
+        """Clear all stores."""
         self._by_hash.clear()
         self._by_content.clear()
+        self._by_dm.clear()
 
     @staticmethod
     def _content_key(sender: str, channel, text: str) -> str:
         return f"{channel}:{sender}:{text}"
+
+    @staticmethod
+    def _dm_key(pubkey: str, sender_timestamp: int, text: str) -> str:
+        """Build the key of one DM.
+
+        The ``dm:`` prefix keeps these keys apart from content keys.
+
+        Args:
+            pubkey: ``pubkey_prefix`` of the sender.
+            sender_timestamp: Sender's clock at sending, Unix seconds.
+            text: DM text.
+
+        Returns:
+            ``dm:<pubkey>:<sender_timestamp>:<text>``.
+        """
+        return f"dm:{pubkey}:{sender_timestamp}:{text}"

@@ -1,7 +1,7 @@
 """BBS panel -- board-based Bulletin Board System viewer and configuration."""
 
 import re
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from nicegui import ui
 
@@ -10,7 +10,7 @@ from meshcore_gui.services.bbs_config_store import (
     BbsBoard,
     BbsConfigStore,
     DEFAULT_CATEGORIES,
-    DEFAULT_RETENTION_HOURS,
+    DEFAULT_RETENTION_DAYS,
 )
 from meshcore_gui.services.bbs_service import BbsMessage, BbsService
 from meshcore_gui.core.protocols import SharedDataReadAndLookup
@@ -414,8 +414,9 @@ class BbsSettingsPage:
 
     One node = one board.  The page shows a single channel selector
     populated from the active device channels, plus a categories field,
-    a retention field, and a collapsible Advanced section for regions
-    and allowed keys.  There is no board creation or deletion UI.
+    a retention field per category with a default for other categories
+    (v1.26.0), and a collapsible Advanced section for regions and
+    allowed keys.  There is no board creation or deletion UI.
 
     Args:
         shared:       SharedData instance (for device channel list).
@@ -478,10 +479,7 @@ class BbsSettingsPage:
             ', '.join(board.categories) if board
             else ', '.join(DEFAULT_CATEGORIES)
         )
-        retention_value = (
-            str(board.retention_hours) if board
-            else str(DEFAULT_RETENTION_HOURS)
-        )
+        retention_values = self._retention_values(board)
         adv_regions_value = ', '.join(board.regions) if board else ''
         adv_keys_value = ', '.join(board.allowed_keys) if board else ''
 
@@ -504,12 +502,7 @@ class BbsSettingsPage:
             ui.label('Categories:').classes('text-xs text-gray-600 w-24 shrink-0')
             cats_input = ui.input(value=cats_value).classes('text-xs flex-grow')
 
-        with ui.row().classes('w-full items-center gap-2'):
-            ui.label('Retain:').classes('text-xs text-gray-600 w-24 shrink-0')
-            retention_input = ui.input(
-                value=retention_value,
-            ).classes('text-xs').style('max-width: 80px')
-            ui.label('hours').classes('text-xs text-gray-600')
+        retention_inputs = self._render_retention_section(cats_input, retention_values)
 
         # ── Advanced (collapsed) ─────────────────────────────────────
         with ui.expansion('Advanced', value=False).classes('w-full mt-2').props('dense'):
@@ -529,7 +522,6 @@ class BbsSettingsPage:
         def _save(
             cc=ch_checks,
             ci=cats_input,
-            ri=retention_input,
             rgi=regions_input,
             ki=keys_input,
         ) -> None:
@@ -542,14 +534,15 @@ class BbsSettingsPage:
                 ch.get('idx', ch.get('index', 0)): ch.get('name', '?')
                 for ch in self._device_channels
             }
-            categories = [
-                c.strip().upper()
-                for c in (ci.value or '').split(',') if c.strip()
-            ] or list(DEFAULT_CATEGORIES)
-            try:
-                ret_hours = int(ri.value or DEFAULT_RETENTION_HOURS)
-            except ValueError:
-                ret_hours = DEFAULT_RETENTION_HOURS
+            categories = self._parse_categories(ci.value)
+            retention = self._collect_retention(categories, retention_inputs)
+            if retention is None:
+                ui.notify(
+                    'Retention must be a whole number of days (0 = keep forever).',
+                    type='warning',
+                )
+                return
+            default_days, category_days = retention
             regions = [r.strip() for r in (rgi.value or '').split(',') if r.strip()]
             # Only pass allowed_keys if the field was explicitly filled;
             # empty field means "keep auto-learned keys"
@@ -560,9 +553,10 @@ class BbsSettingsPage:
                 channel_indices=selected,
                 channel_names=ch_names,
                 categories=categories,
-                retention_hours=ret_hours,
                 regions=regions,
                 allowed_keys=allowed_keys,
+                default_retention_days=default_days,
+                category_retention_days=category_days,
             )
             ch_labels = ', '.join(f"[{i}] {ch_names.get(i, '?')}" for i in sorted(selected))
             debug_print(f'BBS settings: configured channels {ch_labels}')
@@ -570,6 +564,172 @@ class BbsSettingsPage:
             self._rebuild()
 
         ui.button('Save', on_click=_save).props('no-caps').classes('text-xs mt-2')
+
+    # ------------------------------------------------------------------
+    # Retention per category (v1.26.0)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_categories(text: Optional[str]) -> List[str]:
+        """Parse the comma-separated categories field.
+
+        Args:
+            text: Field value, e.g. ``'urgent, status'``.
+
+        Returns:
+            Upper-case category names in input order, without empty
+            entries; ``DEFAULT_CATEGORIES`` when nothing remains.
+        """
+        return [
+            c.strip().upper() for c in (text or '').split(',') if c.strip()
+        ] or list(DEFAULT_CATEGORIES)
+
+    @staticmethod
+    def _parse_days(value: object) -> Optional[int]:
+        """Parse a retention field.
+
+        Args:
+            value: Field value (string or number).
+
+        Returns:
+            Whole number of days ``>= 0`` (``0`` = keep forever), or
+            ``None`` when the value is empty, not a whole number, or
+            negative.
+        """
+        try:
+            days = int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        return days if days >= 0 else None
+
+    @staticmethod
+    def _retention_values(board: Optional[BbsBoard]) -> Dict[str, str]:
+        """Return the initial retention field texts for *board*.
+
+        Args:
+            board: Configured board, or ``None`` when none exists yet.
+
+        Returns:
+            Mapping upper-case category → days as text, plus key ``'*'``
+            for the default of other categories.  Without a board only
+            ``'*'`` is set, to ``DEFAULT_RETENTION_DAYS``.
+        """
+        if board is None:
+            return {'*': str(DEFAULT_RETENTION_DAYS)}
+        values = {
+            cat.upper(): str(board.retention_days_for(cat)) for cat in board.categories
+        }
+        values['*'] = str(board.default_retention_days)
+        return values
+
+    @classmethod
+    def _collect_retention(
+        cls, categories: List[str], inputs: Dict[str, object],
+    ) -> Optional[Tuple[int, Dict[str, int]]]:
+        """Read and validate the retention fields.
+
+        Args:
+            categories: Upper-case category names to save.
+            inputs:     Mapping category → input element, plus ``'*'``
+                        for the default; a category without an input
+                        element gets the default.
+
+        Returns:
+            Tuple of (default days, days per category), or ``None`` when
+            any field is not a whole number ``>= 0``.
+        """
+        default_input = inputs.get('*')
+        default_days = cls._parse_days(
+            default_input.value if default_input is not None else DEFAULT_RETENTION_DAYS
+        )
+        if default_days is None:
+            return None
+        category_days: Dict[str, int] = {}
+        for cat in categories:
+            inp = inputs.get(cat)
+            days = cls._parse_days(inp.value) if inp is not None else default_days
+            if days is None:
+                return None
+            category_days[cat] = days
+        return default_days, category_days
+
+    def _render_retention_section(
+        self, cats_input, values: Dict[str, str],
+    ) -> Dict[str, object]:
+        """Render the retention block and keep it in step with the categories.
+
+        The rows are rebuilt when *cats_input* loses focus; values
+        already entered are kept for categories that remain, new
+        categories start with the current default.
+
+        Args:
+            cats_input: Categories input element (comma-separated names).
+            values:     Initial field texts, see :meth:`_retention_values`.
+
+        Returns:
+            Mapping category → input element plus ``'*'`` for the
+            default.  The same dict is refilled on every rebuild, so the
+            save handler always reads the current fields.
+        """
+        inputs: Dict[str, object] = {}
+        with ui.column().classes('w-full gap-1'):
+            ui.label('Retain (days, 0 = keep forever):').classes('text-xs text-gray-600')
+            rows = ui.column().classes('w-full gap-0 pl-2')
+        self._render_retention_rows(
+            rows, self._parse_categories(cats_input.value), values, inputs,
+        )
+
+        def _on_categories_changed() -> None:
+            """Rebuild the rows from the edited category list."""
+            current = {cat: str(inp.value) for cat, inp in inputs.items()}
+            self._render_retention_rows(
+                rows, self._parse_categories(cats_input.value), current, inputs,
+            )
+
+        cats_input.on('blur', _on_categories_changed)
+        return inputs
+
+    @staticmethod
+    def _render_retention_rows(
+        container,
+        categories: List[str],
+        values: Dict[str, str],
+        inputs: Dict[str, object],
+    ) -> None:
+        """(Re)build one retention row per category plus the default row.
+
+        Clears *container*, then adds a row *name — days input — "days"*
+        per category and a final *Other categories* row for the board
+        default.  *inputs* is emptied and refilled with the new input
+        elements.
+
+        Args:
+            container:  NiceGUI column that holds the rows.
+            categories: Upper-case category names, in display order.
+            values:     Field text per category and ``'*'`` for the
+                        default; a missing category gets the default text.
+            inputs:     Mapping category → input element, ``'*'`` = default
+                        (mutated).
+        """
+        default_value = values.get('*', str(DEFAULT_RETENTION_DAYS))
+        container.clear()
+        inputs.clear()
+        with container:
+            for cat in categories:
+                with ui.row().classes('items-center gap-2'):
+                    ui.label(cat).classes('text-xs w-32 shrink-0')
+                    inputs[cat] = ui.input(
+                        value=values.get(cat, default_value),
+                    ).classes('text-xs').style('max-width: 80px')
+                    ui.label('days').classes('text-xs text-gray-600')
+            with ui.row().classes('items-center gap-2'):
+                ui.label('Other categories').classes(
+                    'text-xs text-gray-500 italic w-32 shrink-0'
+                ).tooltip('Messages in a category that is no longer listed')
+                inputs['*'] = ui.input(value=default_value).classes('text-xs').style(
+                    'max-width: 80px'
+                )
+                ui.label('days').classes('text-xs text-gray-600')
 
     def _rebuild(self) -> None:
         """Clear and re-render the settings container in-place."""

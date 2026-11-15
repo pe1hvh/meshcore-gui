@@ -5,4 +5,4 @@ A graphical user interface for MeshCore mesh network devices,
 communicating via USB serial or Bluetooth Low Energy (BLE).
 """
 
-__version__ = "1.26.1"
+__version__ = "1.26.2"

@@ -32,6 +32,17 @@ carries a region transport code.  The optional
 to a known region; the result is stored on the message and cached so the
 ``CHANNEL_MSG_RECV`` fallback (which has no raw packet) can recover it,
 in the same way as the path hashes.
+
+A reply is sent in the region of the request.  The bot reply and the BBS
+channel reply carry ``"region": <name>`` in their ``send_message``
+command.  For DMs, ``RX_LOG_DATA`` of a ``TXT_MSG`` addressed to this
+device (``payload[0]`` = first byte of the own public key) records the
+region under the source hash (``payload[1]``); the BBS branch of
+``on_contact_msg`` looks it up by the first byte of ``pubkey_prefix`` and
+adds it to the ``send_dm`` command.  Only a known region is passed on: an
+unknown region (``"?xxxx"``, no key to send with) or an unscoped request
+gives no ``"region"`` key, so the channel or device default applies
+(:meth:`EventHandler._reply_region`).
 """
 
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional
@@ -42,6 +53,7 @@ from meshcore_gui.core.protocols import SharedDataWriter
 from meshcore_gui.ble.packet_decoder import PacketDecoder, PayloadType
 from meshcore_gui.services.bot import MeshBot
 from meshcore_gui.services.dedup import DualDeduplicator
+from meshcore_gui.services.region_service import UNKNOWN_REGION_PREFIX
 
 if TYPE_CHECKING:
     from meshcore_gui.services.bbs_service import BbsCommandHandler
@@ -59,6 +71,11 @@ class EventHandler:
         region_service: Optional RegionService for attributing received
                  transport codes to regions.  Without it no region is
                  shown on received messages.
+        own_pubkey: Optional callable returning the public key (hex) of
+                 this device.  Needed to recognise a ``TXT_MSG`` addressed
+                 to this device; without it (or while it returns an empty
+                 string) no DM region is recorded and BBS DM replies use
+                 the device default region.
     """
 
     # Maximum entries in the path cache before oldest are evicted.
@@ -73,6 +90,7 @@ class EventHandler:
         bbs_handler: Optional["BbsCommandHandler"] = None,
         command_sink: Optional[Callable[[Dict], None]] = None,
         region_service: Optional["RegionService"] = None,
+        own_pubkey: Optional[Callable[[], str]] = None,
     ) -> None:
         self._shared = shared
         self._decoder = decoder
@@ -98,6 +116,16 @@ class EventHandler:
         # message_hash and by "sender:text[:100]" (same keys as the path
         # caches).  Only populated for packets that carry a region.
         self._region_cache: Dict[str, str] = {}
+
+        # Callable returning this device's public key (hex), or None.
+        self._own_pubkey = own_pubkey
+
+        # Region label of the latest TXT_MSG addressed to this device,
+        # keyed by source hash (2 hex chars, lower case).  Holds "" for a
+        # direct or unscoped packet, so a later DM whose RX_LOG_DATA was
+        # received never reuses an older region.  1-byte key: contacts with
+        # the same first key byte share an entry.
+        self._dm_region: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Helpers — resolve names at receive time
@@ -181,6 +209,79 @@ class EventHandler:
             oldest = next(iter(self._region_cache))
             del self._region_cache[oldest]
 
+    @staticmethod
+    def _reply_region(region: str) -> str:
+        """Return the region a reply to a request in *region* is sent in.
+
+        Single filter for the bot, the BBS channel reply and the BBS DM
+        reply.  Only a known region can be echoed: sending needs the region
+        key, which is derived from the name.
+
+        Args:
+            region: Region label of the request: a region name, ``"?xxxx"``
+                    for a transport code that matches no known region, or
+                    an empty string for an unscoped request.
+
+        Returns:
+            *region* when it is a known region name, otherwise an empty
+            string (no ``"region"`` key; the channel or device default
+            applies).
+        """
+        if not region or region.startswith(UNKNOWN_REGION_PREFIX):
+            return ""
+        return region
+
+    @staticmethod
+    def _with_region(cmd: Dict, region: str) -> Dict:
+        """Add ``"region"`` to a reply command when *region* is set.
+
+        Args:
+            cmd:    Reply command dict (``send_message`` or ``send_dm``);
+                    mutated in place.
+            region: Result of :meth:`_reply_region`.
+
+        Returns:
+            *cmd*, with ``"region": region`` when *region* is not empty.
+        """
+        if region:
+            cmd["region"] = region
+        return cmd
+
+    def _record_dm_region(self, decoded) -> None:
+        """Record the region of a ``TXT_MSG`` addressed to this device.
+
+        Payload layout: ``payload[0]`` = destination hash, ``payload[1]``
+        = source hash (first byte of each public key); both are readable
+        without decryption.  The latest region label per source hash is
+        kept (a name, ``"?xxxx"``, or an empty string for a direct or
+        unscoped packet); filtering happens at lookup via
+        :meth:`_reply_region`.  At most ``_PATH_CACHE_MAX`` source hashes
+        are kept; the oldest is dropped.  A DM without ``RX_LOG_DATA``
+        (e.g. fetched from the device queue after a reconnect) uses
+        whatever is stored for its source hash.
+
+        Args:
+            decoded: :class:`~meshcore_gui.ble.packet_decoder.DecodedPacket`.
+        """
+        if decoded.payload_type != PayloadType.TextMessage:
+            return
+        own = (self._own_pubkey() if self._own_pubkey is not None else "") or ""
+        raw = decoded.payload_raw
+        if len(own) < 2 or len(raw) < 2:
+            return
+        try:
+            own_hash = int(own[:2], 16)
+        except ValueError:
+            return
+        if raw[0] != own_hash:
+            return
+        src = f"{raw[1]:02x}"
+        # Re-insert so the dict order follows the latest update.
+        self._dm_region.pop(src, None)
+        self._dm_region[src] = self._region_of(decoded)
+        if len(self._dm_region) > self._PATH_CACHE_MAX:
+            del self._dm_region[next(iter(self._dm_region))]
+
     def on_rx_log(self, event) -> None:
         """Handle RX log data events."""
         payload = event.payload
@@ -253,6 +354,10 @@ class EventHandler:
                                 msg_region,
                             )
 
+                # Region of a DM to this device (for the BBS DM reply).
+                self._record_dm_region(decoded)
+                reply_region = self._reply_region(msg_region)
+
                 # Process decoded message if it's a group text
                 if decoded.payload_type == PayloadType.GroupText and decoded.is_decrypted:
                     if decoded.channel_idx is None:
@@ -315,6 +420,7 @@ class EventHandler:
                             path_len=decoded.path_length,
                             path_hashes=decoded.path_hashes,
                             sender_pubkey=sender_pubkey,
+                            region=reply_region,
                         )
 
                         # BBS channel hook: auto-whitelist sender and reply
@@ -336,13 +442,15 @@ class EventHandler:
                                 debug_print(
                                     f"BBS channel reply (rx_log) on "
                                     f"ch{decoded.channel_idx} to "
-                                    f"{decoded.sender!r}: {bbs_reply[:60]}"
+                                    f"{decoded.sender!r}"
+                                    f"{f' (region #{reply_region})' if reply_region else ''}"
+                                    f": {bbs_reply[:60]}"
                                 )
-                                self._command_sink({
+                                self._command_sink(self._with_region({
                                     "action": "send_message",
                                     "channel": decoded.channel_idx,
                                     "text": bbs_reply,
-                                })
+                                }, reply_region))
 
         # Add RX log entry with message_hash and path info (if available)
         # ── Fase 1 Observer: raw packet metadata ──
@@ -469,6 +577,7 @@ class EventHandler:
         region = self._region_cache.pop(msg_hash, "") if msg_hash else ""
         if not region and sender and msg_text:
             region = self._region_cache.pop(f"{sender}:{msg_text[:100]}", "")
+        reply_region = self._reply_region(region)
 
         self._shared.add_message(Message.incoming(
             sender,
@@ -493,12 +602,16 @@ class EventHandler:
                 text=msg_text,
             )
             if bbs_reply is not None:
-                debug_print(f"BBS channel reply on ch{ch_idx} to {sender!r}: {bbs_reply[:60]}")
-                self._command_sink({
+                debug_print(
+                    f"BBS channel reply on ch{ch_idx} to {sender!r}"
+                    f"{f' (region #{reply_region})' if reply_region else ''}"
+                    f": {bbs_reply[:60]}"
+                )
+                self._command_sink(self._with_region({
                     "action": "send_message",
                     "channel": ch_idx,
                     "text": bbs_reply,
-                })
+                }, reply_region))
 
         self._bot.check_and_reply(
             sender=sender,
@@ -507,6 +620,7 @@ class EventHandler:
             snr=snr,
             path_len=payload.get('path_len', 0),
             sender_pubkey=sender_pubkey,
+            region=reply_region,
         )
 
     # ------------------------------------------------------------------
@@ -648,12 +762,19 @@ class EventHandler:
                 )
             )
             if bbs_reply is not None:
-                debug_print(f"BBS DM reply to {sender} ({pubkey[:8]}): {bbs_reply[:60]}")
-                self._command_sink({
+                reply_region = self._reply_region(
+                    self._dm_region.get(pubkey[:2].lower(), "")
+                )
+                debug_print(
+                    f"BBS DM reply to {sender} ({pubkey[:8]})"
+                    f"{f' (region #{reply_region})' if reply_region else ''}"
+                    f": {bbs_reply[:60]}"
+                )
+                self._command_sink(self._with_region({
                     "action": "send_dm",
                     "pubkey": pubkey,
                     "text": bbs_reply,
-                })
+                }, reply_region))
             # Always store the incoming DM in the message archive too
             self._shared.add_message(Message.incoming(
                 sender,

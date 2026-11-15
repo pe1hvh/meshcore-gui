@@ -76,7 +76,7 @@ from meshcore_gui.services.channel_discovery import (
 from meshcore_gui.services.dedup import DualDeduplicator
 from meshcore_gui.services.device_identity import write_device_identity
 from meshcore_gui.services.pin_store import PinStore
-from meshcore_gui.services.region_service import RegionService
+from meshcore_gui.services.region_service import RegionService, region_key
 from meshcore_gui.services.repeater_config_archive import RepeaterConfigArchive
 from meshcore_gui.services.repeater_config_poller import RepeaterConfigPoller
 from meshcore_gui.services.repeater_config_store import RepeaterConfigStore
@@ -425,6 +425,7 @@ class _BaseWorker(abc.ABC):
             bbs_handler=self._bbs_handler,
             command_sink=self.shared.put_command,
             region_service=self._region_service,
+            own_pubkey=self._own_pubkey,
         )
         self._cmd_handler = CommandHandler(
             mc=self.mc, shared=self.shared, cache=self._cache,
@@ -748,8 +749,50 @@ class _BaseWorker(abc.ABC):
                 return ch.get('name', '')
         return ''
 
+    def _own_pubkey(self) -> str:
+        """Return the public key of the connected device.
+
+        Passed to :class:`EventHandler` to recognise a ``TXT_MSG``
+        addressed to this device.
+
+        Returns:
+            Public key as hex string (as shown in the device panel), or an
+            empty string before the device info has been read.
+        """
+        with self.shared.lock:
+            return self.shared.device.public_key or ""
+
+    @staticmethod
+    def _scope_name_for_key(name: str, key_hex: str, known: List[str]) -> str:
+        """Return the region name whose key is *key_hex*.
+
+        The name read back from the device can hold the remainder of an
+        older, longer name: the firmware copies a new name over the old one
+        without clearing the 31-byte field and returns all 31 bytes, and
+        ``meshcore`` removes every NUL instead of cutting at the first one
+        (``#nl`` after ``#nl-ov`` reads back as ``#nlov``).  The key is
+        stored correctly, so the name is taken from the key.
+
+        Args:
+            name:    Name as returned by the library (with or without ``#``).
+            key_hex: Scope key from the device, 32 hex chars, lower case.
+            known:   Known region names to compare with.
+
+        Returns:
+            *name* when its own key matches, else the first known region
+            whose key matches, else *name* unchanged.
+        """
+        for candidate in [name, *known]:
+            if region_key(candidate).hex() == key_hex:
+                return candidate
+        return name
+
     async def _read_default_scope(self) -> None:
         """Read the device default flood scope into the region store.
+
+        The name is checked against the scope key (see
+        :meth:`_scope_name_for_key`); when no name matches the key the
+        returned name is kept and a warning is printed.
 
         Requires ``meshcore`` ≥ 2.3.17 (``get_default_flood_scope``) and
         firmware that supports ``CMD_GET_DEFAULT_FLOOD_SCOPE``.  When either
@@ -773,7 +816,18 @@ class _BaseWorker(abc.ABC):
                 f"{r.payload if r else 'no response'}"
             )
             return
-        name = (r.payload or {}).get('scope_name', '')
+        payload = r.payload or {}
+        name = payload.get('scope_name', '')
+        key_hex = str(payload.get('scope_key', '') or '').lower()
+        if name and key_hex:
+            name = self._scope_name_for_key(
+                name, key_hex, self._channel_region_store.get_known_regions(),
+            )
+            if region_key(name).hex() != key_hex:
+                print(
+                    f"{self._log_prefix}: ⚠️  Default region name {name!r} "
+                    f"does not match scope key {key_hex} — name kept"
+                )
         self._channel_region_store.set_device_default(name)
         print(
             f"{self._log_prefix}: Default region: "

@@ -192,6 +192,14 @@ hoe het wel moet. Elk punt komt uit een fout die al eens is gemaakt.
   elkaar versturen, en nooit in de worker blokkerend op een `ACK` wachten:
   `CommandHandler.process_dm_deliveries()` zet per main-loop-iteratie één
   stap, per ontvanger een eigen rij.
+- **De firmware-`ACK` van een flood-DM gaat in de device default region (of
+  de op dat moment gezette send-override), nooit in de region van het verzoek.**
+  De companion-firmware stuurt de `ACK` (bij een flood-DM als `PATH` met
+  ingebedde `ACK`) bij ontvangst, vóórdat de app de DM ziet. Een flood-`ACK`
+  gaat daardoor in de device default (of in de send-override als die op dat
+  moment gezet is), niet in de region van het verzoek. De app kan dat niet
+  per bericht sturen; alleen het antwoord zelf (`send_dm` met `"region"`)
+  gaat in de region van het verzoek.
 - **Channel-key brute-force.** Decoder en firmware berekenen verschillende
   channel-identifiers voor dezelfde secret; loop door alle bekende keys
   in plaats van op hash te matchen.

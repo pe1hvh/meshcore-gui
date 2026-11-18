@@ -59,6 +59,13 @@ class _DmDelivery:
         waiting:      True while a sent part awaits its ACK.
         deadline:     ``time.monotonic()`` value after which the waiting
                       part counts as not confirmed.
+        region:       Region to send every part and every attempt in (send
+                      override around ``send_msg``); the firmware uses it
+                      only when the DM floods.  Empty: device default.
+        replace:      Replacement key (v1.26.4).  A new reply with the same
+                      non-empty key to the same recipient removes this one
+                      from the queue, also while it is being delivered.
+                      Empty: never replaced.
     """
 
     pubkey: str
@@ -70,6 +77,8 @@ class _DmDelivery:
     acks: Set[str] = field(default_factory=set)
     waiting: bool = False
     deadline: float = 0.0
+    region: str = ""
+    replace: str = ""
 
 
 class CommandHandler:
@@ -380,22 +389,44 @@ class CommandHandler:
         worker main loop) sends one part at a time and the next part only
         after the ACK of the previous one.
 
+        With a non-empty ``replace`` key every queued DM to the same
+        recipient with the same key is removed first, the one being
+        delivered included (v1.26.4).  The BBS uses this for sync replies:
+        a client waits only for the reply to its latest request, so older
+        replies would only cost airtime.  An ACK that still arrives for a
+        removed part matches no queue head and is ignored.
+
         Args:
             cmd: Command dict with ``pubkey``, ``text`` and optional
-                 ``contact_name``.
+                 ``contact_name``, ``region`` (region to send every
+                 part in; empty or absent: device default) and
+                 ``replace`` (replacement key, see above).
         """
         pubkey = cmd.get('pubkey', '')
         text = cmd.get('text', '')
         contact_name = cmd.get('contact_name', pubkey[:8])
+        region = cmd.get('region', '') or ''
+        replace = cmd.get('replace', '') or ''
         if text and pubkey:
             chunks = self._split_reply(text, max_bytes=self.MAX_DM_TEXT_BYTES)
             queue = self._dm_queues.setdefault(pubkey.lower(), deque())
+            if replace:
+                kept = [d for d in queue if d.replace != replace]
+                if len(kept) < len(queue):
+                    debug_print(
+                        f"DM to {contact_name}: {len(queue) - len(kept)} "
+                        f"older '{replace}' reply(ies) dropped"
+                    )
+                    queue.clear()
+                    queue.extend(kept)
             queue.append(_DmDelivery(
                 pubkey=pubkey, contact_name=contact_name, chunks=chunks,
+                region=region, replace=replace,
             ))
             self._shared.add_message(Message.outgoing(text, None, sender_pubkey=pubkey))
             debug_print(
-                f"DM to {contact_name} queued ({len(chunks)} part(s)): {text[:30]}"
+                f"DM to {contact_name} queued ({len(chunks)} part(s))"
+                f"{f' (region #{region})' if region else ''}: {text[:30]}"
             )
 
     # ------------------------------------------------------------------
@@ -489,6 +520,11 @@ class CommandHandler:
     async def _send_dm_part(self, delivery: _DmDelivery) -> None:
         """Send the current part of *delivery* once and start waiting.
 
+        With ``delivery.region`` set, the send override is set to that
+        region before ``send_msg`` and reset afterwards, also when
+        ``send_msg`` returns ERROR or raises (same pattern as
+        ``_cmd_send_message``).
+
         Args:
             delivery: Queue head whose part ``index`` is sent with attempt
                 number ``attempt``.
@@ -498,15 +534,22 @@ class CommandHandler:
         elif delivery.attempt == DM_FLOOD_AFTER:
             await self._reset_dm_path(delivery)
         chunk = delivery.chunks[delivery.index]
-        result = await self._mc.commands.send_msg(
-            delivery.pubkey, chunk,
-            timestamp=delivery.timestamp, attempt=delivery.attempt,
-        )
+        scoped = bool(delivery.region) and await self._set_send_scope(delivery.region)
+        try:
+            result = await self._mc.commands.send_msg(
+                delivery.pubkey, chunk,
+                timestamp=delivery.timestamp, attempt=delivery.attempt,
+            )
+        finally:
+            if scoped:
+                await self._set_send_scope("")
         label = (
             f"DM to {delivery.contact_name} part "
             f"{delivery.index + 1}/{len(delivery.chunks)} "
             f"attempt {delivery.attempt + 1}"
         )
+        if delivery.region:
+            label += f" (region #{delivery.region}{'' if scoped else ' not set'})"
         if result is None or result.type == EventType.ERROR:
             # Counts as a failed attempt; retried on the next iteration.
             delivery.attempt += 1

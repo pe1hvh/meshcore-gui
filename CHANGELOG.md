@@ -11,6 +11,141 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.26.4] - 2026-11-18 — BBS sync: one reply per request, compressed replies
+
+### Added
+- 🆕 **Compressed sync reply** (`services/bbs_service.py`): `!x <since_id>
+  <since_del> z` returns the same reply compressed: header `X2` (the `X1`
+  fields plus `since_id` and `since_del` of the request, so a client can
+  tell which request a reply answers), the whole text as one raw deflate
+  stream (level 9, every line ending in a line feed), base64, in lines
+  of exactly one DM part each (first line `Z1|` + 156 characters, then
+  160). Every first *k* parts can be
+  decoded and inflated on their own, so a client keeps the complete
+  records of a broken-off reply and resumes as with `X1`. Measured on the
+  NNO board (30 messages): 16 DM parts plain, 8 compressed. A server
+  before 1.26.4 answers the flagged request with the usage line (unchanged
+  text), after which a client asks again without the flag.
+
+### Changed
+- ⚡ **A new `!x`/`!h` reply replaces an older one to the same node**
+  (`ble/events.py`, `ble/commands.py`): the `send_dm` command of a reply
+  to `!x`, `!h` or `!help` carries `"replace": "bbs_sync"`;
+  `CommandHandler._cmd_send_dm` first removes queued DMs to the same
+  recipient with the same key, the one being delivered included. An app
+  waits only for the reply to its latest request. Measured on 17-11 with
+  a meshcore-open BBS app before v0.3.0-bbs over a lossy link: 42 `!x`
+  requests with only 9
+  different cursors put 245 DM parts in the queue where ±18 were needed.
+- `tests/test_bbs_sync_v1264.py`: 20 tests for the compressed reply
+  (framing, `X2` header, readable prefixes, flag parsing) and the
+  replaceable replies (queue, ACK of a removed part, which commands).
+
+---
+
+## [1.26.3] - 2026-11-18 — Faster BBS sync: up to 50 records per `!x` reply
+
+### Changed
+- ⚡ **`!x` reply carries up to 50 message records instead of 10**
+  (`services/bbs_service.py`, `BbsCommandHandler.SYNC_LIMIT`): every `!x`
+  round costs a request DM plus the header and `R` lines (up to one extra
+  DM part) on top of the records, each reply part sent only after the ACK
+  of the previous one. With 40 messages an app now needs one round instead
+  of four: roughly 10-20 % fewer DMs (request DMs + reply DM parts),
+  depending on sender, category and text length. The protocol (`X1`) is
+  unchanged: clients already follow `more` and resume from the highest
+  complete record when a reply is cut off, so older app versions keep
+  working.
+- `tests/test_bbs_sync.py`: `test_sync_batches_and_cursor` follows
+  `SYNC_LIMIT` instead of assuming 10; new `test_sync_limit_is_fifty`
+  (40 messages in one reply with `more` = 0).
+
+---
+
+## [1.26.2] - 2026-11-15 — Bot and BBS replies use the region of the request
+
+### Fixed
+- 🐛 **Bot and BBS channel replies ignored the region of the request**
+  (`services/bot.py`, `ble/events.py`): the region of a channel message was
+  attributed and shown, but the reply was always sent in the channel
+  default region. The bot reply and the BBS channel reply now carry
+  `"region": <name>` in their `send_message` command, both via `on_rx_log`
+  and via the `on_channel_msg` fallback (region from the RX_LOG cache).
+  `CommandHandler._cmd_send_message` is unchanged: the override goes before
+  the channel default, as for a region chosen in the GUI.
+- 🐛 **BBS DM replies always used the device default region**
+  (`ble/events.py`, `ble/commands.py`): `on_rx_log` now records the region of
+  every `TXT_MSG` addressed to this device (`payload[0]` = first byte of the
+  own public key) under the source hash (`payload[1]`). The latest value is
+  kept, also "none" for a direct or unscoped packet, so an older region of
+  the same source hash is not reused when the DM's RX_LOG_DATA was received;
+  at most 200 source hashes. The BBS branch of
+  `on_contact_msg` looks the region up by the first byte of `pubkey_prefix`
+  and adds it to the `send_dm` command. `_send_dm_part` sets the send
+  override around `send_msg` for every part and every attempt and resets it
+  afterwards, also on ERROR or an exception. The firmware uses it only when
+  the DM floods (no `out_path`, or after `reset_path` at `DM_FLOOD_AFTER`).
+- 🐛 **Device default region read back as "nlov" after setting "#nl"**
+  (`ble/worker.py`): the firmware copies a new default scope name over the
+  old one without clearing the 31-byte field and returns all 31 bytes;
+  `meshcore` (2.3.19 too) removes every NUL instead of cutting at the first
+  one, so "#nl" after "#nl-ov" reads back as "#nlov". The key is correct.
+  `_read_default_scope()` now takes the name whose key equals `scope_key`:
+  the returned name itself, else a known region. No match: the returned
+  name is kept and a warning is printed, so the fix works only when the
+  correct name is a known region. Library and firmware unchanged.
+
+### Added
+- `MeshBot.check_and_reply(..., region="")`: optional keyword parameter;
+  without it the queued command is exactly as before.
+- `EventHandler(..., own_pubkey=None)`: callable returning the device
+  public key; the worker passes `_BaseWorker._own_pubkey()`.
+- `_DmDelivery.region` (default `""`, current behaviour); `send_dm` accepts
+  an optional `"region"`.
+- `tests/test_reply_region.py`: 23 tests for the above.
+
+### Changed
+- Debug lines of a queued bot/BBS reply and of every DM part name the region
+  when one is set (`(region #nl)`; `not set` when setting the override
+  failed: device refused it or the command raised).
+- 📝 `CLAUDE.md`, known pitfalls: the firmware ACK of a DM always uses the
+  device default region.
+
+### Impact
+- Only a known region is echoed (one filter, `EventHandler._reply_region`,
+  shared by bot, BBS channel and BBS DM). An unknown region (`?xxxx`) or an
+  unscoped request gives no `"region"` key: the channel default (channel
+  reply) or the device default (DM reply) applies. An unscoped request is not
+  answered unscoped in this release.
+- Every region to echo must be in the known regions of the bot/BBS device
+  (e.g. `nl`, `nl-ov`, the exact name of the Gelderland region).
+- A DM part with a region costs two extra device commands (set and reset of
+  the override).
+
+### Known issues
+- The firmware ACK (and PATH return) of an incoming DM is sent before the app
+  sees the DM and always uses the device default; only a firmware change can
+  scope it per request.
+- The source hash is 1 byte: two contacts with the same first key byte can
+  swap regions if their DMs arrive interleaved.
+- A region can only be echoed when its name is known on the device: a
+  transport code is a hash over the region key and the packet, so the key
+  cannot be derived from it.
+- While an override is set, a firmware ACK for a DM arriving in that window
+  uses the override.
+- A DM without `RX_LOG_DATA` (e.g. fetched from the device queue after a
+  reconnect) is answered in the region last recorded for its source hash.
+- I1 (a new region name typed in a phone browser is not committed, or
+  committed wrongly) is not addressed: root cause not yet confirmed.
+
+### Rationale
+- Repeaters already reply in the scope of the request
+  (`mesh::chooseReplyScope`); the companion firmware has no such logic
+  (`sendFloodScoped` uses the override or the device default), so the app
+  sets the override per reply, with the existing `_set_send_scope` pattern.
+
+---
+
 ## [1.26.1] - 2026-11-13 — BBS post stored once per DM, not once per attempt
 
 ### Fixed

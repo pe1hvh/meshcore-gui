@@ -139,6 +139,7 @@ class MeshBot:
         path_len: int,
         path_hashes: Optional[List[str]] = None,
         sender_pubkey: Optional[str] = None,
+        region: str = "",
     ) -> None:
         """Evaluate an incoming channel message and queue a reply if appropriate.
 
@@ -164,6 +165,10 @@ class MeshBot:
             path_hashes:   Optional list of 2-char hop hashes.
             sender_pubkey: Optional public-key prefix of the sender.
                            Used for private-mode pin lookup.
+            region:        Region of the request, to send the reply in.
+                           Only a known region is passed (filtered by
+                           ``EventHandler``); empty means no ``"region"``
+                           key, so the channel default applies.
         """
         # Guard 1: enabled?
         if not self._enabled():
@@ -231,13 +236,19 @@ class MeshBot:
             oldest = min(self._last_reply_per_sender, key=self._last_reply_per_sender.get)
             del self._last_reply_per_sender[oldest]
 
-        self._sink({
+        cmd = {
             "action": "send_message",
             "channel": channel_idx,
             "text": reply,
             "_bot": True,
-        })
-        debug_print(f"BOT: queued reply to '{sender}': {reply}")
+        }
+        if region:
+            cmd["region"] = region
+        self._sink(cmd)
+        debug_print(
+            f"BOT: queued reply to '{sender}'"
+            f"{f' (region #{region})' if region else ''}: {reply}"
+        )
 
     # ------------------------------------------------------------------
     # Extension point (OCP)

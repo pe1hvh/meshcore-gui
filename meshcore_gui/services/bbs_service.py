@@ -74,6 +74,32 @@ at most :data:`SYNC_LINE_MAX_BYTES` UTF-8 bytes:
 - ``-``: ids of all messages deleted by the operator since
   ``since_del``, on any channel and without a limit per reply
   (``SYNC_LIMIT`` does not apply), so this part can take several DMs.
+
+Compressed sync reply (v1.26.4)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Request: ``!x <since_id> <since_del> z`` (both numbers given, then the
+flag :data:`SYNC_COMPRESS_FLAG`).  The reply holds the same lines as
+above, with header ``X2`` instead of ``X1``; ``X2`` adds the cursors of
+the request, so a client can tell which request a reply answers:
+
+    X2|<epoch>|<n>|<more>|<del_seq>|<n_del>|<lines>|<since_id>|<since_del>
+
+That text (UTF-8), with a line feed after every line including the last,
+is compressed as one raw deflate stream (zlib level
+:data:`SYNC_DEFLATE_LEVEL`, no header or checksum), encoded as base64 and
+sent as lines of exactly one DM part each:
+
+    Z1|<first 156 base64 characters>
+    <next 160 base64 characters>
+    ...
+    <last base64 characters>
+
+Every line except the last holds a multiple of 4 base64 characters, so a
+client can decode and inflate any first *k* parts on their own; the text
+it gets is the start of the reply, and a line is complete once its line
+feed is in it.  The client keeps the records whose lines are complete and resumes after a broken-off reply as with ``X1``.  A server
+before v1.26.4 answers the flagged request with the usage line; a client
+then repeats it without the flag.
 """
 
 # The service and its command handler share this module since v1.14.0;
@@ -81,9 +107,11 @@ at most :data:`SYNC_LINE_MAX_BYTES` UTF-8 bytes:
 # the module is a refactor outside the scope of the sync feature.
 # pylint: disable=too-many-lines
 
+import base64
 import sqlite3
 import threading
 import time
+import zlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -107,6 +135,24 @@ values would raise ``OverflowError`` in the query."""
 
 SYNC_HEADER_TAG: str = "X1"
 """First field of the ``!x`` reply header: sync protocol version 1."""
+
+SYNC_HEADER_TAG_ECHO: str = "X2"
+"""First field of the header inside a compressed reply (v1.26.4): ``X1``
+plus the two cursors of the request."""
+
+SYNC_COMPRESS_FLAG: str = "z"
+"""Last argument of ``!x`` that asks for a compressed reply (v1.26.4)."""
+
+SYNC_COMPRESSED_TAG: str = "Z1|"
+"""Start of the first DM part of a compressed reply (v1.26.4)."""
+
+SYNC_DEFLATE_LEVEL: int = 9
+"""zlib level for the compressed reply: 9 = smallest output."""
+
+SYNC_BASE64_PER_PART: int = SYNC_LINE_MAX_BYTES // 4 * 4
+"""Base64 characters per DM part of a compressed reply: 160, a multiple
+of 4 so every part ends on a base64 group.  The first part carries
+:data:`SYNC_COMPRESSED_TAG` and therefore 156."""
 
 
 # ---------------------------------------------------------------------------
@@ -605,6 +651,7 @@ class BbsCommandHandler:
     Machine syntax (v1.26.0), see the module docstring::
 
         !x [since_id] [since_del]     — sync: messages, retention, deletions
+        !x <since_id> <since_del> z   — same, compressed (v1.26.4)
 
     Category abbreviations are computed automatically as the shortest unique
     prefix per category within the configured list.  ``!r`` and ``!bbs help``
@@ -617,8 +664,19 @@ class BbsCommandHandler:
 
     READ_LIMIT: int = 5
 
-    SYNC_LIMIT: int = 10
-    """Maximum number of message records in one ``!x`` reply (v1.26.0)."""
+    SYNC_LIMIT: int = 50
+    """Maximum number of message records in one ``!x`` reply.
+
+    10 in v1.26.0-v1.26.2; 50 since v1.26.3.  Every ``!x`` round costs a
+    request DM from the client plus the header and ``R`` lines (up to one
+    extra DM part) on top of the records; each reply part is sent only
+    after the ACK of the previous one.  Fewer rounds therefore mean fewer
+    packets: 40 messages take one reply instead of four.  When the DM
+    sender drops the rest of a reply after ``DM_MAX_ATTEMPTS``, the client
+    asks again from the highest complete record it received; the
+    meshcore-open BBS client also keeps its ``since_del`` until a reply
+    has all ``lines`` lines, so deletions at the end are not skipped.
+    """
 
     def __init__(self, service: BbsService, config_store) -> None:
         self._service = service
@@ -1087,28 +1145,61 @@ class BbsCommandHandler:
     # ------------------------------------------------------------------
 
     def _handle_sync(self, board: BbsBoard, args: str) -> str:
-        """Handle ``!x [since_id] [since_del]`` and build the sync reply.
+        """Handle ``!x [since_id] [since_del] [z]`` and build the sync reply.
 
         The reply format is described in the module docstring.  Every
-        line is at most :data:`SYNC_LINE_MAX_BYTES` UTF-8 bytes.
+        line is at most :data:`SYNC_LINE_MAX_BYTES` UTF-8 bytes.  With the
+        flag :data:`SYNC_COMPRESS_FLAG` after both numbers the reply is
+        compressed (v1.26.4, see :meth:`_compress_reply`).
 
         Args:
             board: Active ``BbsBoard``.
             args:  Text after ``!x``: up to two whole numbers from ``0``
-                   to :data:`SYNC_MAX_ID`, ASCII digits only.
+                   to :data:`SYNC_MAX_ID`, ASCII digits only, optionally
+                   followed by :data:`SYNC_COMPRESS_FLAG` when both
+                   numbers are given.
 
         Returns:
             Multi-line sync reply, or the usage line
-            ``Usage: !x <since_id> <since_del>`` when *args* is not valid.
+            ``Usage: !x <since_id> <since_del>`` when *args* is not valid
+            (unchanged in v1.26.4, so clients that test for it keep
+            working).
         """
         tokens = args.split() if args else []
-        if len(tokens) > 2 or not all(
-            t.isascii() and t.isdigit() and int(t) <= SYNC_MAX_ID for t in tokens
+        compressed = len(tokens) == 3 and tokens[2] == SYNC_COMPRESS_FLAG
+        numbers = tokens[:2] if compressed else tokens
+        if len(numbers) > 2 or not all(
+            t.isascii() and t.isdigit() and int(t) <= SYNC_MAX_ID for t in numbers
         ):
             return "Usage: !x <since_id> <since_del>"
-        since_id = int(tokens[0]) if tokens else 0
-        since_del = int(tokens[1]) if len(tokens) > 1 else 0
+        since_id = int(numbers[0]) if numbers else 0
+        since_del = int(numbers[1]) if len(numbers) > 1 else 0
 
+        header, lines = self._sync_body(board, since_id, since_del)
+        if not compressed:
+            return "\n".join([f"{SYNC_HEADER_TAG}|{header}"] + lines)
+        # Every line, the last one too, ends with a line feed, so a
+        # client that inflates part of the reply sees which lines are whole.
+        return self._compress_reply("\n".join(
+            [f"{SYNC_HEADER_TAG_ECHO}|{header}|{since_id}|{since_del}"] + lines
+        ) + "\n")
+
+    def _sync_body(
+        self, board: BbsBoard, since_id: int, since_del: int,
+    ) -> Tuple[str, List[str]]:
+        """Build the header fields and the lines of a sync reply.
+
+        Args:
+            board:     Active ``BbsBoard``.
+            since_id:  Highest message id the client has.
+            since_del: Highest deletion sequence number the client has.
+
+        Returns:
+            Tuple of (header without its tag:
+            ``<epoch>|<n>|<more>|<del_seq>|<n_del>|<lines>``, the lines
+            after the header: ``R`` lines, records with their ``+``
+            lines, ``-`` lines).
+        """
         batch = self._service.get_messages_since(
             board.channels, since_id, self.SYNC_LIMIT + 1,
         )
@@ -1128,10 +1219,42 @@ class BbsCommandHandler:
         for msg in records:
             lines += self._record_lines(msg, abbrev_of)
         lines += self._pack_items("-", [str(i) for i in deleted_ids])
-        return "\n".join([
-            f"{SYNC_HEADER_TAG}|{self._service.get_epoch()}|{len(records)}|"
+        header = (
+            f"{self._service.get_epoch()}|{len(records)}|"
             f"{int(more)}|{del_seq}|{len(deleted_ids)}|{len(lines)}"
-        ] + lines)
+        )
+        return header, lines
+
+    @staticmethod
+    def _compress_reply(text: str) -> str:
+        """Compress a sync reply into DM-sized base64 lines (v1.26.4).
+
+        *text* is compressed as one raw deflate stream and encoded as
+        base64.  The first line is :data:`SYNC_COMPRESSED_TAG` plus the
+        first 156 characters (the largest multiple of 4 that fits next to
+        the tag in :data:`SYNC_LINE_MAX_BYTES`), every next line
+        :data:`SYNC_BASE64_PER_PART` characters, the last line the rest.
+        Each line fits one DM part exactly, so the DM splitter
+        (``CommandHandler._split_reply``) keeps one line per part, and
+        each line except the last ends on a 4-character base64 group.
+
+        Args:
+            text: Complete reply with ``X2`` header.
+
+        Returns:
+            Base64 lines joined with a line feed; never empty.
+        """
+        comp = zlib.compressobj(SYNC_DEFLATE_LEVEL, zlib.DEFLATED, -15)
+        data = comp.compress(text.encode("utf-8")) + comp.flush()
+        encoded = base64.b64encode(data).decode("ascii")
+        # Largest multiple of 4 that fits next to the tag: 156.
+        first = (SYNC_LINE_MAX_BYTES - len(SYNC_COMPRESSED_TAG)) // 4 * 4
+        lines = [SYNC_COMPRESSED_TAG + encoded[:first]]
+        lines += [
+            encoded[i:i + SYNC_BASE64_PER_PART]
+            for i in range(first, len(encoded), SYNC_BASE64_PER_PART)
+        ]
+        return "\n".join(lines)
 
     @staticmethod
     def _sync_field(value: str) -> str:

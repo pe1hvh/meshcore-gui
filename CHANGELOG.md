@@ -11,6 +11,57 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.26.4] - 2026-11-18 — BBS sync: one reply per request, compressed replies
+
+### Added
+- 🆕 **Compressed sync reply** (`services/bbs_service.py`): `!x <since_id>
+  <since_del> z` returns the same reply compressed: header `X2` (the `X1`
+  fields plus `since_id` and `since_del` of the request, so a client can
+  tell which request a reply answers), the whole text as one raw deflate
+  stream (level 9, every line ending in a line feed), base64, in lines
+  of exactly one DM part each (first line `Z1|` + 156 characters, then
+  160). Every first *k* parts can be
+  decoded and inflated on their own, so a client keeps the complete
+  records of a broken-off reply and resumes as with `X1`. Measured on the
+  NNO board (30 messages): 16 DM parts plain, 8 compressed. A server
+  before 1.26.4 answers the flagged request with the usage line (unchanged
+  text), after which a client asks again without the flag.
+
+### Changed
+- ⚡ **A new `!x`/`!h` reply replaces an older one to the same node**
+  (`ble/events.py`, `ble/commands.py`): the `send_dm` command of a reply
+  to `!x`, `!h` or `!help` carries `"replace": "bbs_sync"`;
+  `CommandHandler._cmd_send_dm` first removes queued DMs to the same
+  recipient with the same key, the one being delivered included. An app
+  waits only for the reply to its latest request. Measured on 17-11 with
+  a meshcore-open BBS app before v0.3.0-bbs over a lossy link: 42 `!x`
+  requests with only 9
+  different cursors put 245 DM parts in the queue where ±18 were needed.
+- `tests/test_bbs_sync_v1264.py`: 20 tests for the compressed reply
+  (framing, `X2` header, readable prefixes, flag parsing) and the
+  replaceable replies (queue, ACK of a removed part, which commands).
+
+---
+
+## [1.26.3] - 2026-11-18 — Faster BBS sync: up to 50 records per `!x` reply
+
+### Changed
+- ⚡ **`!x` reply carries up to 50 message records instead of 10**
+  (`services/bbs_service.py`, `BbsCommandHandler.SYNC_LIMIT`): every `!x`
+  round costs a request DM plus the header and `R` lines (up to one extra
+  DM part) on top of the records, each reply part sent only after the ACK
+  of the previous one. With 40 messages an app now needs one round instead
+  of four: roughly 10-20 % fewer DMs (request DMs + reply DM parts),
+  depending on sender, category and text length. The protocol (`X1`) is
+  unchanged: clients already follow `more` and resume from the highest
+  complete record when a reply is cut off, so older app versions keep
+  working.
+- `tests/test_bbs_sync.py`: `test_sync_batches_and_cursor` follows
+  `SYNC_LIMIT` instead of assuming 10; new `test_sync_limit_is_fifty`
+  (40 messages in one reply with `more` = 0).
+
+---
+
 ## [1.26.2] - 2026-11-15 — Bot and BBS replies use the region of the request
 
 ### Fixed

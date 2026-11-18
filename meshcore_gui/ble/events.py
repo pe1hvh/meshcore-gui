@@ -43,6 +43,13 @@ adds it to the ``send_dm`` command.  Only a known region is passed on: an
 unknown region (``"?xxxx"``, no key to send with) or an unscoped request
 gives no ``"region"`` key, so the channel or device default applies
 (:meth:`EventHandler._reply_region`).
+
+Replaceable BBS sync replies (v1.26.4)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The ``send_dm`` command of a reply to ``!x``, ``!h`` or ``!help`` carries
+``"replace": "bbs_sync"`` (:data:`BBS_SYNC_REPLACE_KEY`).  The DM sender
+then drops an older sync reply to the same node that is still queued or
+being delivered: an app waits only for the reply to its latest request.
 """
 
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional
@@ -54,6 +61,15 @@ from meshcore_gui.ble.packet_decoder import PacketDecoder, PayloadType
 from meshcore_gui.services.bot import MeshBot
 from meshcore_gui.services.dedup import DualDeduplicator
 from meshcore_gui.services.region_service import UNKNOWN_REGION_PREFIX
+
+BBS_SYNC_REPLACE_KEY: str = "bbs_sync"
+"""``replace`` key of ``send_dm`` commands that answer ``!x`` or ``!h``
+(v1.26.4): a newer such reply to the same node drops the older one from
+the DM queue (see ``CommandHandler._cmd_send_dm``)."""
+
+BBS_SYNC_COMMANDS: tuple = ("!x", "!h", "!help")
+"""First words of BBS DM commands whose reply is replaceable: the sync
+and help commands an app sends while it waits for one answer only."""
 
 if TYPE_CHECKING:
     from meshcore_gui.services.bbs_service import BbsCommandHandler
@@ -770,11 +786,9 @@ class EventHandler:
                     f"{f' (region #{reply_region})' if reply_region else ''}"
                     f": {bbs_reply[:60]}"
                 )
-                self._command_sink(self._with_region({
-                    "action": "send_dm",
-                    "pubkey": pubkey,
-                    "text": bbs_reply,
-                }, reply_region))
+                self._command_sink(self._with_region(
+                    self._bbs_dm_reply(pubkey, bbs_reply, dm_text), reply_region,
+                ))
             # Always store the incoming DM in the message archive too
             self._shared.add_message(Message.incoming(
                 sender,
@@ -806,6 +820,39 @@ class EventHandler:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @classmethod
+    def _bbs_dm_reply(cls, pubkey: str, reply: str, request: str) -> Dict:
+        """Build the ``send_dm`` command for a BBS reply.
+
+        Args:
+            pubkey:  Public key prefix of the requesting node.
+            reply:   Reply text from ``BbsCommandHandler.handle_dm``.
+            request: DM text the node sent.
+
+        Returns:
+            ``send_dm`` command dict; with ``"replace":``
+            :data:`BBS_SYNC_REPLACE_KEY` when *request* is a sync or help
+            command (v1.26.4).
+        """
+        command = {"action": "send_dm", "pubkey": pubkey, "text": reply}
+        if cls._is_bbs_sync_request(request):
+            command["replace"] = BBS_SYNC_REPLACE_KEY
+        return command
+
+    @staticmethod
+    def _is_bbs_sync_request(text: str) -> bool:
+        """Tell whether a BBS DM command is ``!x``, ``!h`` or ``!help``.
+
+        Args:
+            text: DM text as received.
+
+        Returns:
+            True when the first word, in lower case, is one of
+            :data:`BBS_SYNC_COMMANDS`.
+        """
+        words = text.split()
+        return bool(words) and words[0].lower() in BBS_SYNC_COMMANDS
 
     def _is_resent_dm(self, payload: Dict, pubkey: str, text: str) -> bool:
         """Tell whether a DM is a resent attempt of a DM already passed to the BBS handler.

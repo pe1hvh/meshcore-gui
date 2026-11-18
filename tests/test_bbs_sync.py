@@ -308,15 +308,33 @@ def test_sync_batches_and_cursor(env) -> None:
         env: Store, service and handler fixture.
     """
     _, service, handler = env
-    ids = [_post(service, "STATUS", 0, text=f"m{i}") for i in range(12)]
+    limit = BbsCommandHandler.SYNC_LIMIT
+    ids = [_post(service, "STATUS", 0, text=f"m{i}") for i in range(limit + 2)]
     lines = _sync(handler)
     header = lines[0].split("|")
-    assert header[2:4] == [str(BbsCommandHandler.SYNC_LIMIT), "1"]
+    assert header[2:4] == [str(limit), "1"]
     got = [int(line.split("|")[0]) for line in lines[2:]]
-    assert got == ids[:BbsCommandHandler.SYNC_LIMIT]
+    assert got == ids[:limit]
     lines = _sync(handler, str(got[-1]))
     assert lines[0].split("|")[2:4] == ["2", "0"]
-    assert [int(line.split("|")[0]) for line in lines[2:]] == ids[10:]
+    assert [int(line.split("|")[0]) for line in lines[2:]] == ids[limit:]
+
+
+def test_sync_limit_is_fifty(env) -> None:
+    """One ``!x`` reply carries up to 50 records (v1.26.3).
+
+    40 messages fit in a single reply with ``more`` = ``0``, so an app
+    needs one request instead of four.
+
+    Args:
+        env: Store, service and handler fixture.
+    """
+    _, service, handler = env
+    assert BbsCommandHandler.SYNC_LIMIT == 50
+    ids = [_post(service, "STATUS", 0, text=f"m{i}") for i in range(40)]
+    lines = _sync(handler)
+    assert lines[0].split("|")[2:4] == ["40", "0"]
+    assert [int(line.split("|")[0]) for line in lines[2:]] == ids
 
 
 def test_sync_long_record_uses_continuations(env) -> None:

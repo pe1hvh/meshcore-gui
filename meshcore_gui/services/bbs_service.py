@@ -60,7 +60,8 @@ at most :data:`SYNC_LINE_MAX_BYTES` UTF-8 bytes:
   configured); ``0`` = keep forever.  More ``R``
   lines follow when one line would exceed the byte limit.
 - record: ascending id (= order of arrival), at most
-  ``BbsCommandHandler.SYNC_LIMIT`` per reply.  ``abbr`` is the upper-case
+  the board's ``sync_limit`` per reply (v1.27.0; default
+  ``BbsCommandHandler.SYNC_LIMIT``).  ``abbr`` is the upper-case
   full category name when the category is no longer configured.  ``|``
   in sender and region is replaced by ``/``; sender, region and text are
   split into lines (``str.splitlines``) and joined with single spaces, so
@@ -73,7 +74,8 @@ at most :data:`SYNC_LINE_MAX_BYTES` UTF-8 bytes:
   does not lose it (exceptions: see ``_record_lines``).
 - ``-``: ids of all messages deleted by the operator since
   ``since_del``, on any channel and without a limit per reply
-  (``SYNC_LIMIT`` does not apply), so this part can take several DMs.
+  (the board's ``sync_limit`` does not apply), so this part can take
+  several DMs.
 
 Compressed sync reply (v1.26.4)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -100,6 +102,16 @@ it gets is the start of the reply, and a line is complete once its line
 feed is in it.  The client keeps the records whose lines are complete and resumes after a broken-off reply as with ``X1``.  A server
 before v1.26.4 answers the flagged request with the usage line; a client
 then repeats it without the flag.
+
+Delivery settings in the help reply (v1.27.0)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``!h x`` (or ``!help x``) returns the help text with one extra third
+line, ``X|a=<attempts>,f=<flood after>,w=<flood min wait s>,
+k=<wait factor>``: the board's DM delivery settings for BBS replies (see
+``BbsBoard``).  An app uses them to compute how long the BBS may spend on
+one reply part.  A server before v1.27.0 ignores the ``x`` and answers
+with the plain help text; an app then uses its own defaults.  Plain
+``!h`` is unchanged; the ``x`` is matched case-insensitively.
 """
 
 # The service and its command handler share this module since v1.14.0;
@@ -118,7 +130,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from meshcore_gui.config import debug_print
-from meshcore_gui.services.bbs_config_store import BbsBoard
+from meshcore_gui.services.bbs_config_store import DEFAULT_SYNC_LIMIT, BbsBoard
 
 BBS_DIR = Path.home() / ".meshcore-gui" / "bbs"
 BBS_DB_PATH = BBS_DIR / "bbs_messages.db"
@@ -145,6 +157,11 @@ SYNC_COMPRESS_FLAG: str = "z"
 
 SYNC_COMPRESSED_TAG: str = "Z1|"
 """Start of the first DM part of a compressed reply (v1.26.4)."""
+
+HELP_SETTINGS_TAG: str = "X|"
+"""Start of the delivery settings line in the reply to ``!h x`` (v1.27.0).
+The line is ``X|a=<attempts>,f=<flood after>,w=<flood min wait s>,
+k=<wait factor>``; an app ignores keys it does not know."""
 
 SYNC_DEFLATE_LEVEL: int = 9
 """zlib level for the compressed reply: 9 = smallest output."""
@@ -664,24 +681,26 @@ class BbsCommandHandler:
 
     READ_LIMIT: int = 5
 
-    SYNC_LIMIT: int = 10
-    """Maximum number of message records in one ``!x`` reply.
+    SYNC_LIMIT: int = DEFAULT_SYNC_LIMIT
+    """Default maximum number of message records in one ``!x`` reply.
 
-    10 in v1.26.0-v1.26.2, 50 in v1.26.3-v1.26.4, 10 again since v1.26.5.
-    Every ``!x`` round costs a request DM from the client plus the header
-    and ``R`` lines (up to one extra DM part) on top of the records; each
-    reply part is sent only after the ACK of the previous one.  Fewer
-    rounds mean fewer packets, but the whole NNO board (34 records) took
-    9 compressed DM parts in one reply, and on a lossy path (logs of
-    18-11-2026) no such reply delivered more than 2 parts in 13 requests;
-    the client then started again from the same cursor.  With 10 records
-    a compressed reply takes about 4 parts, and every complete reply
-    moves the client's cursor, also for a client that does not resume
-    from a broken-off reply.  When the DM
-    sender drops the rest of a reply after ``DM_MAX_ATTEMPTS``, the client
-    asks again from the highest complete record it received; the
-    meshcore-open BBS client also keeps its ``since_del`` until a reply
-    has all ``lines`` lines, so deletions at the end are not skipped.
+    Since v1.27.0 the board's ``sync_limit`` applies (BBS settings, 1-50,
+    default this value); history of the default: 10 in v1.26.0-v1.26.2, 50
+    in v1.26.3-v1.26.4, 10 since v1.26.5.  Every ``!x`` round costs a
+    request DM from the client plus the header and ``R`` lines (up to one
+    extra DM part) on top of the records; each reply part is sent only after
+    the ACK of the previous one.  Fewer rounds mean fewer packets, but the
+    whole NNO board (34 records) took 9 compressed DM parts in one reply,
+    and on a lossy path (logs of 18-11-2026) no such reply delivered more
+    than 2 parts in 13 requests; the client then started again from the same
+    cursor.  With 10 records a compressed reply takes about 4 parts, and
+    every complete reply moves the client's cursor, also for a client that
+    does not resume from a broken-off reply.  When the DM sender drops the
+    rest of a reply after the board's ``dm_max_attempts`` (default
+    ``DM_MAX_ATTEMPTS``), the client asks again from the highest complete
+    record it received; the meshcore-open BBS client also keeps its
+    ``since_del`` until a reply has all ``lines`` lines, so deletions at the
+    end are not skipped.
     """
 
     def __init__(self, service: BbsService, config_store) -> None:
@@ -809,7 +828,10 @@ class BbsCommandHandler:
             return self._handle_search(board, rest)
 
         if first in ("!help", "!h"):
-            return self._handle_help(board)
+            rest = text[len(first):].split()
+            return self._handle_help(
+                board, settings=[w.lower() for w in rest[:1]] == ["x"],
+            )
 
         if first == "!x":
             rest = text[len(first):].strip()
@@ -1207,10 +1229,10 @@ class BbsCommandHandler:
             lines, ``-`` lines).
         """
         batch = self._service.get_messages_since(
-            board.channels, since_id, self.SYNC_LIMIT + 1,
+            board.channels, since_id, board.sync_limit + 1,
         )
-        more = len(batch) > self.SYNC_LIMIT
-        records = batch[:self.SYNC_LIMIT]
+        more = len(batch) > board.sync_limit
+        records = batch[:board.sync_limit]
         deleted_ids, del_seq = self._service.get_deletions_since(since_del)
 
         abbrev_of = {
@@ -1431,7 +1453,44 @@ class BbsCommandHandler:
     # Help
     # ------------------------------------------------------------------
 
-    def _handle_help(self, board) -> str:
+    def delivery_settings(self) -> Dict[str, float]:
+        """Return the DM delivery settings for BBS replies (v1.27.0).
+
+        Read from the configured board on every call, so a change in the
+        BBS settings applies to the next reply without a restart.
+
+        Returns:
+            ``send_dm`` command keys ``max_attempts``, ``flood_after``,
+            ``flood_min_wait`` (s) and ``wait_factor`` with the board's
+            values, or the ``config.py`` defaults when no board exists.
+        """
+        board = self._config_store.get_single_board() or BbsBoard(id="", name="")
+        return {
+            "max_attempts": board.dm_max_attempts,
+            "flood_after": board.dm_flood_after,
+            "flood_min_wait": board.dm_flood_min_wait,
+            "wait_factor": board.dm_wait_factor,
+        }
+
+    @staticmethod
+    def _settings_line(board: BbsBoard) -> str:
+        """Return the delivery settings line of ``!h x`` (v1.27.0).
+
+        Args:
+            board: Board whose sync settings are announced.
+
+        Returns:
+            :data:`HELP_SETTINGS_TAG` followed by ``a=<max attempts>,
+            f=<flood after>,w=<flood min wait s>,k=<wait factor>``, numbers
+            without trailing zeros, e.g. ``X|a=3,f=2,w=30,k=1.2``.
+        """
+        return (
+            f"{HELP_SETTINGS_TAG}a={board.dm_max_attempts:g},"
+            f"f={board.dm_flood_after:g},w={board.dm_flood_min_wait:g},"
+            f"k={board.dm_wait_factor:g}"
+        )
+
+    def _handle_help(self, board, settings: bool = False) -> str:
         """Return the help text for *board*, one part per line.
 
         The parts are separated by newlines so the DM sender can split a
@@ -1443,8 +1502,15 @@ class BbsCommandHandler:
         The board name (the linked whitelist channels) is not shown: the
         BBS is used by DM, so a channel name in the help was confusing.
 
+        With *settings* (``!h x``, v1.27.0) the third line is the
+        delivery settings line (:meth:`_settings_line`), so an app can
+        compute how long the BBS may spend on one reply part.  The first
+        and the last line stay as before: a client that parses the plain
+        help reads only those.
+
         Args:
             board: Board whose regions and categories are shown.
+            settings: True to add the delivery settings line.
 
         Returns:
             Multi-line help text.
@@ -1454,6 +1520,8 @@ class BbsCommandHandler:
             "BBS",
             "!p [cat] [text] | !r [cat] [1-5] | !s [cat] [query]",
         ]
+        if settings:
+            lines.append(self._settings_line(board))
         if board.regions:
             lines.append(f"Regions: {', '.join(board.regions)}")
         if abbr:

@@ -787,7 +787,11 @@ class EventHandler:
                     f": {bbs_reply[:60]}"
                 )
                 self._command_sink(self._with_region(
-                    self._bbs_dm_reply(pubkey, bbs_reply, dm_text), reply_region,
+                    self._bbs_dm_reply(
+                        pubkey, bbs_reply, dm_text,
+                        self._bbs_handler.delivery_settings(),
+                    ),
+                    reply_region,
                 ))
             # Always store the incoming DM in the message archive too
             self._shared.add_message(Message.incoming(
@@ -822,13 +826,19 @@ class EventHandler:
     # ------------------------------------------------------------------
 
     @classmethod
-    def _bbs_dm_reply(cls, pubkey: str, reply: str, request: str) -> Dict:
+    def _bbs_dm_reply(
+        cls, pubkey: str, reply: str, request: str,
+        settings: Optional[Dict] = None,
+    ) -> Dict:
         """Build the ``send_dm`` command for a BBS reply.
 
         Args:
-            pubkey:  Public key prefix of the requesting node.
-            reply:   Reply text from ``BbsCommandHandler.handle_dm``.
-            request: DM text the node sent.
+            pubkey:   Public key prefix of the requesting node.
+            reply:    Reply text from ``BbsCommandHandler.handle_dm``.
+            request:  DM text the node sent.
+            settings: Delivery settings of the board
+                      (``BbsCommandHandler.delivery_settings``, v1.27.0),
+                      added to the command; None: ``config.py`` defaults.
 
         Returns:
             ``send_dm`` command dict; with ``"replace":``
@@ -836,6 +846,7 @@ class EventHandler:
             command (v1.26.4).
         """
         command = {"action": "send_dm", "pubkey": pubkey, "text": reply}
+        command.update(settings or {})
         if cls._is_bbs_sync_request(request):
             command["replace"] = BBS_SYNC_REPLACE_KEY
         return command

@@ -320,6 +320,14 @@ def test_other_replies_are_kept() -> None:
 class _EchoBbs:  # pylint: disable=too-few-public-methods
     """Stand-in for BbsCommandHandler that answers every DM."""
 
+    def delivery_settings(self) -> Dict:
+        """Return no delivery settings, so replies use the defaults.
+
+        Returns:
+            Empty dict (``BbsCommandHandler.delivery_settings``, v1.27.0).
+        """
+        return {}
+
     def handle_dm(self, sender: str, sender_key: str, text: str) -> str:
         """Answer with a fixed text.
 

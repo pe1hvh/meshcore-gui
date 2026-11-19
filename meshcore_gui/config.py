@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.26.5"
+VERSION: str = "1.27.0"
 
 
 # ==============================================================================
@@ -443,7 +443,7 @@ CONTACT_REFRESH_MIN_INTERVAL: float = 15.0
 # Direct messages (send_dm) follow the MeshCore DM protocol: a reply that
 # is split into several DMs sends the next part only after the ACK of the
 # previous part.  Without an ACK within the device's suggested timeout
-# (x 1.2) the same part is sent again, at most DM_MAX_ATTEMPTS times in
+# (x DM_WAIT_FACTOR) the same part is sent again, at most DM_MAX_ATTEMPTS times in
 # total; before attempt number DM_FLOOD_AFTER + 1 the path to the contact
 # is reset so the part goes out as flood.  Values mirror the defaults of
 # meshcore.commands.send_msg_with_retry().  When a part is still not
@@ -456,9 +456,18 @@ DM_FLOOD_AFTER: int = 2
 # flood, whatever the number of hops (companion_radio MyMesh.cpp,
 # calcFloodTimeoutMillisFor); on 18-11-2026 that was 10788 ms for a node
 # 4 hops away, while the ACK of that flood took 15708 ms (trip_time).  A
-# flood part waits max(suggested timeout x 1.2, DM_FLOOD_MIN_WAIT); an ACK
-# of an earlier attempt of the part also counts while it waits.
+# flood part waits max(suggested timeout x DM_WAIT_FACTOR, DM_FLOOD_MIN_WAIT);
+# an ACK of an earlier attempt of the part also counts while it waits.
 DM_FLOOD_MIN_WAIT: float = 30.0
+
+# Factor on the firmware's suggested timeout: a sent DM part waits
+# suggested timeout x DM_WAIT_FACTOR for its ACK (for a flood part at least
+# DM_FLOOD_MIN_WAIT).  A fixed 1.2 in ble/commands.py before v1.27.0.
+DM_WAIT_FACTOR: float = 1.2
+
+# DM_MAX_ATTEMPTS, DM_FLOOD_AFTER, DM_FLOOD_MIN_WAIT and DM_WAIT_FACTOR are
+# the defaults for every DM (send_dm).  Since v1.27.0 a BBS board can set its own
+# values for BBS replies (``BbsBoard`` sync settings, BBS settings panel).
 
 # Interval in seconds between safety-net polls of the device message queue.
 #

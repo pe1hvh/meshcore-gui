@@ -30,6 +30,7 @@ from meshcore_gui.config import (
     DM_FLOOD_AFTER,
     DM_FLOOD_MIN_WAIT,
     DM_MAX_ATTEMPTS,
+    DM_WAIT_FACTOR,
     debug_print,
 )
 from meshcore_gui.core.models import Message
@@ -67,6 +68,14 @@ class _DmDelivery:
                       non-empty key to the same recipient removes this one
                       from the queue, also while it is being delivered.
                       Empty: never replaced.
+        max_attempts: Send attempts per part (v1.27.0; default
+                      ``DM_MAX_ATTEMPTS``).
+        flood_after:  Attempts before the path is reset to flood
+                      (default ``DM_FLOOD_AFTER``).
+        flood_min_wait: Minimum seconds a part sent as flood waits for
+                      its ACK (default ``DM_FLOOD_MIN_WAIT``).
+        wait_factor:  Factor on the firmware's suggested timeout
+                      (default ``DM_WAIT_FACTOR``).
     """
 
     pubkey: str
@@ -80,6 +89,10 @@ class _DmDelivery:
     deadline: float = 0.0
     region: str = ""
     replace: str = ""
+    max_attempts: int = DM_MAX_ATTEMPTS
+    flood_after: int = DM_FLOOD_AFTER
+    flood_min_wait: float = DM_FLOOD_MIN_WAIT
+    wait_factor: float = DM_WAIT_FACTOR
 
 
 class CommandHandler:
@@ -400,8 +413,13 @@ class CommandHandler:
         Args:
             cmd: Command dict with ``pubkey``, ``text`` and optional
                  ``contact_name``, ``region`` (region to send every
-                 part in; empty or absent: device default) and
-                 ``replace`` (replacement key, see above).
+                 part in; empty or absent: device default),
+                 ``replace`` (replacement key, see above) and, since
+                 v1.27.0, ``max_attempts``, ``flood_after``,
+                 ``flood_min_wait`` and ``wait_factor`` (delivery
+                 settings of this DM; absent: the ``DM_*`` defaults
+                 from ``config.py``).  The BBS passes the sync
+                 settings of its board, already validated.
         """
         pubkey = cmd.get('pubkey', '')
         text = cmd.get('text', '')
@@ -423,6 +441,10 @@ class CommandHandler:
             queue.append(_DmDelivery(
                 pubkey=pubkey, contact_name=contact_name, chunks=chunks,
                 region=region, replace=replace,
+                max_attempts=cmd.get('max_attempts', DM_MAX_ATTEMPTS),
+                flood_after=cmd.get('flood_after', DM_FLOOD_AFTER),
+                flood_min_wait=cmd.get('flood_min_wait', DM_FLOOD_MIN_WAIT),
+                wait_factor=cmd.get('wait_factor', DM_WAIT_FACTOR),
             ))
             self._shared.add_message(Message.outgoing(text, None, sender_pubkey=pubkey))
             debug_print(
@@ -491,11 +513,13 @@ class CommandHandler:
           the reply when all parts are confirmed;
         - waiting and deadline passed: send the same part again (same
           timestamp, next attempt number), resetting the path to flood
-          before attempt ``DM_FLOOD_AFTER + 1``; after
-          ``DM_MAX_ATTEMPTS`` the rest of the reply is dropped.
+          before attempt ``flood_after + 1``; after ``max_attempts``
+          the rest of the reply is dropped.
 
-        The deadline is the suggested timeout x 1.2, for a part sent as
-        flood at least ``DM_FLOOD_MIN_WAIT`` seconds (v1.26.5).
+        The deadline is the suggested timeout x ``wait_factor``, for a
+        part sent as flood at least ``flood_min_wait`` seconds (v1.26.5).
+        Since v1.27.0 these four values come from the delivery itself
+        (``config.py`` ``DM_*`` defaults, or the BBS board settings).
         """
         now = time.monotonic()
         for key in list(self._dm_queues):
@@ -520,7 +544,7 @@ class CommandHandler:
                 )
                 queue.popleft()
                 continue
-            if delivery.attempt >= DM_MAX_ATTEMPTS:
+            if delivery.attempt >= delivery.max_attempts:
                 debug_print(
                     f"DM to {delivery.contact_name} failed at part "
                     f"{delivery.index + 1}/{len(delivery.chunks)} after "
@@ -539,9 +563,9 @@ class CommandHandler:
         ``_cmd_send_message``).
 
         The part waits for its ACK until ``deadline``: the firmware's
-        ``suggested_timeout`` x 1.2, and at least ``DM_FLOOD_MIN_WAIT``
-        seconds when ``MSG_SENT`` reports the DM went out as flood
-        (``type`` 1, v1.26.5).
+        ``suggested_timeout`` x ``delivery.wait_factor``, and at least
+        ``delivery.flood_min_wait`` seconds when ``MSG_SENT`` reports the
+        DM went out as flood (``type`` 1, v1.26.5).
 
         Args:
             delivery: Queue head whose part ``index`` is sent with attempt
@@ -549,7 +573,7 @@ class CommandHandler:
         """
         if delivery.attempt == 0:
             delivery.timestamp = int(time.time())
-        elif delivery.attempt == DM_FLOOD_AFTER:
+        elif delivery.attempt == delivery.flood_after:
             await self._reset_dm_path(delivery)
         chunk = delivery.chunks[delivery.index]
         scoped = bool(delivery.region) and await self._set_send_scope(delivery.region)
@@ -582,9 +606,9 @@ class CommandHandler:
         timeout_ms = result.payload.get('suggested_timeout', 0) or 0
         # MSG_SENT type 1: the firmware sent the DM as flood (v1.26.5).
         flood = result.payload.get('type') == 1
-        wait = timeout_ms / 1000 * 1.2
+        wait = timeout_ms / 1000 * delivery.wait_factor
         if flood:
-            wait = max(wait, DM_FLOOD_MIN_WAIT)
+            wait = max(wait, delivery.flood_min_wait)
         delivery.acks.add(str(expected).lower())
         delivery.waiting = True
         delivery.deadline = time.monotonic() + wait

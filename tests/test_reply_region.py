@@ -194,6 +194,14 @@ class FakeBbsHandler:
         del channel_idx, sender, sender_key
         return "BBS menu" if text == BBS_TEXT else None
 
+    def delivery_settings(self) -> Dict:
+        """Return no delivery settings, so replies use the defaults.
+
+        Returns:
+            Empty dict (``BbsCommandHandler.delivery_settings``, v1.27.0).
+        """
+        return {}
+
     def handle_dm(self, sender: str, sender_key: str, text: str) -> str:
         """Answer every DM command.
 

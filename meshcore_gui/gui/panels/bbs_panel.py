@@ -11,6 +11,8 @@ from meshcore_gui.services.bbs_config_store import (
     BbsConfigStore,
     DEFAULT_CATEGORIES,
     DEFAULT_RETENTION_DAYS,
+    SYNC_SETTINGS,
+    clean_sync_setting,
 )
 from meshcore_gui.services.bbs_service import BbsMessage, BbsService
 from meshcore_gui.core.protocols import SharedDataReadAndLookup
@@ -415,8 +417,10 @@ class BbsSettingsPage:
     One node = one board.  The page shows a single channel selector
     populated from the active device channels, plus a categories field,
     a retention field per category with a default for other categories
-    (v1.26.0), and a collapsible Advanced section for regions and
-    allowed keys.  There is no board creation or deletion UI.
+    (v1.26.0), a collapsible Advanced section for regions and
+    allowed keys, and a collapsible Sync section for the sync and reply
+    delivery settings (v1.27.0).  There is no board creation or deletion
+    UI.
 
     Args:
         shared:       SharedData instance (for device channel list).
@@ -518,6 +522,8 @@ class BbsSettingsPage:
                 value=adv_keys_value,
             ).classes('w-full text-xs')
 
+        sync_inputs = self._render_sync_section(board)
+
         # ── Save ─────────────────────────────────────────────────────
         def _save(
             cc=ch_checks,
@@ -543,6 +549,10 @@ class BbsSettingsPage:
                 )
                 return
             default_days, category_days = retention
+            sync_settings = self._collect_sync(sync_inputs)
+            if sync_settings is None:
+                ui.notify('A sync setting is outside its range.', type='warning')
+                return
             regions = [r.strip() for r in (rgi.value or '').split(',') if r.strip()]
             # Only pass allowed_keys if the field was explicitly filled;
             # empty field means "keep auto-learned keys"
@@ -557,6 +567,7 @@ class BbsSettingsPage:
                 allowed_keys=allowed_keys,
                 default_retention_days=default_days,
                 category_retention_days=category_days,
+                sync_settings=sync_settings,
             )
             ch_labels = ', '.join(f"[{i}] {ch_names.get(i, '?')}" for i in sorted(selected))
             debug_print(f'BBS settings: configured channels {ch_labels}')
@@ -564,6 +575,79 @@ class BbsSettingsPage:
             self._rebuild()
 
         ui.button('Save', on_click=_save).props('no-caps').classes('text-xs mt-2')
+
+    # ------------------------------------------------------------------
+    # Sync settings (v1.27.0)
+    # ------------------------------------------------------------------
+
+    SYNC_FIELDS: List[Tuple[str, str, str]] = [
+        ("sync_limit", "Messages per sync reply",
+         "Records per !x reply; fewer = shorter replies, more rounds"),
+        ("dm_max_attempts", "Attempts per reply part",
+         "Send attempts per DM part before the rest of the reply is dropped"),
+        ("dm_flood_after", "Flood after attempts",
+         "Attempts along the known path before the path is reset to flood"),
+        ("dm_flood_min_wait", "Flood wait (s)",
+         "Minimum seconds a part sent as flood waits for its ACK"),
+        ("dm_wait_factor", "Wait factor",
+         "ACK wait = firmware timeout x this factor"),
+    ]
+    """Sync section rows: (setting name, label, tooltip).  Names are keys
+    of ``SYNC_SETTINGS``; bounds and defaults come from there."""
+
+    @classmethod
+    def _render_sync_section(cls, board: Optional[BbsBoard]) -> Dict[str, object]:
+        """Render the collapsed Sync section with one number field per setting.
+
+        Args:
+            board: Configured board, or ``None`` (fields show the defaults).
+
+        Returns:
+            Mapping setting name -> number input element.
+        """
+        inputs: Dict[str, object] = {}
+        with ui.expansion('Sync', value=False).classes('w-full').props('dense'):
+            ui.label(
+                'Sync and reply delivery; apps read the delivery values with !h x'
+            ).classes('text-xs text-gray-500 pb-1')
+            for name, label, tip in cls.SYNC_FIELDS:
+                default, low, high, whole = SYNC_SETTINGS[name]
+                value = getattr(board, name) if board else default
+                with ui.row().classes('w-full items-center gap-2'):
+                    ui.label(f'{label}:').classes('text-xs text-gray-600 w-44 shrink-0')
+                    inputs[name] = ui.number(
+                        value=value, min=low, max=high,
+                        step=1 if whole else 0.1,
+                        format='%d' if whole else '%.1f',
+                    ).classes('text-xs w-24').tooltip(
+                        f'{tip} ({low:g}-{high:g}, default {default:g})'
+                    )
+        return inputs
+
+    @staticmethod
+    def _collect_sync(inputs: Dict[str, object]) -> Optional[Dict[str, float]]:
+        """Read and validate the Sync fields.
+
+        Args:
+            inputs: Mapping setting name -> number input element.
+
+        The number fields already clamp a value to the bounds (and round
+        it to the field format) when they lose focus, so in practice only
+        an empty field is refused here.
+
+        Returns:
+            Mapping setting name -> value, or ``None`` when a field is
+            empty, not a whole number where required, or out of range
+            (``clean_sync_setting`` would replace it by the default).
+        """
+        values: Dict[str, float] = {}
+        for name, inp in inputs.items():
+            raw = inp.value
+            clean = clean_sync_setting(name, raw)
+            if raw is None or float(raw) != float(clean):
+                return None
+            values[name] = clean
+        return values
 
     # ------------------------------------------------------------------
     # Retention per category (v1.26.0)

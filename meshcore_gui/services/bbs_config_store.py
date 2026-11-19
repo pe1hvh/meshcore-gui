@@ -34,6 +34,17 @@ modification time differs from the last load or save, so a change made
 by one instance is seen by all others without a restart and a write
 never overwrites a newer state with stale in-memory data.
 
+Sync settings (v1.27.0)
+~~~~~~~~~~~~~~~~~~~~~~~
+Each board holds the parameters that tune the ``!x`` sync and the
+delivery of BBS replies: ``sync_limit`` (records per ``!x`` reply),
+``dm_max_attempts``, ``dm_flood_after``, ``dm_flood_min_wait`` and
+``dm_wait_factor`` (see :data:`SYNC_SETTINGS`).  Missing, invalid or
+out-of-range values fall back to the defaults, which equal the
+constants used before v1.27.0.  Because every public method re-reads a
+changed file, a new value applies without a restart.  ``!h x`` announces
+the four delivery values to an app (``BbsCommandHandler``).
+
 Retention per category (v1.26.0)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Each board keeps a retention period in days per category
@@ -52,9 +63,15 @@ import math
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
-from meshcore_gui.config import debug_print
+from meshcore_gui.config import (
+    DM_FLOOD_AFTER,
+    DM_FLOOD_MIN_WAIT,
+    DM_MAX_ATTEMPTS,
+    DM_WAIT_FACTOR,
+    debug_print,
+)
 
 # ---------------------------------------------------------------------------
 # Storage
@@ -83,6 +100,23 @@ messages forever: 876 000 hours (100 years).  Older versions treat
 ``retention_hours`` literally, so ``0`` there would delete everything."""
 
 
+
+DEFAULT_SYNC_LIMIT: int = 10
+"""Default maximum number of message records in one ``!x`` reply (v1.27.0;
+10 as ``BbsCommandHandler.SYNC_LIMIT`` in v1.26.5)."""
+
+SYNC_SETTINGS: Dict[str, Tuple[float, float, float, bool]] = {
+    "sync_limit": (DEFAULT_SYNC_LIMIT, 1, 50, True),
+    "dm_max_attempts": (DM_MAX_ATTEMPTS, 1, 8, True),
+    "dm_flood_after": (DM_FLOOD_AFTER, 1, 8, True),
+    "dm_flood_min_wait": (DM_FLOOD_MIN_WAIT, 0, 120, False),
+    "dm_wait_factor": (DM_WAIT_FACTOR, 1.0, 3.0, False),
+}
+"""Sync settings of a board (v1.27.0): name -> (default, minimum, maximum,
+whole number).  ``dm_flood_min_wait`` is in seconds.  ``dm_flood_after``
+equal to or above ``dm_max_attempts`` means the path is never reset to
+flood.  Bounds are inclusive."""
+
 # ---------------------------------------------------------------------------
 # Retention helpers (v1.26.0)
 # ---------------------------------------------------------------------------
@@ -105,6 +139,36 @@ def clean_retention_days(value: object, fallback: int) -> int:
     except (TypeError, ValueError):
         return fallback
     return days if days >= 0 else fallback
+
+
+def clean_sync_setting(name: str, value: object) -> float:
+    """Return *value* as a valid value of sync setting *name* (v1.27.0).
+
+    Args:
+        name: Key in :data:`SYNC_SETTINGS`.
+        value: Value from the config file or the settings panel; numbers
+            and numeric strings are accepted.
+
+    Returns:
+        The value (``int`` for whole-number settings, else ``float``), or
+        the default of *name* when *value* is missing, not a number, not
+        whole where required, or outside the bounds.
+
+    Raises:
+        KeyError: *name* is not in :data:`SYNC_SETTINGS`.
+    """
+    default, low, high, whole = SYNC_SETTINGS[name]
+    if isinstance(value, bool):
+        return default
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(number) or not low <= number <= high:
+        return default
+    if whole:
+        return int(number) if number == int(number) else default
+    return number
 
 
 def hours_to_days(hours: object) -> int:
@@ -203,6 +267,14 @@ class BbsBoard:  # pylint: disable=too-many-instance-attributes  # one field per
         category_retention_days: Retention in days per category name
                                  (upper case); ``0`` = keep forever
                                  (v1.26.0).
+        sync_limit:        Records per ``!x`` reply (v1.27.0).
+        dm_max_attempts:   Send attempts per DM part of a BBS reply.
+        dm_flood_after:    Attempts before the path to the recipient is
+                           reset to flood.
+        dm_flood_min_wait: Minimum seconds a part sent as flood waits for
+                           its ACK.
+        dm_wait_factor:    Factor on the firmware's suggested timeout.
+                           Bounds and defaults: :data:`SYNC_SETTINGS`.
     """
 
     id: str
@@ -214,6 +286,11 @@ class BbsBoard:  # pylint: disable=too-many-instance-attributes  # one field per
     allowed_keys: List[str] = field(default_factory=list)
     default_retention_days: int = DEFAULT_RETENTION_DAYS
     category_retention_days: Dict[str, int] = field(default_factory=dict)
+    sync_limit: int = DEFAULT_SYNC_LIMIT
+    dm_max_attempts: int = DM_MAX_ATTEMPTS
+    dm_flood_after: int = DM_FLOOD_AFTER
+    dm_flood_min_wait: float = DM_FLOOD_MIN_WAIT
+    dm_wait_factor: float = DM_WAIT_FACTOR
 
     def retention_days_for(self, category: str) -> int:
         """Return the retention in days that applies to *category*.
@@ -255,6 +332,7 @@ class BbsBoard:  # pylint: disable=too-many-instance-attributes  # one field per
             "allowed_keys": list(self.allowed_keys),
             "default_retention_days": self.default_retention_days,
             "category_retention_days": dict(self.category_retention_days),
+            **{name: getattr(self, name) for name in SYNC_SETTINGS},
         }
 
     @staticmethod
@@ -267,7 +345,9 @@ class BbsBoard:  # pylint: disable=too-many-instance-attributes  # one field per
         negative ``default_retention_days`` becomes
         :data:`DEFAULT_RETENTION_DAYS`; an invalid or negative category
         entry becomes the board's default.  Category keys are stored
-        upper case.
+        upper case.  Sync settings (v1.27.0) go through
+        :func:`clean_sync_setting`; a missing or invalid one gets its
+        default.
 
         Args:
             d: Board dict as stored in ``bbs_config.json``.
@@ -304,6 +384,7 @@ class BbsBoard:  # pylint: disable=too-many-instance-attributes  # one field per
             allowed_keys=list(d.get("allowed_keys", [])),
             default_retention_days=default_days,
             category_retention_days=category_days,
+            **{name: clean_sync_setting(name, d.get(name)) for name in SYNC_SETTINGS},
         )
 
 
@@ -577,7 +658,7 @@ class BbsConfigStore:
 
     # Public API since v1.14.0; v1.26.0 only appends optional arguments,
     # so the argument count cannot be reduced without breaking callers.
-    def configure_board(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    def configure_board(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
         self,
         channel_indices: List[int],
         channel_names: Dict[int, str],
@@ -587,6 +668,7 @@ class BbsConfigStore:
         allowed_keys: Optional[List[str]] = None,
         default_retention_days: Optional[int] = None,
         category_retention_days: Optional[Dict[str, int]] = None,
+        sync_settings: Optional[Dict[str, object]] = None,
     ) -> None:
         """Save the board configuration.
 
@@ -620,6 +702,12 @@ class BbsConfigStore:
                                      case; invalid or negative entries
                                      get the default days.  ``None`` =
                                      no own entries (v1.26.0).
+            sync_settings:   Sync settings by name (keys of
+                             :data:`SYNC_SETTINGS`, v1.27.0); each value
+                             goes through :func:`clean_sync_setting`.  A
+                             name that is absent, or ``None`` for the
+                             whole argument, keeps the value of the
+                             existing board (default for a new board).
         """
         name = ", ".join(
             channel_names.get(i, f"Ch {i}") for i in sorted(channel_indices)
@@ -636,6 +724,14 @@ class BbsConfigStore:
             else clean_retention_days(default_retention_days, DEFAULT_RETENTION_DAYS)
         )
 
+        current = existing or BbsBoard(id="", name="")
+        given = sync_settings or {}
+        synced = {
+            key: clean_sync_setting(key, given[key]) if key in given
+            else getattr(current, key)
+            for key in SYNC_SETTINGS
+        }
+
         board = BbsBoard(
             id="bbs_board",
             name=name,
@@ -648,6 +744,7 @@ class BbsConfigStore:
             category_retention_days=category_days_for(
                 categories, category_retention_days or {}, default_days,
             ),
+            **synced,
         )
         with self._lock:
             self._reload_if_changed_unlocked()

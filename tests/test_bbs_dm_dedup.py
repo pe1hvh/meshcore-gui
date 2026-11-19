@@ -71,6 +71,14 @@ class FakeBbsHandler:  # pylint: disable=too-few-public-methods
         self.calls: List[Dict[str, str]] = []
         """Keyword arguments of every :meth:`handle_dm` call, in order."""
 
+    def delivery_settings(self) -> Dict:
+        """Return no delivery settings, so replies use the defaults.
+
+        Returns:
+            Empty dict (``BbsCommandHandler.delivery_settings``, v1.27.0).
+        """
+        return {}
+
     def handle_dm(self, sender: str, sender_key: str, text: str) -> str:
         """Record the call and answer like a successful post.
 

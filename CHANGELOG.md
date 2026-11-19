@@ -11,6 +11,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.27.0] - 2026-11-19 — BBS sync settings per board, announced to apps
+
+### Added
+- 🆕 **Sync settings per BBS board** (`services/bbs_config_store.py`
+  `SYNC_SETTINGS`, `clean_sync_setting`; `BbsBoard` fields
+  `sync_limit`, `dm_max_attempts`, `dm_flood_after`, `dm_flood_min_wait`,
+  `dm_wait_factor`): the parameters that tune the `!x` sync and the
+  delivery of BBS replies are no longer code constants. Defaults equal
+  the former constants (10, 3, 2, 30 s, 1.2); a missing, invalid or
+  out-of-range value falls back to its default. The config store already
+  re-reads a changed file, so a new value applies without a restart.
+  `configure_board` keeps the stored values when it gets none.
+- 🆕 **Sync section in BBS Settings** (`gui/panels/bbs_panel.py`): a
+  collapsed section with one number field per setting; a field clamps its
+  value to the bounds when it loses focus, and Save refuses an empty field.
+- 🆕 **`!h x`** (`services/bbs_service.py`, `HELP_SETTINGS_TAG`): the
+  help reply gets a third line `X|a=<attempts>,f=<flood after>,
+  w=<flood wait s>,k=<wait factor>` with the board's delivery settings,
+  so an app can compute how long the BBS may spend on one reply part.
+  Plain `!h` is unchanged; a server before 1.27.0 ignores the `x`; an app
+  before meshcore-open v0.4.0-bbs reads only the first and last line.
+- `tests/test_bbs_sync_settings.py` (new): 26 tests; defaults,
+  validation, round trip, settings kept on save, change on disk applied,
+  `sync_limit` in `!x`, `!h x`, delivery settings in the BBS reply
+  command and in `CommandHandler`, page validation.
+
+### Changed
+- ⚙️ **DM delivery settings per reply** (`ble/commands.py`): `_DmDelivery`
+  carries `max_attempts`, `flood_after`, `flood_min_wait` and
+  `wait_factor`; a `send_dm` command may set them (absent: `config.py`
+  defaults). BBS replies pass the board's values
+  (`BbsCommandHandler.delivery_settings`, `EventHandler._bbs_dm_reply`);
+  DMs from the contacts panel keep the defaults.
+- `config.py`: new `DM_WAIT_FACTOR` (1.2, formerly fixed in
+  `ble/commands.py`).
+- `BbsCommandHandler.SYNC_LIMIT` is now the default of `sync_limit`.
+- README: BBS settings and `!h x`.
+- Test doubles of the BBS handler (`test_bbs_dm_dedup.py`,
+  `test_bbs_sync_v1264.py`, `test_reply_region.py`) get
+  `delivery_settings`.
+
+---
+
 ## [1.26.5] - 2026-11-19 — BBS sync in rounds of 10, longer flood wait, one rotating debug log
 
 ### Fixed

@@ -1242,6 +1242,13 @@ Retain:      48 hours
 ▶ Advanced
   Regions (comma-separated)
   Allowed keys (DM-BBS whitelist)
+
+▶ Sync
+  Messages per sync reply    10
+  Attempts per reply part     3
+  Flood after attempts        2
+  Flood wait (s)             30
+  Wait factor               1.2
 ```
 
 - **Channels** — check all channels whose participants should have access to the BBS. Multiple channels can be selected.
@@ -1249,6 +1256,14 @@ Retain:      48 hours
 - **Retain** — message retention in hours (default 48).
 - **Advanced → Regions** — optional region tags for geographic filtering.
 - **Advanced → Allowed keys** — manual whitelist override; leave empty to rely on auto-learned keys only.
+- **Sync** (v1.27.0) — tuning of the `!x` sync and of the delivery of BBS replies, applied without a restart:
+  - *Messages per sync reply* (1–50, default 10): records per `!x` reply.
+  - *Attempts per reply part* (1–8, default 3): send attempts per DM part before the rest of the reply is dropped.
+  - *Flood after attempts* (1–8, default 2): attempts along the known path before the path is reset to flood; equal to or above the attempts: never flood.
+  - *Flood wait* (0–120 s, default 30): minimum time a part sent as flood waits for its ACK.
+  - *Wait factor* (1.0–3.0, default 1.2): ACK wait = the firmware's suggested timeout × this factor.
+
+  An app reads the four delivery values with `!h x` (see below) and waits accordingly.
 
 #### Command syntax
 
@@ -1265,6 +1280,7 @@ Retain:      48 hours
 | `!s <cat> <query>` | Search messages in a category |
 | `!s <region> <cat> <query>` | Search with region filter |
 | `!h` | Show help and abbreviation table |
+| `!h x` | Help plus a third line `X\|a=3,f=2,w=30,k=1.2` with the delivery settings (for apps, v1.27.0) |
 
 Category abbreviations are computed automatically as the shortest unique prefix within the configured list. Example with `URGENT, MEDICAL, LOGISTICS, STATUS, GENERAL`:
 

@@ -451,6 +451,15 @@ CONTACT_REFRESH_MIN_INTERVAL: float = 15.0
 DM_MAX_ATTEMPTS: int = 3
 DM_FLOOD_AFTER: int = 2
 
+# Minimum time in seconds a DM part that went out as flood waits for its
+# ACK (v1.26.5).  The firmware suggests ``500 + 16 x airtime`` ms for a
+# flood, whatever the number of hops (companion_radio MyMesh.cpp,
+# calcFloodTimeoutMillisFor); on 18-11-2026 that was 10788 ms for a node
+# 4 hops away, while the ACK of that flood took 15708 ms (trip_time).  A
+# flood part waits max(suggested timeout x 1.2, DM_FLOOD_MIN_WAIT); an ACK
+# of an earlier attempt of the part also counts while it waits.
+DM_FLOOD_MIN_WAIT: float = 30.0
+
 # Interval in seconds between safety-net polls of the device message queue.
 #
 # The meshcore library fetches messages only in response to a

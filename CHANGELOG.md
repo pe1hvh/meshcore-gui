@@ -11,9 +11,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
-## [1.26.5] - 2026-11-19 — BBS sync in rounds of 10, one rotating debug log
+## [1.26.5] - 2026-11-19 — BBS sync in rounds of 10, longer flood wait, one rotating debug log
 
 ### Fixed
+- 🐛 **A DM part sent as flood waits long enough for its ACK**
+  (`ble/commands.py`, `config.py` `DM_FLOOD_MIN_WAIT` = 30 s): the
+  firmware suggests `500 + 16 x airtime` ms for a flood, whatever the
+  number of hops. On 18-11 a reply part to a node 4 hops away flooded
+  with a suggested timeout of 10788 ms; `CommandHandler` gave up after
+  12.9 s and dropped the rest of the reply, and the ACK of that attempt
+  arrived 15.7 s after sending (`trip_time` 15708 ms). A part that
+  `MSG_SENT` reports as flood (`type` 1) now waits max(timeout x 1.2,
+  30 s). Direct parts are unchanged. Screenshots of the receiving app confirm that such
+  "failed" parts had arrived.
 - 🐛 **Debug lines no longer end up in a deleted log file** (`config.py`):
   the debug logger and the meshcore library logger each had their own
   `RotatingFileHandler` on the same file. When one of them rotated, the
@@ -33,6 +43,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
   takes about 4 parts and every complete reply moves the app's cursor,
   also for an app that does not resume from a broken-off reply. Protocol
   unchanged: apps already follow `more`.
+- 📝 **DM delivery log lines** (`ble/commands.py`): `sent (flood)` when the
+  firmware flooded the part; `confirmed (trip <ms> ms)` with the firmware's
+  round-trip time; `ACK <code> (trip <ms> ms) matches no waiting DM part`
+  for an ACK that confirms nothing, e.g. one that arrives after give-up
+  or one for a room message.
 - 📝 **Debug log keeps about 48 hours** (`config.py`): `LOG_MAX_BYTES`
   10 MB (was 5 MB), `LOG_BACKUP_COUNT` 24 (was 3), so 250 MB in 25 files.
   With `--debug-on` the log grew by about 5 MB per hour (measured 18-11),
@@ -40,6 +55,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 - `tests/test_log_rotation.py` (new): 4 tests; one shared handler, no open
   handle to a rotated file, the newest debug and library lines in the
   current file, line layouts unchanged. The first three fail on 1.26.4.
+- `tests/test_dm_flood_wait.py` (new): 6 tests; flood deadline minimum,
+  longer suggested timeout kept, direct unchanged, late flood ACK
+  confirms the part, log lines; 4 of them fail against the 1.26.4
+  delivery code.
 - `tests/test_bbs_sync.py`: `test_sync_limit_is_fifty` becomes
   `test_sync_limit_is_ten` (40 messages in four rounds);
   `tests/test_bbs_sync_v1264.py`: `test_compressed_reply_echoes_the_cursors`

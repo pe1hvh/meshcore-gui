@@ -28,6 +28,7 @@ from meshcore_gui.config import (
     BOT_DEVICE_NAME,
     DEVICE_NAME,
     DM_FLOOD_AFTER,
+    DM_FLOOD_MIN_WAIT,
     DM_MAX_ATTEMPTS,
     debug_print,
 )
@@ -448,14 +449,22 @@ class CommandHandler:
         part as confirmed; the next part is sent by
         ``process_dm_deliveries``.
 
+        Since v1.26.5 the log line shows the round-trip time the firmware
+        reports (``trip_time``), and an ACK that confirms no waiting part
+        is logged too (for example one that arrives after the part was
+        given up, or the ACK of a message sent outside the DM queue, such
+        as a room message).
+
         Args:
             event: MeshCore event whose payload holds ``code`` (8 hex
-                characters).
+                characters) and, from the firmware, ``trip_time`` (ms).
         """
         payload = event.payload if isinstance(event.payload, dict) else {}
         code = str(payload.get('code', '')).lower()
         if not code:
             return
+        trip = payload.get('trip_time')
+        trip_text = f" (trip {trip} ms)" if trip is not None else ""
         for queue in self._dm_queues.values():
             if not queue:
                 continue
@@ -463,13 +472,14 @@ class CommandHandler:
             if delivery.waiting and code in delivery.acks:
                 debug_print(
                     f"DM to {delivery.contact_name} part "
-                    f"{delivery.index + 1}/{len(delivery.chunks)} confirmed"
+                    f"{delivery.index + 1}/{len(delivery.chunks)} confirmed{trip_text}"
                 )
                 delivery.waiting = False
                 delivery.index += 1
                 delivery.attempt = 0
                 delivery.acks.clear()
                 return
+        debug_print(f"ACK {code}{trip_text} matches no waiting DM part")
 
     async def process_dm_deliveries(self) -> None:
         """Advance every recipient queue by at most one step.
@@ -483,6 +493,9 @@ class CommandHandler:
           timestamp, next attempt number), resetting the path to flood
           before attempt ``DM_FLOOD_AFTER + 1``; after
           ``DM_MAX_ATTEMPTS`` the rest of the reply is dropped.
+
+        The deadline is the suggested timeout x 1.2, for a part sent as
+        flood at least ``DM_FLOOD_MIN_WAIT`` seconds (v1.26.5).
         """
         now = time.monotonic()
         for key in list(self._dm_queues):
@@ -525,6 +538,11 @@ class CommandHandler:
         ``send_msg`` returns ERROR or raises (same pattern as
         ``_cmd_send_message``).
 
+        The part waits for its ACK until ``deadline``: the firmware's
+        ``suggested_timeout`` x 1.2, and at least ``DM_FLOOD_MIN_WAIT``
+        seconds when ``MSG_SENT`` reports the DM went out as flood
+        (``type`` 1, v1.26.5).
+
         Args:
             delivery: Queue head whose part ``index`` is sent with attempt
                 number ``attempt``.
@@ -562,10 +580,18 @@ class CommandHandler:
         if isinstance(expected, (bytes, bytearray)):
             expected = expected.hex()
         timeout_ms = result.payload.get('suggested_timeout', 0) or 0
+        # MSG_SENT type 1: the firmware sent the DM as flood (v1.26.5).
+        flood = result.payload.get('type') == 1
+        wait = timeout_ms / 1000 * 1.2
+        if flood:
+            wait = max(wait, DM_FLOOD_MIN_WAIT)
         delivery.acks.add(str(expected).lower())
         delivery.waiting = True
-        delivery.deadline = time.monotonic() + timeout_ms / 1000 * 1.2
-        debug_print(f"{label} sent, ACK {expected}, timeout {timeout_ms} ms")
+        delivery.deadline = time.monotonic() + wait
+        debug_print(
+            f"{label} sent{' (flood)' if flood else ''}, ACK {expected}, "
+            f"timeout {timeout_ms} ms"
+        )
 
     async def _reset_dm_path(self, delivery: _DmDelivery) -> None:
         """Reset the device path to the recipient so the next part floods.

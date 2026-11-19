@@ -320,21 +320,27 @@ def test_sync_batches_and_cursor(env) -> None:
     assert [int(line.split("|")[0]) for line in lines[2:]] == ids[limit:]
 
 
-def test_sync_limit_is_fifty(env) -> None:
-    """One ``!x`` reply carries up to 50 records (v1.26.3).
+def test_sync_limit_is_ten(env) -> None:
+    """One ``!x`` reply carries up to 10 records (v1.26.5).
 
-    40 messages fit in a single reply with ``more`` = ``0``, so an app
-    needs one request instead of four.
+    40 messages take four replies: the first three with ``more`` = ``1``,
+    each continuing after the highest id of the previous reply.
 
     Args:
         env: Store, service and handler fixture.
     """
     _, service, handler = env
-    assert BbsCommandHandler.SYNC_LIMIT == 50
+    assert BbsCommandHandler.SYNC_LIMIT == 10
     ids = [_post(service, "STATUS", 0, text=f"m{i}") for i in range(40)]
-    lines = _sync(handler)
-    assert lines[0].split("|")[2:4] == ["40", "0"]
-    assert [int(line.split("|")[0]) for line in lines[2:]] == ids
+    got = []
+    since = "0"
+    for expected_more in ("1", "1", "1", "0"):
+        lines = _sync(handler, since)
+        assert lines[0].split("|")[2:4] == ["10", expected_more]
+        batch = [int(line.split("|")[0]) for line in lines[2:]]
+        got += batch
+        since = str(batch[-1])
+    assert got == ids
 
 
 def test_sync_long_record_uses_continuations(env) -> None:

@@ -150,7 +150,8 @@ def test_compressed_reply_echoes_the_cursors(bbs) -> None:
     _, handler = bbs
     header = _inflate(_sync(handler, "12 0 z").split("\n")).split("\n")[0]
     assert header.startswith("X2|")
-    assert header.split("|")[2] == "18"
+    # 18 records above id 12, capped at SYNC_LIMIT (10 since v1.26.5).
+    assert header.split("|")[2] == str(min(18, BbsCommandHandler.SYNC_LIMIT))
     assert header.split("|")[-2:] == ["12", "0"]
 
 

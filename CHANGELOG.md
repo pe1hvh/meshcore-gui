@@ -11,6 +11,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 ---
 
 
+## [1.26.5] - 2026-11-19 — BBS sync in rounds of 10, one rotating debug log
+
+### Fixed
+- 🐛 **Debug lines no longer end up in a deleted log file** (`config.py`):
+  the debug logger and the meshcore library logger each had their own
+  `RotatingFileHandler` on the same file. When one of them rotated, the
+  other kept writing to the renamed file and, once that file was rotated
+  away, to a deleted file (seen on 18-11 as `.log.3 (deleted)` in
+  `/proc/<pid>/fd`; all `DEBUG` lines after 10:00 were only readable from
+  there). Both loggers now share one handler (`_shared_file_handler`);
+  `_LogLineFormatter` keeps the line layouts (`DEBUG [<module>]: …` and
+  `LIB [meshcore]: …`) unchanged.
+
+### Changed
+- ⚡ **`!x` reply carries up to 10 message records instead of 50**
+  (`services/bbs_service.py`, `BbsCommandHandler.SYNC_LIMIT`): the whole NNO
+  board (34 records) took 9 compressed DM parts in one reply, and over a lossy path
+  (PE1OUM, 18-11) no sync delivered more than 2 parts in 13 requests;
+  the app then asked again from the same cursor. With 10 records a compressed reply
+  takes about 4 parts and every complete reply moves the app's cursor,
+  also for an app that does not resume from a broken-off reply. Protocol
+  unchanged: apps already follow `more`.
+- 📝 **Debug log keeps about 48 hours** (`config.py`): `LOG_MAX_BYTES`
+  10 MB (was 5 MB), `LOG_BACKUP_COUNT` 24 (was 3), so 250 MB in 25 files.
+  With `--debug-on` the log grew by about 5 MB per hour (measured 18-11),
+  so the old 20 MB held only 3 to 4 hours. README updated.
+- `tests/test_log_rotation.py` (new): 4 tests; one shared handler, no open
+  handle to a rotated file, the newest debug and library lines in the
+  current file, line layouts unchanged. The first three fail on 1.26.4.
+- `tests/test_bbs_sync.py`: `test_sync_limit_is_fifty` becomes
+  `test_sync_limit_is_ten` (40 messages in four rounds);
+  `tests/test_bbs_sync_v1264.py`: `test_compressed_reply_echoes_the_cursors`
+  follows `SYNC_LIMIT`.
+
+---
+
 ## [1.26.4] - 2026-11-18 — BBS sync: one reply per request, compressed replies
 
 ### Added

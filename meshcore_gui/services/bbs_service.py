@@ -664,14 +664,20 @@ class BbsCommandHandler:
 
     READ_LIMIT: int = 5
 
-    SYNC_LIMIT: int = 50
+    SYNC_LIMIT: int = 10
     """Maximum number of message records in one ``!x`` reply.
 
-    10 in v1.26.0-v1.26.2; 50 since v1.26.3.  Every ``!x`` round costs a
-    request DM from the client plus the header and ``R`` lines (up to one
-    extra DM part) on top of the records; each reply part is sent only
-    after the ACK of the previous one.  Fewer rounds therefore mean fewer
-    packets: 40 messages take one reply instead of four.  When the DM
+    10 in v1.26.0-v1.26.2, 50 in v1.26.3-v1.26.4, 10 again since v1.26.5.
+    Every ``!x`` round costs a request DM from the client plus the header
+    and ``R`` lines (up to one extra DM part) on top of the records; each
+    reply part is sent only after the ACK of the previous one.  Fewer
+    rounds mean fewer packets, but the whole NNO board (34 records) took
+    9 compressed DM parts in one reply, and on a lossy path (logs of
+    18-11-2026) no such reply delivered more than 2 parts in 13 requests;
+    the client then started again from the same cursor.  With 10 records
+    a compressed reply takes about 4 parts, and every complete reply
+    moves the client's cursor, also for a client that does not resume
+    from a broken-off reply.  When the DM
     sender drops the rest of a reply after ``DM_MAX_ATTEMPTS``, the client
     asks again from the highest complete record it received; the
     meshcore-open BBS client also keeps its ``since_del`` until a reply

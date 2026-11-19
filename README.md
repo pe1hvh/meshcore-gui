@@ -437,7 +437,7 @@ To stop it:
 pkill -f meshcore_gui
 ```
 
-> **Tip:** Avoid redirecting to `/dev/null` — keeping the output in a log file preserves connection errors and other diagnostics. When `--debug-on` is enabled, detailed debug output is also written to a per-device rotating log file at `~/.meshcore-gui/logs/<ADDRESS>_meshcore_gui.log` (e.g. `F0_9E_9E_75_A3_01_meshcore_gui.log`, max 20 MB, rotates automatically).
+> **Tip:** Avoid redirecting to `/dev/null` — keeping the output in a log file preserves connection errors and other diagnostics. When `--debug-on` is enabled, detailed debug output is also written to a per-device rotating log file at `~/.meshcore-gui/logs/<ADDRESS>_meshcore_gui.log` (e.g. `F0_9E_9E_75_A3_01_meshcore_gui.log`, 25 files of max 10 MB, about 48 hours with library debug output; rotates automatically).
 
 ### 7.5. Method 4: systemd Service (recommended for production)
 
@@ -766,7 +766,7 @@ All persistent data is stored under `~/.meshcore-gui/` in your home directory. E
 │   └── <ADDRESS>_regions.json  # Channel default regions, known regions and the
 │                               # device default region per device (see 9.17)
 └── logs/
-    └── <ADDRESS>_meshcore_gui.log  # Rotating debug log (max 20 MB, only with --debug-on)
+    └── <ADDRESS>_meshcore_gui.log  # Rotating debug log (25 files of max 10 MB, only with --debug-on)
 ```
 
 `<ADDRESS>` is derived from the device argument: a serial port like `/dev/ttyUSB0` becomes `_dev_ttyUSB0`, a BLE address like `AA:BB:CC:DD:EE:FF` becomes `AA_BB_CC_DD_EE_FF`. This means each device gets its own set of files.

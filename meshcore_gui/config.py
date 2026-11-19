@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 # ==============================================================================
 
 
-VERSION: str = "1.26.4"
+VERSION: str = "1.26.5"
 
 
 # ==============================================================================
@@ -86,7 +86,7 @@ BOT_DIR: Path = DATA_DIR / "bot"
 # File naming: _<safe_dev_id>_repeaters.json.
 REPEATERS_DIR: Path = DATA_DIR / "repeaters"
 
-# Log file path (rotating: max 5 MB per file, 3 backups = 20 MB total).
+# Log file path (rotating: max 10 MB per file, 24 backups = 250 MB total).
 LOG_FILE: Path = LOG_DIR / "meshcore_gui.log"
 
 
@@ -109,11 +109,14 @@ def set_log_file_for_device(device_id: str) -> None:
     )
     LOG_FILE = LOG_DIR / f"{safe_name}_meshcore_gui.log"
 
-# Maximum size per log file in bytes (5 MB).
-LOG_MAX_BYTES: int = 5 * 1024 * 1024
+# Maximum size per log file in bytes (10 MB).
+LOG_MAX_BYTES: int = 10 * 1024 * 1024
 
-# Number of rotated backup files to keep.
-LOG_BACKUP_COUNT: int = 3
+# Number of rotated backup files to keep (v1.26.5: 24, was 3).  With
+# ``--debug-on`` the log grows by roughly 5 MB per hour (measured on
+# 18-11-2026, library debug on), so 25 files of 10 MB (250 MB) hold
+# about 48 hours; 4 files of 5 MB held only 3 to 4 hours.
+LOG_BACKUP_COUNT: int = 24
 
 
 # ==============================================================================
@@ -125,25 +128,72 @@ DEBUG: bool = False
 # Internal file logger — initialised lazily on first debug_print() call.
 _file_logger: logging.Logger | None = None
 
+# The one rotating file handler shared by the debug logger and the
+# meshcore library logger (v1.26.5).  Two handlers on the same file each
+# rotate on their own: after a rotation one of them kept writing to the
+# renamed file and, once that file was rotated away, to a deleted file.
+_file_handler: RotatingFileHandler | None = None
+
+
+class _LogLineFormatter(logging.Formatter):
+    """Format debug and library records for the shared log file.
+
+    Debug records already carry ``DEBUG [<module>]: `` in their message;
+    records of the meshcore library (logger ``meshcore`` and its children)
+    get ``LIB [<logger name>]: `` in front, as before v1.26.5.
+    """
+
+    _DEBUG = logging.Formatter("%(asctime)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    _LIB = logging.Formatter(
+        "%(asctime)s  LIB [%(name)s]: %(message)s", datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Return the log line for *record*.
+
+        Args:
+            record: Record from the debug logger or the meshcore logger.
+
+        Returns:
+            ``<timestamp>  <message>`` for debug records,
+            ``<timestamp>  LIB [<name>]: <message>`` for library records.
+        """
+        if record.name == "meshcore" or record.name.startswith("meshcore."):
+            return self._LIB.format(record)
+        return self._DEBUG.format(record)
+
+
+def _shared_file_handler() -> RotatingFileHandler:
+    """Return the shared rotating file handler, creating it on first use.
+
+    Returns:
+        The handler on ``LOG_FILE`` with ``LOG_MAX_BYTES`` and
+        ``LOG_BACKUP_COUNT``, used by both file loggers.
+    """
+    global _file_handler
+
+    if _file_handler is None:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        _file_handler = RotatingFileHandler(
+            LOG_FILE,
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
+        _file_handler.setFormatter(_LogLineFormatter())
+    return _file_handler
+
 
 def _init_file_logger() -> logging.Logger:
-    """Create and configure the rotating file logger (called once)."""
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    """Create and configure the debug file logger (called once).
 
+    Returns:
+        Logger ``meshcore_gui.debug`` writing to the shared file handler.
+    """
     logger = logging.getLogger("meshcore_gui.debug")
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
-
-    handler = RotatingFileHandler(
-        LOG_FILE,
-        maxBytes=LOG_MAX_BYTES,
-        backupCount=LOG_BACKUP_COUNT,
-        encoding="utf-8",
-    )
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-    )
-    logger.addHandler(handler)
+    logger.addHandler(_shared_file_handler())
     return logger
 
 
@@ -174,26 +224,13 @@ def _init_meshcore_logger() -> None:
     Call once at startup (or lazily from ``debug_print``) so that
     ``MESHCORE_LIB_DEBUG=True`` actually produces visible output.
     """
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-
     mc_logger = logging.getLogger("meshcore")
     # Guard against duplicate handlers on repeated calls
     if any(isinstance(h, RotatingFileHandler) for h in mc_logger.handlers):
         return
 
-    handler = RotatingFileHandler(
-        LOG_FILE,
-        maxBytes=LOG_MAX_BYTES,
-        backupCount=LOG_BACKUP_COUNT,
-        encoding="utf-8",
-    )
-    handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s  LIB [%(name)s]: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-    )
-    mc_logger.addHandler(handler)
+    # Same handler object as the debug logger: one file, one rotation.
+    mc_logger.addHandler(_shared_file_handler())
 
     # Also add a stdout handler so library output appears in the console
     stdout_handler = logging.StreamHandler(sys.stdout)
